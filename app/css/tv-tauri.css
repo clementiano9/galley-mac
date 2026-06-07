@@ -1,0 +1,62 @@
+/* ───────────────────────────────────────────────────────────
+   tiny-viewer · Tauri / macOS native window chrome overrides
+   Scoped entirely to html.tauri — no effect in plain browser.
+
+   The Tauri window uses macOS Overlay title bar (real native
+   traffic lights sit in the top-left, overlaid on the webview).
+   We therefore:
+     1. Hide the fake CSS traffic-light spans (.tv-traffic).
+     2. Pad the title bar left so the native lights don't
+        collide with content (~78-84 px covers the standard
+        close/minimise/maximise button cluster + its margins).
+     3. Mark the title bar as draggable via data-tauri-drag-region
+        (set by tv-native.js after every render; CSS here is
+        the visual companion for that interaction).
+   ─────────────────────────────────────────────────────────── */
+
+/* 1. Hide fake traffic lights — real OS ones are visible */
+html.tauri .tv-traffic {
+  display: none;
+}
+
+/* 2. Clear space for native traffic lights on the left.
+      The counterweight margin-right on .tv-wintitle is
+      already 52 px in tv-app.css; bump the left padding
+      so both sides balance with the larger native offset. */
+html.tauri .tv-titlebar {
+  padding-left: 84px;
+}
+
+/* Re-balance the wintitle centering now that left padding
+   is larger. The existing margin-right: 52px stays, but we
+   need to shrink it to match (84 – 32 = 52, already OK).
+   Only override if the default counterweight needs adjusting. */
+html.tauri .tv-wintitle {
+  /* The existing 52px right margin is close enough for the
+     overlay layout; no change required unless layout drifts. */
+}
+
+/* 3. Draggable region visual affordance.
+      data-tauri-drag-region is set by tv-native.js.
+      In WKWebView -webkit-app-region: drag is ignored, so
+      the attribute is the only mechanism that works — but
+      cursor: grab helps indicate draggability to the user. */
+html.tauri .tv-titlebar[data-tauri-drag-region] {
+  cursor: default; /* macOS convention: title bar uses default arrow */
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Tabs, buttons, and interactive children inside the title bar
+   must NOT be inadvertently captured as drag regions.
+   Tauri respects only the element carrying the attribute;
+   child elements with click handlers still fire normally.
+   No extra override needed, but we keep pointer-events explicit
+   for any child that might inherit oddities. */
+html.tauri .tv-titlebar .tv-wintitle,
+html.tauri .tv-titlebar .tv-tab,
+html.tauri .tv-titlebar .tv-close,
+html.tauri .tv-titlebar button {
+  pointer-events: auto;
+  cursor: default;
+}

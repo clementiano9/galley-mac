@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="color-scheme" content="light dark">
+  <title>tiny-viewer</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232d68d8'/%3E%3Cpath d='M4.5 5h7M4.5 8h7M4.5 11h4.5' stroke='white' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/tv-tokens.css">
+  <link rel="stylesheet" href="css/tv-app.css">
+  <link rel="stylesheet" href="css/tv-tauri.css">
+  <style>
+    html, body, #tv-root {
+      height: 100%;
+      margin: 0;
+      padding: 0;
+      overflow: hidden;
+    }
+    #tv-root {
+      width: 100%;
+      position: relative;
+    }
+    /* theme/accent controls — slim floating pill bottom-right (DR-07: quiet at rest) */
+    #tv-controls {
+      position: fixed;
+      bottom: 18px;
+      right: 20px;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 10px;
+      border-radius: 20px;
+      background: rgba(128,128,128,.13);
+      border: 1px solid rgba(128,128,128,.18);
+      backdrop-filter: blur(8px);
+      -webkit-backdrop-filter: blur(8px);
+      opacity: 0.38;
+      transition: opacity .18s;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+      font-size: 11.5px;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #tv-controls:hover { opacity: 1; }
+    #tv-controls button {
+      border: 1px solid rgba(128,128,128,.25);
+      border-radius: 5px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 500;
+      cursor: default;
+      background: transparent;
+      color: inherit;
+      transition: background .1s;
+    }
+    #tv-controls button:hover { background: rgba(128,128,128,.18); }
+    #tv-controls button.active {
+      background: rgba(128,128,128,.28);
+      font-weight: 600;
+    }
+    #tv-controls .ctrl-sep {
+      width: 1px;
+      height: 14px;
+      background: rgba(128,128,128,.3);
+    }
+    .tv--dark #tv-controls { color: #ccc; }
+    .tv--light #tv-controls { color: #444; }
+  </style>
+</head>
+<body>
+  <div id="tv-root"></div>
+
+  <!-- Theme / Accent controls (outside .tv so they survive full re-renders) -->
+  <div id="tv-controls" aria-label="Theme and accent controls">
+    <button id="ctrl-light" title="Light theme">Light</button>
+    <button id="ctrl-dark" title="Dark theme">Dark</button>
+    <div class="ctrl-sep"></div>
+    <button id="ctrl-blue" title="Blue accent">Blue</button>
+    <button id="ctrl-graphite" title="Graphite accent">Graphite</button>
+    <button id="ctrl-warm" title="Warm accent">Warm</button>
+  </div>
+
+  <!-- dependency order: icons → docs → markdown → feature modules → app → native bridge -->
+  <script src="js/tv-icons.js"></script>
+  <script src="js/tv-docs.js"></script>
+  <script src="js/tv-markdown.js"></script>
+  <script src="js/tv-edit.js"></script>
+  <script src="js/tv-palette.js"></script>
+  <script src="js/tv-search.js"></script>
+  <script src="js/tv-files.js"></script>
+  <script src="js/tv-live.js"></script>
+  <script src="js/tv-app.js"></script>
+  <script src="js/tv-native.js"></script>
+
+  <script>
+    // Wire the theme/accent control pill to TV after it initialises
+    (function () {
+      function refreshControls() {
+        if (!window.TV) return;
+        var s = TV.state;
+        document.getElementById('ctrl-light').classList.toggle('active', s.theme === 'light');
+        document.getElementById('ctrl-dark').classList.toggle('active', s.theme === 'dark');
+        document.getElementById('ctrl-blue').classList.toggle('active', s.accent === 'blue');
+        document.getElementById('ctrl-graphite').classList.toggle('active', s.accent === 'graphite');
+        document.getElementById('ctrl-warm').classList.toggle('active', s.accent === 'warm');
+      }
+      function bindControls() {
+        if (!window.TV) { setTimeout(bindControls, 30); return; }
+        document.getElementById('ctrl-light').addEventListener('click', function () { TV.setTheme('light'); refreshControls(); });
+        document.getElementById('ctrl-dark').addEventListener('click', function () { TV.setTheme('dark'); refreshControls(); });
+        document.getElementById('ctrl-blue').addEventListener('click', function () { TV.setAccent('blue'); refreshControls(); });
+        document.getElementById('ctrl-graphite').addEventListener('click', function () { TV.setAccent('graphite'); refreshControls(); });
+        document.getElementById('ctrl-warm').addEventListener('click', function () { TV.setAccent('warm'); refreshControls(); });
+        TV.on('render', refreshControls);
+        refreshControls();
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', bindControls);
+      } else {
+        bindControls();
+      }
+    })();
+  </script>
+</body>
+</html>

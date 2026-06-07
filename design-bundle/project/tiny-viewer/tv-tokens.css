@@ -1,0 +1,130 @@
+/* ───────────────────────────────────────────────────────────
+   tiny-viewer · design tokens
+   Semantic colour system. Scope every app window with:
+     class="tv tv--light tv--accent-blue"   (or --dark / --graphite / --warm)
+   Tokens are CSS custom properties so the whole UI re-skins by
+   swapping the theme/accent class on the root .tv element.
+   ─────────────────────────────────────────────────────────── */
+
+.tv {
+  /* type */
+  --tv-font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
+                "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
+  --tv-font-mono: "SF Mono", ui-monospace, "JetBrains Mono", "Menlo",
+                  "Cascadia Code", "Roboto Mono", monospace;
+
+  /* 8px base spacing grid */
+  --tv-s1: 4px;  --tv-s2: 8px;  --tv-s3: 12px; --tv-s4: 16px;
+  --tv-s5: 24px; --tv-s6: 32px; --tv-s7: 40px; --tv-s8: 48px;
+
+  /* chrome dimensions */
+  --tv-tabbar-h: 38px;
+  --tv-sidebar-w: 224px;
+  --tv-toolbar-h: 40px;
+  --tv-status-h: 32px;
+  --tv-content-max: 720px;
+
+  --tv-radius-win: 11px;
+  --tv-radius-sm: 6px;
+  --tv-radius-md: 8px;
+
+  font-family: var(--tv-font-ui);
+  color: var(--tv-text-primary) !important;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* ── LIGHT THEME ─────────────────────────────────────────── */
+.tv--light {
+  --tv-bg-primary:   #fbfbfa;   /* document / content background      */
+  --tv-bg-surface:   #ffffff;   /* window body, tab-active, palette    */
+  --tv-bg-sidebar:   #f3f3f1;   /* sidebar panel                       */
+  --tv-bg-chrome:    #e9e9e6;   /* title bar + tab strip               */
+  --tv-bg-elev:      #ffffff;   /* floating surfaces                   */
+  --tv-bg-hover:     rgba(0,0,0,.045);
+  --tv-bg-sel:       rgba(0,0,0,.06);
+
+  --tv-text-primary:   #1d1d1f;
+  --tv-text-secondary: #62626a;
+  --tv-text-muted:     #9a9aa1;
+
+  --tv-border:       rgba(0,0,0,.09);
+  --tv-border-strong:rgba(0,0,0,.14);
+
+  --tv-code-bg:      #f4f4f1;   /* inline + block code surface         */
+  --tv-code-border:  rgba(0,0,0,.07);
+  --tv-table-head:   #f4f4f1;
+  --tv-table-stripe: #faf9f7;
+
+  --tv-traffic-close:  #ff5f57;
+  --tv-traffic-min:    #febc2e;
+  --tv-traffic-max:    #28c840;
+
+  --tv-live:         #d29a30;   /* amber/gold live-watch indicator     */
+  --tv-live-glow:    rgba(210,154,48,.30);
+
+  --tv-shadow-win:   0 1px 2px rgba(0,0,0,.10), 0 18px 50px rgba(0,0,0,.16);
+  --tv-shadow-pop:   0 8px 30px rgba(0,0,0,.18), 0 1px 0 rgba(0,0,0,.04);
+  --tv-scrollthumb:  rgba(0,0,0,.22);
+
+  /* syntax */
+  --tv-syn-comment: #9a9aa1;
+  --tv-syn-key:     #b3439b;
+  --tv-syn-str:     #3a8a3a;
+  --tv-syn-num:     #b5641e;
+  --tv-syn-fn:      #2d68d8;
+}
+
+/* ── DARK THEME ──────────────────────────────────────────── */
+.tv--dark {
+  --tv-bg-primary:   #1c1c1e;
+  --tv-bg-surface:   #232325;
+  --tv-bg-sidebar:   #19191b;
+  --tv-bg-chrome:    #2c2c2e;
+  --tv-bg-elev:      #2a2a2d;
+  --tv-bg-hover:     rgba(255,255,255,.06);
+  --tv-bg-sel:       rgba(255,255,255,.08);
+
+  --tv-text-primary:   #e5e5ea;
+  --tv-text-secondary: #9d9da4;
+  --tv-text-muted:     #68686f;
+
+  --tv-border:       rgba(255,255,255,.09);
+  --tv-border-strong:rgba(255,255,255,.16);
+
+  --tv-code-bg:      #141416;
+  --tv-code-border:  rgba(255,255,255,.07);
+  --tv-table-head:   #2a2a2d;
+  --tv-table-stripe: #202022;
+
+  --tv-traffic-close:  #ff5f57;
+  --tv-traffic-min:    #febc2e;
+  --tv-traffic-max:    #28c840;
+
+  --tv-live:         #e6b455;
+  --tv-live-glow:    rgba(230,180,85,.30);
+
+  --tv-shadow-win:   0 2px 6px rgba(0,0,0,.5), 0 24px 60px rgba(0,0,0,.55);
+  --tv-shadow-pop:   0 12px 40px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.05);
+  --tv-scrollthumb:  rgba(255,255,255,.22);
+
+  --tv-syn-comment: #6c6c74;
+  --tv-syn-key:     #e08fd0;
+  --tv-syn-str:     #7fce7f;
+  --tv-syn-num:     #e2a96a;
+  --tv-syn-fn:      #6fa8ff;
+}
+
+/* ── ACCENTS (per theme) ─────────────────────────────────── */
+/* default = blue, set on each theme so a bare .tv--light works */
+.tv--light { --tv-accent:#2d68d8; --tv-accent-weak:rgba(45,104,216,.13); --tv-accent-text:#2d68d8; }
+.tv--dark  { --tv-accent:#5a9cff; --tv-accent-weak:rgba(90,156,255,.18); --tv-accent-text:#7fb0ff; }
+
+.tv--light.tv--accent-blue     { --tv-accent:#2d68d8; --tv-accent-weak:rgba(45,104,216,.13); --tv-accent-text:#2d68d8; }
+.tv--dark.tv--accent-blue      { --tv-accent:#5a9cff; --tv-accent-weak:rgba(90,156,255,.18); --tv-accent-text:#7fb0ff; }
+
+.tv--light.tv--accent-graphite { --tv-accent:#586071; --tv-accent-weak:rgba(88,96,113,.14); --tv-accent-text:#4a5160; }
+.tv--dark.tv--accent-graphite  { --tv-accent:#9aa3b4; --tv-accent-weak:rgba(154,163,180,.16);--tv-accent-text:#b4bccb; }
+
+.tv--light.tv--accent-warm     { --tv-accent:#c26a3a; --tv-accent-weak:rgba(194,106,58,.14); --tv-accent-text:#b25e2f; }
+.tv--dark.tv--accent-warm      { --tv-accent:#e0905c; --tv-accent-weak:rgba(224,144,92,.18); --tv-accent-text:#eaa173; }
