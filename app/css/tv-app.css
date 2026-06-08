@@ -172,11 +172,12 @@ html, body, #tv-root {
    sidebar is collapsed (parent is display:none so nothing to hide). */
 .tv-sidebar-resizer {
   position: absolute;
-  /* UV-05: shifted right:-3px so the resizer straddles the sidebar border.
-     Only 2px of the 5px hot-zone overlaps the sidebar interior, leaving the
-     inner 4px scrollbar slot free of the col-resize cursor conflict. */
-  top: 0; right: -3px; bottom: 0;
-  width: 5px;
+  /* The sidebar has overflow:hidden, so a resizer poking past the right edge
+     (right:-3px) gets clipped to a ~2px grab zone that's nearly impossible to
+     hit. Keep the full 8px hot-zone INSIDE the sidebar's right edge so it's
+     reliably grabbable (col-resize cursor on the rightmost 8px). */
+  top: 0; right: 0; bottom: 0;
+  width: 8px;
   cursor: col-resize;
   z-index: 10;
   /* transparent at rest — user discovers it by hovering the seam */
