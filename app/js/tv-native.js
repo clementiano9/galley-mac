@@ -98,6 +98,8 @@
     var tab = tv.state.tabs.find(function (t) { return t.id === id; });
     if (tab) {
       tab.nativePath = doc.path;
+      // UF-01/UF-14: mark as live so bolt icon renders in tab strip + sidebar
+      tab.live = true;
     }
 
     // Persist this path in recent files (E-02)
@@ -106,6 +108,13 @@
     }
 
     startWatch(tab);
+
+    // UF-01: TVLive.start() registers the watch state + shows the Live status bar.
+    // Without this call _watching[tab.id] is never populated, so TVLive.refresh()
+    // is a no-op and the bolt / elapsed timer / status bar never appear.
+    if (tab && tab.id && window.TVLive && typeof TVLive.start === 'function') {
+      TVLive.start(tab.id);
+    }
   }
 
   /* ── drag-drop handler ───────────────────────────────────── */
@@ -272,6 +281,10 @@
             // S-04: start watching the newly saved file (it now has a nativePath)
             tab.live = true;
             startWatch(tab);
+            // UF-01: wire TVLive so the status bar / bolt / elapsed timer appear
+            if (window.TVLive && typeof TVLive.start === 'function') {
+              TVLive.start(tab.id);
+            }
             // Re-render to update tab name + live indicator
             if (tv && typeof tv.render === 'function') tv.render();
           }
@@ -347,10 +360,32 @@
         console.error('[TVNative] failed to register file-removed listener', err);
       });
 
-    listen('tauri://drag-drop', handleDragDrop)
-      .catch(function (err) {
-        console.error('[TVNative] failed to register drag-drop listener', err);
-      });
+    // UF-03: Tauri drag-enter / drag-leave — toggle .tv-drag-over for visual feedback.
+    // Browser dragenter/dragleave never fire for Finder drags in Tauri WebView.
+    // Tauri v2 emits tauri://drag-enter and tauri://drag-leave (or drag-over / drag-cancel).
+    function setDragHint(on) {
+      var tvEl = document.querySelector('.tv');
+      if (tvEl) tvEl.classList.toggle('tv-drag-over', on);
+      // Also toggle on body for the empty-state dropzone path
+      document.body.classList.toggle('tv-drag-over', on);
+    }
+
+    listen('tauri://drag-enter', function () { setDragHint(true); })
+      .catch(function () { /* Tauri version may not support drag-enter — ignore */ });
+
+    listen('tauri://drag-over', function () { setDragHint(true); })
+      .catch(function () { /* optional event — ignore */ });
+
+    listen('tauri://drag-leave', function () { setDragHint(false); })
+      .catch(function () { /* optional event — ignore */ });
+
+    // Drop: clear hint then handle the actual drop
+    listen('tauri://drag-drop', function (e) {
+      setDragHint(false);
+      handleDragDrop(e);
+    }).catch(function (err) {
+      console.error('[TVNative] failed to register drag-drop listener', err);
+    });
 
     // Wire titlebar drag region (waits for TV to be ready)
     wireTitlebarDragRegion();

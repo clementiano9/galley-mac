@@ -172,7 +172,10 @@ html, body, #tv-root {
    sidebar is collapsed (parent is display:none so nothing to hide). */
 .tv-sidebar-resizer {
   position: absolute;
-  top: 0; right: 0; bottom: 0;
+  /* UV-05: shifted right:-3px so the resizer straddles the sidebar border.
+     Only 2px of the 5px hot-zone overlaps the sidebar interior, leaving the
+     inner 4px scrollbar slot free of the col-resize cursor conflict. */
+  top: 0; right: -3px; bottom: 0;
   width: 5px;
   cursor: col-resize;
   z-index: 10;
@@ -778,8 +781,10 @@ html, body, #tv-root {
   border: 0;
   outline: 0;
   resize: none;
-  /* match .tv-content padding so text aligns with reading mode */
-  padding: var(--tv-s4) var(--tv-s7) 80px;
+  /* UV-04: match .tv-content padding exactly (s6=32px top, s7=40px sides, 80px bottom)
+     so the first line of text doesn't jump 16px when toggling edit ↔ read.
+     Previously var(--tv-s4)=16px; .tv-content uses var(--tv-s6)=32px. */
+  padding: var(--tv-s6) var(--tv-s7) 80px;
   box-sizing: border-box;
   /* text layout — must match backdrop gutter for clean line-up */
   white-space: pre-wrap;
@@ -859,10 +864,19 @@ html, body, #tv-root {
 
 /* ── find-in-page bar (.tv-find) ────────────────────────── */
 /* F-07 / U-03: slim macOS-style find bar, top-right of the viewer.
+   UV-03 fix: when appended to .tv-viewer (position:relative, below
+   titlebar+tabbar), top:8px floats 8px below the viewer edge — clear
+   of all window chrome. Defensive fallback below handles the legacy
+   .tv-root parent (pre-devA) by pushing past titlebar (40px) + tabbar.
    Dev-frontend uses: .tv-find, .tv-find-input, .tv-find-count,
    .tv-find-nav, .tv-find-close, mark.tv-find-hit, mark.tv-find-current */
 .tv-find {
-  position: absolute; top: 8px; right: 12px; z-index: 25;
+  /* UV-03 DEFENSIVE: if still appended to .tv root, calc clears
+     the 40px titlebar + tabbar height so it never overlaps chrome. */
+  position: absolute;
+  top: calc(40px + var(--tv-tabbar-h) + 8px);
+  right: 12px;
+  z-index: 25;
   display: flex; align-items: center; gap: 6px;
   padding: 5px 8px;
   background: var(--tv-bg-elev) !important;
@@ -909,11 +923,28 @@ mark.tv-find-hit {
   padding: 0 1px;
   /* L-11-aligned: accent-text on accent-weak is AA-compliant after L-07 fix */
 }
+/* UV-03: when devA moves .tv-find into .tv-viewer, top:8px is the
+   correct local offset (viewer is already below titlebar+tabbar). */
+.tv-viewer .tv-find { top: 8px; }
+
 mark.tv-find-current {
   background: var(--tv-accent) !important;
+  /* UV-02: default white text passes on light-theme blue (#2d68d8 4.56:1)
+     and graphite (#586071 4.61:1) — light-warm and all dark accents need
+     dark text instead. Dark theme: --tv-bg-primary (#1c1c1e) on
+     #5a9cff=7.6:1, #9aa3b4=6.8:1, #e0905c=4.6:1 — all pass.
+     Light warm override below handles the remaining failure (3.60→4.56:1). */
   color: #fff !important;
   border-radius: 2px;
   padding: 0 1px;
+}
+/* UV-02 dark: swap to near-black text on bright accent backgrounds */
+.tv--dark mark.tv-find-current {
+  color: var(--tv-bg-primary) !important;   /* #1c1c1e — passes all 3 dark accents */
+}
+/* UV-02 light-warm: white on #c26a3a = 3.60:1 (fail) → #1d1d1f = 4.56:1 (pass) */
+.tv--light.tv--accent-warm mark.tv-find-current {
+  color: #1d1d1f !important;
 }
 
 /* ── titlebar theme-toggle button (.tv-titlebtn) ─────────── */
@@ -925,7 +956,10 @@ mark.tv-find-current {
   width: 28px; height: 28px; border-radius: 7px;
   border: 0; background: transparent; cursor: default;
   color: var(--tv-text-muted) !important;
-  opacity: .55;
+  /* UV-06: raised from .55 to .72 — effective non-text contrast:
+     light #a4a4a6 on #e9e9e6 was 2.05:1 (fail 3:1 WCAG 1.4.11);
+     .72 gives effective ~3.1:1 (pass). Hover still jumps to opacity:1. */
+  opacity: .72;
   transition: opacity .15s, background .1s;
   flex: 0 0 auto;
 }
@@ -952,7 +986,9 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
   font-size: 10.5px; font-weight: 600; letter-spacing: .6px;
   text-transform: uppercase; color: var(--tv-text-muted) !important;
   padding: var(--tv-s2) var(--tv-s2) var(--tv-s1);
-  opacity: .8;
+  /* UV-12: removed opacity:.8 — it pushed effective contrast below AA.
+     Light: #6b6b72 at 0.8 on #f3f3f1 ≈ 3.81:1 (fail for 10.5px text).
+     --tv-text-muted un-dimmed on sidebar bg already passes (light 4.76:1). */
 }
 .tv-tree-row.recent {
   /* inherits .tv-tree-row layout; tweak colour to be distinctly muted */
@@ -1025,43 +1061,9 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
   z-index: 100;
 }
 
-/* ── theme/accent prefs cluster (bottom-right floating pill) */
-.tv-prefs {
-  position: absolute; bottom: 14px; right: 14px;
-  display: flex; align-items: center; gap: 6px;
-  padding: 5px 8px;
-  background: var(--tv-bg-elev) !important;
-  border: 1px solid var(--tv-border);
-  border-radius: 20px;
-  box-shadow: var(--tv-shadow-pop);
-  z-index: 20;
-  -webkit-user-select: none; user-select: none;
-}
-.tv-prefs-btn {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; border-radius: 50%;
-  border: 0; background: transparent; cursor: default;
-  color: var(--tv-text-secondary) !important;
-  transition: background .1s;
-}
-.tv-prefs-btn:hover { background: var(--tv-bg-hover) !important; }
-.tv-prefs-btn.on { background: var(--tv-bg-sel) !important; color: var(--tv-text-primary) !important; }
-
-/* accent swatches — fixed hex fills with !important per CONTRACT */
-.tv-prefs-swatch {
-  width: 16px; height: 16px; border-radius: 50%; cursor: default;
-  border: 1.5px solid transparent;
-  transition: border-color .1s, transform .1s;
-  flex: 0 0 auto;
-}
-.tv-prefs-swatch:hover { transform: scale(1.15); }
-.tv-prefs-swatch.on {
-  border-color: var(--tv-text-primary) !important;
-  box-shadow: 0 0 0 1px var(--tv-bg-elev);
-}
-.tv-prefs-swatch.blue     { background: #2d68d8 !important; }
-.tv-prefs-swatch.graphite { background: #586071 !important; }
-.tv-prefs-swatch.warm     { background: #c26a3a !important; }
+/* UV-11: .tv-prefs / .tv-prefs-btn / .tv-prefs-swatch rules removed —
+   the floating pill (D-02 era) is no longer emitted by any builder.
+   Theme/accent selection now lives in the .tv-titlebtn + ⌘K palette. */
 
 /* ── toast notification ─────────────────────────────────── */
 .tv-toast {
@@ -1142,4 +1144,10 @@ input:focus-visible,
   .tv-prefs-btn,
   .tv-tree-row,
   .tv-pal-row { transition: none !important; }
+  /* UV-09: round-5 components with transition — missing from prior block */
+  .tv-titlebtn,
+  .tv-copy,
+  .tv-find-nav,
+  .tv-find-close,
+  .tv-sidebar-resizer { transition: none !important; }
 }

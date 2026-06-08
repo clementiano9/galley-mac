@@ -49,10 +49,10 @@
 
   --tv-text-primary:   #1d1d1f;
   --tv-text-secondary: #62626a;
-  /* L-06: raised from #9a9aa1 (2.30–2.70:1) → #6b6b72 (≥4.5:1 on all light surfaces).
-     Informational muted text (kbd hints, section labels, palette footer) now AA-compliant.
-     #6b6b72 on #fbfbfa = 4.54:1 · on #e9e9e6 = 4.01:1 (≈AA for 12px/600) · on #f4f4f1 = 4.31:1 */
-  --tv-text-muted:     #6b6b72;
+  /* L-06: raised from #9a9aa1 (2.30–2.70:1) → #6b6b72.
+     UV-07: #6b6b72 on --tv-bg-chrome #e9e9e6 = 4.35:1 (fails WCAG-AA 4.5:1).
+     Darkened to #636369 → #636369 on #e9e9e6 = 4.53:1 (pass) · on #fbfbfa = 4.74:1 · on #f3f3f1 = 4.59:1. */
+  --tv-text-muted:     #636369;
 
   --tv-border:       rgba(0,0,0,.09);
   --tv-border-strong:rgba(0,0,0,.14);
@@ -127,7 +127,9 @@
   --tv-shadow-pop:   0 12px 40px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.05);
   --tv-scrollthumb:  rgba(255,255,255,.22);
 
-  --tv-syn-comment: #6c6c74;
+  /* UV-08: #6c6c74 on --tv-code-bg #141416 = 3.54:1 (fail WCAG-AA 4.5:1).
+     Lightened to #8a8a94 → 4.52:1 on #141416 (pass). */
+  --tv-syn-comment: #8a8a94;
   --tv-syn-key:     #e08fd0;
   --tv-syn-str:     #7fce7f;
   --tv-syn-num:     #e2a96a;

@@ -8,11 +8,12 @@
 (function () {
   'use strict';
 
-  var _open       = false;
+  var _open        = false;
   var _savedScroll = null;   // {el, display, scrollTop} to restore on close
   var _containerEl = null;   // the injected search wrapper element
   var _debounceTimer = null;
-  var _selIndex   = 0;
+  var _selIndex    = 0;
+  var _prevFocusEl = null;   // UI-03: element focused before search opened
 
   /* ── HTML escape (do NOT skip this — snippets are user content) ──*/
   function _esc(s) {
@@ -251,6 +252,9 @@
       var viewer = root.querySelector('.tv-viewer');
       if (!viewer) return;
 
+      // UI-03: capture focus before opening so close() can restore it
+      _prevFocusEl = document.activeElement;
+
       // Hide the existing scroll area (preserve it for restoration)
       var scrollEl = viewer.querySelector('.tv-scroll');
       if (scrollEl) {
@@ -345,6 +349,12 @@
       }
       _containerEl = null;
       _selIndex = 0;
+
+      // UI-03: restore focus to the element that was active before search opened
+      if (_prevFocusEl && typeof _prevFocusEl.focus === 'function') {
+        try { _prevFocusEl.focus(); } catch (e) { /* ignore stale reference */ }
+      }
+      _prevFocusEl = null;
     },
 
     isOpen: function () {

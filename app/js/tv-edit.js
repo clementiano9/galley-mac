@@ -143,6 +143,17 @@
   //   rootEl  — the .tv-viewer element (or any ancestor containing [data-edit-area])
   //   tab     — the Tab object (mutable; we write .source and .dirty back)
   // Returns a cleanup function.
+  //
+  // UI-01 FIX: wire() may be called by render() on structural actions like ⌘B /
+  // theme / accent changes while the user is already in edit mode.  In those cases
+  // the textarea is new (render() replaced the DOM) but the content is the same —
+  // we must NOT move the caret.  We distinguish three call sites:
+  //   (a) FIRST entry into edit mode:   _tvEditAnchorText may be set (D-08 anchor).
+  //       Place caret at anchor or EOF.  This is the only call that sets position.
+  //   (b) Re-render in edit mode:       tab._editCursorPos carries the last known
+  //       selectionStart/End (captured in onInput / on every structural action).
+  //       Restore those positions without moving the caret to EOF.
+  //   (c) No prior cursor info:         restore EOF only if truly first time.
   function wire(rootEl, tab) {
     if (!rootEl || !tab) return function () {};
 
@@ -166,39 +177,46 @@
     }
     autoResize();
 
-    // D-08: place cursor at the double-clicked paragraph instead of EOF.
-    // This rAF runs ONCE on wire() — not on every keystroke (S-01 fix: onInput no longer
-    // calls wire() or render(), so this rAF fires only when the edit mode is first entered).
+    // D-08 / UI-01: place cursor correctly without clobbering position on re-renders.
     requestAnimationFrame(function () {
       textarea.focus();
 
       var anchorText = window._tvEditAnchorText || null;
       var src = tab.source || "";
-      var offset = -1;
 
+      // (a) First entry: anchor from double-click
       if (anchorText) {
-        offset = _findAnchorOffset(src, anchorText);
+        var offset = _findAnchorOffset(src, anchorText);
         window._tvEditAnchorText = null; // consume once
+        if (offset >= 0 && offset <= src.length) {
+          textarea.setSelectionRange(offset, offset);
+          var lineHeight = 13 * 1.72; // ~22.36px
+          var linesBefore = src.slice(0, offset).split("\n").length - 1;
+          var approxTop = linesBefore * lineHeight;
+          var scrollContainer = rootEl.closest ? rootEl.closest(".tv-scroll") : null;
+          if (scrollContainer) {
+            scrollContainer.scrollTop = Math.max(0, approxTop - scrollContainer.clientHeight / 3);
+          }
+          // Store cursor position for future re-renders
+          tab._editCursorPos = { start: offset, end: offset };
+          return;
+        }
       }
 
-      if (offset >= 0 && offset <= src.length) {
-        // Place cursor at the start of the matching line and scroll into view
-        textarea.setSelectionRange(offset, offset);
-        // Scroll the textarea to make the caret visible
-        // Estimate line height from font-size 13px * line-height 1.72
-        var lineHeight = 13 * 1.72; // ~22.36px
-        var linesBefore = src.slice(0, offset).split("\n").length - 1;
-        var approxTop = linesBefore * lineHeight;
-        var scrollContainer = rootEl.closest ? rootEl.closest(".tv-scroll") : null;
-        if (scrollContainer) {
-          // Offset is relative to textarea, which is inside the scroll container
-          scrollContainer.scrollTop = Math.max(0, approxTop - scrollContainer.clientHeight / 3);
-        }
-      } else {
-        // Fallback: place cursor at EOF
+      // (b) Re-render in edit mode: restore prior cursor position (UI-01 fix)
+      if (tab._editCursorPos) {
+        var pos = tab._editCursorPos;
         var len = textarea.value.length;
-        textarea.setSelectionRange(len, len);
+        var s = Math.min(pos.start, len);
+        var en = Math.min(pos.end, len);
+        textarea.setSelectionRange(s, en);
+        return;
       }
+
+      // (c) Truly first entry with no anchor: place at EOF
+      var len2 = textarea.value.length;
+      textarea.setSelectionRange(len2, len2);
+      tab._editCursorPos = { start: len2, end: len2 };
     });
 
     // Update word count display in the toolbar
@@ -216,10 +234,13 @@
     // - NO backdrop rebuild: the old debounced innerHTML write was the mechanism that
     //   caused cursor desync.  The plain visible textarea needs no backdrop at all.
     // - Does NOT call render(), wire(), or resetCaret via rAF.
+    // - UI-01: tracks cursor position so re-renders (⌘B, theme, etc.) restore it.
     function onInput() {
       var src = textarea.value;
       tab.source = src;          // keep tab.source current at all times (O(1))
       tab.dirty = true;
+      // UI-01: track cursor position for restoration after re-renders
+      tab._editCursorPos = { start: textarea.selectionStart, end: textarea.selectionEnd };
       // Notify app of dirty state — markDirty() is render-free (dot toggle only)
       if (window.TV && typeof window.TV.markDirty === "function") {
         window.TV.markDirty(tab.id, true);
@@ -229,15 +250,22 @@
     }
 
     // Tab key: insert 4 spaces rather than focus-jumping
+    // UI-02 FIX: use setRangeText() which preserves the native undo stack (⌘Z works).
+    // The old pattern `textarea.value = ...slice...` wiped the entire undo history.
     function onKeydown(e) {
       if (e.key === "Tab") {
         e.preventDefault();
         var start = textarea.selectionStart;
         var end = textarea.selectionEnd;
-        var val = textarea.value;
         var indent = "    ";
-        textarea.value = val.slice(0, start) + indent + val.slice(end);
-        textarea.setSelectionRange(start + indent.length, start + indent.length);
+        // setRangeText replaces the selection with indent and keeps undo history intact.
+        // Falls back to execCommand for older WebKit environments.
+        if (typeof textarea.setRangeText === "function") {
+          textarea.setRangeText(indent, start, end, "end");
+        } else {
+          // execCommand is deprecated but preserves undo in legacy WebKit
+          document.execCommand("insertText", false, indent);
+        }
         onInput();
       }
     }

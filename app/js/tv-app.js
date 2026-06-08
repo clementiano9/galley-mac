@@ -433,7 +433,12 @@
     if (window.TVSearch && typeof TVSearch.close === 'function') {
       TVSearch.close();
     }
-    // F-07: close find bar if open
+    // UF-06: Preserve find state across non-destructive renders (theme, sidebar, etc.).
+    // Capture the query and index so we can re-run the find after DOM replacement.
+    // Tab switches still close the bar (content changes), handled via activateTab.
+    var _savedFindQuery = _findOpen ? _findQuery : null;
+    var _savedFindIndex = _findOpen ? _findIndex : 0;
+    // F-07: close find bar to detach from old DOM (will re-open below if it was active)
     if (_findOpen) {
       _closeFindBar();
     }
@@ -496,6 +501,29 @@
 
     // Wire event delegation
     wireEvents(root.querySelector('.tv'));
+
+    // UF-06: Re-inject find bar after render if it was active before.
+    // Only restore in reading mode (find bar searches rendered markdown DOM).
+    if (_savedFindQuery !== null && state.mode === 'reading') {
+      _openFindBar();
+      if (_savedFindQuery) {
+        _runFind(_savedFindQuery);
+        // Restore match index (clamp to new match count)
+        if (_findMatches.length > 0) {
+          _findIndex = Math.min(_savedFindIndex, _findMatches.length - 1);
+          _highlightFindMatch();
+          var countEl = _findBarEl && _findBarEl.querySelector('.tv-find-count');
+          if (countEl) {
+            countEl.textContent = (_findIndex + 1) + ' / ' + _findMatches.length;
+          }
+        }
+      }
+      // Restore query text in input
+      if (_findBarEl) {
+        var inp = _findBarEl.querySelector('.tv-find-input');
+        if (inp) inp.value = _savedFindQuery;
+      }
+    }
 
     tvEmit('render', { state: state });
   }
@@ -732,6 +760,7 @@
       _startX = e.clientX;
       _startWidth = state.sidebarWidth;
       resizer.setPointerCapture(e.pointerId);
+      resizer.classList.add('dragging'); // UI-05: visual feedback during drag
       e.preventDefault();
     });
 
@@ -747,6 +776,7 @@
     resizer.addEventListener('pointerup', function (e) {
       if (!_dragging) return;
       _dragging = false;
+      resizer.classList.remove('dragging'); // UI-05: remove drag feedback
       resizer.releasePointerCapture(e.pointerId);
       // Persist to localStorage
       localStorage.setItem('tv-sidebar-w', String(state.sidebarWidth));
@@ -755,6 +785,7 @@
     resizer.addEventListener('pointercancel', function (e) {
       if (!_dragging) return;
       _dragging = false;
+      resizer.classList.remove('dragging'); // UI-05: remove drag feedback
       resizer.releasePointerCapture(e.pointerId);
     });
   }
@@ -939,12 +970,29 @@
   // E-04: Save outgoing tab's scroll BEFORE changing state.activeId,
   // then update activeId, render, and restore the incoming scroll.
   // E-06: Capture outgoing tab id before switch, include prevId in tabchange event.
+  // UF-02/UF-04: Commit textarea value to tab.source before switching so no text is lost.
   function activateTab(id) {
     if (!id) return;
 
     // Capture outgoing tab id BEFORE changing state.activeId (E-06)
     var prevId = state.activeId;
     var outgoing = getActiveTab();
+
+    // UF-02/UF-04: If switching away while in edit mode, commit the live textarea
+    // value into tab.source so no typed text is lost, and keep dirty flag intact.
+    // (onInput already keeps tab.source current on every keystroke, but an in-flight
+    // composition event or a programmatic activateTab call before the first keystroke
+    // could leave a gap — this is the canonical safety commit.)
+    if (state.mode === 'edit' && outgoing) {
+      var editTextarea = document.querySelector('[data-edit-area]');
+      if (editTextarea && editTextarea.value !== outgoing.source) {
+        outgoing.source = editTextarea.value;
+        // Ensure dirty is set if the content has changed
+        if (outgoing.source !== '') {
+          outgoing.dirty = true;
+        }
+      }
+    }
 
     // Save outgoing tab's current scroll (E-04: must happen before activeId changes)
     var scrollEl = document.querySelector('[data-scroll]');
@@ -1077,7 +1125,8 @@
 
       var tvRoot = document.querySelector('.tv');
       if (!tvRoot) return;
-      var headings = tvRoot.querySelectorAll('.md h1, .md h2, .md h3');
+      // UF-08: include h4-h6 so deep headings in technical docs are reachable
+      var headings = tvRoot.querySelectorAll('.md h1,.md h2,.md h3,.md h4,.md h5,.md h6');
       var target = null;
       var needle = headingText.toLowerCase().trim();
       for (var i = 0; i < headings.length; i++) {
@@ -1277,11 +1326,17 @@
     }
 
     // F-07/U-03: ⌘F — in-document find (no shiftKey)
+    // UI-04/UF-05: Only intercept in reading mode. In edit mode do NOT preventDefault
+    // so the browser / OS can handle it (no silent key-swallow).
     if ((k === 'f' || k === 'F') && !e.shiftKey) {
-      e.preventDefault();
-      if (state.mode === 'reading' && state.tabs.length) {
-        _openFindBar();
+      if (state.mode === 'reading') {
+        e.preventDefault();
+        // UI-06: don't open find bar when cross-tab search is already open
+        if (state.tabs.length && !(window.TVSearch && TVSearch.isOpen && TVSearch.isOpen())) {
+          _openFindBar();
+        }
       }
+      // edit mode: do NOT preventDefault — fall through to browser default
       return;
     }
 
@@ -1318,9 +1373,10 @@
     }
 
     // ⌘S — save (only meaningful in edit mode)
+    // UI-07: always preventDefault to prevent browser Save As dialog in non-Tauri
     if (k === 's' || k === 'S') {
+      e.preventDefault();
       if (state.mode === 'edit') {
-        e.preventDefault();
         handleSave();
       }
       return;
@@ -1424,6 +1480,7 @@
     }).catch(function () {});
 
     listen('menu:find', function () {
+      // UF-05: only open find in reading mode; silently ignore in edit mode
       if (state.mode === 'reading' && state.tabs.length) _openFindBar();
     }).catch(function () {});
 

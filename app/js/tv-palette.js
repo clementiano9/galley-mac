@@ -67,12 +67,13 @@
 
   // Extract headings from a markdown source string.
   // Returns [{level, text}, …]
+  // UF-08: include h4-h6 (was #{1,3} — missed deeper headings in technical docs)
   function _parseHeadings(source) {
     if (!source) return [];
     var out = [];
     var lines = source.split('\n');
     for (var i = 0; i < lines.length; i++) {
-      var m = lines[i].match(/^(#{1,3})\s+(.+)/);
+      var m = lines[i].match(/^(#{1,6})\s+(.+)/);
       if (m) out.push({ level: m[1].length, text: m[2].trim() });
     }
     return out;
@@ -369,6 +370,9 @@
   }
 
   /* ── public API ───────────────────────────────────────────*/
+  // UI-03: save focus element before opening palette so we can restore it on close
+  var _prevFocusEl = null;
+
   var TVPalette = {
     open: function () {
       if (_open) {
@@ -382,6 +386,9 @@
       if (!window.TV) return;
       var root = window.TV.el();
       if (!root) return;
+
+      // UI-03: capture focus before opening so close() can restore it
+      _prevFocusEl = document.activeElement;
 
       _wireMruListener();
 
@@ -449,6 +456,11 @@
       }
       _overlayEl = null;
       _selIndex = 0;
+      // UI-03: restore focus to the element that was active before palette opened
+      if (_prevFocusEl && typeof _prevFocusEl.focus === 'function') {
+        try { _prevFocusEl.focus(); } catch (e) { /* ignore stale reference */ }
+      }
+      _prevFocusEl = null;
     },
 
     isOpen: function () {
