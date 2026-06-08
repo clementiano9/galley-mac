@@ -78,3 +78,4 @@
 | Live file watch on macOS requires FSEvents API | WAN-037 | None |
 
 **⚠ Conflict flagged:** macOS sandbox restrictions require explicit user permission to access file-system paths outside the sandbox container. This conflicts with "open any .md file from anywhere" (URD-07). **Mitigation:** Use macOS `NSOpenPanel` to grant persistent permission to folders (security-scoped bookmark API), which persists across app restarts.
+

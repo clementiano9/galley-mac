@@ -215,7 +215,10 @@
       if (!scrollEl) return;
       var lineCount = tab.source ? tab.source.split('\n').length : 1;
       var ratio = lineIndex / Math.max(lineCount - 1, 1);
-      scrollEl.scrollTop = Math.round(ratio * (scrollEl.scrollHeight - scrollEl.clientHeight));
+      var newTop = Math.round(ratio * (scrollEl.scrollHeight - scrollEl.clientHeight));
+      scrollEl.scrollTop = newTop;
+      // S-07: persist scroll position so tab-switch restores correct position
+      tab.scrollTop = newTop;
     });
   }
 

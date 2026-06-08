@@ -27,13 +27,13 @@ html.tauri .tv-titlebar {
   padding-left: 84px;
 }
 
-/* Re-balance the wintitle centering now that left padding
-   is larger. The existing margin-right: 52px stays, but we
-   need to shrink it to match (84 – 32 = 52, already OK).
-   Only override if the default counterweight needs adjusting. */
+/* L-14: Re-balance wintitle centering.
+   Left padding = 84px (traffic lights clearance).
+   margin-right was 52px → yields 16px rightward offset.
+   Setting margin-right: 84px makes both sides equal → exact visual center.
+   (wintitle flex:1 space shrinks by 32px but remains fully legible.) */
 html.tauri .tv-wintitle {
-  /* The existing 52px right margin is close enough for the
-     overlay layout; no change required unless layout drifts. */
+  margin-right: 84px;
 }
 
 /* 3. Draggable region visual affordance.

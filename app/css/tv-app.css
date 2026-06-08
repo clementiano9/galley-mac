@@ -47,17 +47,58 @@ html, body, #tv-root {
 .tv-wintitle .tv-doc-ic { opacity: .6; }
 
 /* tab bar ---------------------------------------------------- */
+/* D-01 / E-09: scrollable tab strip — tabs keep legible width.
+   L-03: The tabbar is now a flex row with two children:
+     1. .tv-tab-strip  — the scrolling region that contains all .tv-tab elements.
+                         Gets the fade ::after overlay (pointer-events:none).
+     2. .tv-newtab     — sits OUTSIDE the scroll strip in its own non-scrolling slot.
+   This eliminates the CSS mask-on-parent problem (mask clips all children including
+   .tv-newtab, making the "+" invisible when tabs overflow). */
 .tv-tabbar {
   height: var(--tv-tabbar-h); flex: 0 0 var(--tv-tabbar-h);
   display: flex; align-items: stretch;
   background: var(--tv-bg-chrome) !important;
   border-bottom: 1px solid var(--tv-border);
-  padding: 0 6px;
+  padding: 0 0 0 6px;           /* left pad only; right side is the newtab slot */
   -webkit-user-select: none; user-select: none;
+  position: relative;           /* stacking context for .tv-newtab z-index */
 }
+
+/* Scrolling strip that holds all .tv-tab pills */
+.tv-tab-strip {
+  flex: 1; min-width: 0;
+  display: flex; align-items: stretch;
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none;
+  /* right-edge fade — purely decorative pointer-events:none overlay */
+  position: relative;
+}
+.tv-tab-strip::-webkit-scrollbar { width: 0; height: 0; display: none; }
+/* Fade affordance as a pseudo — sits ABOVE the scrolling content but
+   BELOW the newtab button (which lives outside this element entirely). */
+.tv-tab-strip::after {
+  content: "";
+  position: sticky;
+  right: 0; top: 0;
+  /* needs a width so it takes space in the flex row and the gradient is visible */
+  width: 40px; flex: 0 0 40px;
+  align-self: stretch;
+  background: linear-gradient(
+    to right,
+    transparent 0%,
+    var(--tv-bg-chrome) 100%
+  ) !important;
+  pointer-events: none;
+  z-index: 1;
+}
+
 .tv-tab {
   display: flex; align-items: center; gap: 7px;
-  padding: 0 12px; max-width: 200px;
+  padding: 0 12px;
+  /* D-01: prevent shrinking below readable width; strip scrolls instead */
+  flex: 0 0 auto;
+  min-width: 100px;
+  max-width: 200px;
   font-size: 12.5px; font-weight: 450;
   color: var(--tv-text-secondary) !important;
   border-right: 1px solid transparent;
@@ -87,16 +128,23 @@ html, body, #tv-root {
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--tv-accent) !important; flex: 0 0 auto;
 }
-.tv-bolt {          /* live ⚡ */
-  display: inline-flex; color: var(--tv-live) !important; flex: 0 0 auto;
+.tv-bolt {          /* live ⚡ — decorative icon uses vivid dot colour */
+  display: inline-flex; color: var(--tv-live-dot) !important; flex: 0 0 auto;
   filter: drop-shadow(0 0 3px var(--tv-live-glow));
   animation: tv-pulse 1.9s ease-in-out infinite;
 }
 @keyframes tv-pulse { 0%,100%{opacity:.55} 50%{opacity:1} }
+/* L-03: .tv-newtab is now a SIBLING to .tv-tab-strip (not a child of the scroll
+   area). It lives in .tv-tabbar's flex row, is never scrolled, never masked,
+   and is always fully opaque and clickable regardless of tab count.
+   No more mask-image:none "counter-mask" hack needed. */
 .tv-newtab {
   display: flex; align-items: center; justify-content: center;
-  width: 30px; color: var(--tv-text-muted) !important; cursor: default;
-  border-radius: 6px; margin: 4px 2px;
+  width: 34px; flex: 0 0 34px;
+  color: var(--tv-text-muted) !important; cursor: default;
+  border-radius: 6px; margin: 4px 4px 4px 2px;
+  background: var(--tv-bg-chrome) !important;
+  z-index: 2;                   /* above the strip fade pseudo */
 }
 .tv-newtab:hover { background: var(--tv-bg-hover) !important; color: var(--tv-text-secondary) !important; }
 
@@ -113,7 +161,8 @@ html, body, #tv-root {
   overflow: hidden;
 }
 .tv-sidebar.collapsed { display: none; }
-.tv-side-scroll { flex: 1; overflow: hidden; padding: var(--tv-s3) var(--tv-s2); }
+/* D-01 / E-09: sidebar file list must scroll when entries exceed panel height */
+.tv-side-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--tv-s3) var(--tv-s2); }
 .tv-side-label {
   font-size: 10.5px; font-weight: 600; letter-spacing: .6px;
   text-transform: uppercase; color: var(--tv-text-muted) !important;
@@ -124,8 +173,17 @@ html, body, #tv-root {
   padding: 5px var(--tv-s2); margin: 1px 0;
   font-size: 13px; color: var(--tv-text-secondary) !important;
   border-radius: var(--tv-radius-sm); cursor: default; position: relative;
+  /* L-09: row must not expand vertically due to long path text */
+  min-width: 0;
 }
 .tv-tree-row .ic { color: var(--tv-text-muted) !important; display: inline-flex; flex: 0 0 auto; }
+/* L-09: any direct text span (filename, folder path) gets ellipsis.
+   Mirrors the same treatment on .tv-tab .name (tv-app.css:104). */
+.tv-tree-row > span:not([class]),
+.tv-tree-row .label {
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  min-width: 0; flex: 1;
+}
 .tv-tree-row.folder { color: var(--tv-text-primary) !important; font-weight: 550; }
 .tv-tree-row.file { padding-left: 26px; }
 .tv-tree-row.active { background: var(--tv-accent-weak) !important; color: var(--tv-accent-text) !important; }
@@ -160,15 +218,67 @@ html, body, #tv-root {
 .tv-scroll {
   flex: 1; overflow-y: auto; overflow-x: hidden; position: relative;
 }
-/* themed webkit scrollbar — thin, unobtrusive */
-.tv-scroll::-webkit-scrollbar { width: 7px; }
-.tv-scroll::-webkit-scrollbar-track { background: transparent; }
-.tv-scroll::-webkit-scrollbar-thumb {
+/* D-03: scrollbars invisible at rest — macOS overlay-style behaviour.
+   Hidden by default; a thin themed thumb appears on hover / focus-within.
+   Apply to content scroll, sidebar, and palette list. */
+
+/* Content scroll — hidden at rest */
+.tv-scroll { scrollbar-width: none; }
+.tv-scroll::-webkit-scrollbar { width: 0; height: 0; display: none; }
+
+/* Reveal thin thumb on hover or keyboard focus within the scroll container */
+.tv-scroll:hover,
+.tv-scroll:focus-within {
+  scrollbar-width: thin;
+  scrollbar-color: var(--tv-scrollthumb) transparent;
+}
+.tv-scroll:hover::-webkit-scrollbar,
+.tv-scroll:focus-within::-webkit-scrollbar { width: 5px; display: block; }
+.tv-scroll:hover::-webkit-scrollbar-track,
+.tv-scroll:focus-within::-webkit-scrollbar-track { background: transparent; }
+.tv-scroll:hover::-webkit-scrollbar-thumb,
+.tv-scroll:focus-within::-webkit-scrollbar-thumb {
   background: var(--tv-scrollthumb) !important;
   border-radius: 4px;
 }
-.tv-scroll::-webkit-scrollbar-thumb:hover {
+.tv-scroll:hover::-webkit-scrollbar-thumb:hover {
   background: var(--tv-text-muted) !important;
+}
+
+/* Sidebar scroll — hidden at rest, revealed on hover */
+.tv-side-scroll { scrollbar-width: none; }
+.tv-side-scroll::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.tv-side-scroll:hover,
+.tv-side-scroll:focus-within {
+  scrollbar-width: thin;
+  scrollbar-color: var(--tv-scrollthumb) transparent;
+}
+.tv-side-scroll:hover::-webkit-scrollbar,
+.tv-side-scroll:focus-within::-webkit-scrollbar { width: 4px; display: block; }
+.tv-side-scroll:hover::-webkit-scrollbar-track,
+.tv-side-scroll:focus-within::-webkit-scrollbar-track { background: transparent; }
+.tv-side-scroll:hover::-webkit-scrollbar-thumb,
+.tv-side-scroll:focus-within::-webkit-scrollbar-thumb {
+  background: var(--tv-scrollthumb) !important;
+  border-radius: 4px;
+}
+
+/* Palette list scroll — hidden at rest, revealed on hover */
+.tv-pal-list { scrollbar-width: none; }
+.tv-pal-list::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.tv-pal-list:hover,
+.tv-pal-list:focus-within {
+  scrollbar-width: thin;
+  scrollbar-color: var(--tv-scrollthumb) transparent;
+}
+.tv-pal-list:hover::-webkit-scrollbar,
+.tv-pal-list:focus-within::-webkit-scrollbar { width: 4px; display: block; }
+.tv-pal-list:hover::-webkit-scrollbar-track,
+.tv-pal-list:focus-within::-webkit-scrollbar-track { background: transparent; }
+.tv-pal-list:hover::-webkit-scrollbar-thumb,
+.tv-pal-list:focus-within::-webkit-scrollbar-thumb {
+  background: var(--tv-scrollthumb) !important;
+  border-radius: 4px;
 }
 .tv-content {
   max-width: var(--tv-content-max);
@@ -187,7 +297,9 @@ html, body, #tv-root {
 }
 
 /* ── rendered markdown typography ──────────────────────────── */
-.md { color: var(--tv-text-primary) !important; font-size: 16px; line-height: 1.72; }
+/* C-16: overflow-wrap:break-word prevents long URLs / hashes from silently
+   overflowing and being clipped by .tv-scroll overflow-x:hidden. */
+.md { color: var(--tv-text-primary) !important; font-size: 16px; line-height: 1.72; overflow-wrap: break-word; }
 .md > *:first-child { margin-top: 0; }
 .md h1 { font-size: 28px; font-weight: 700; line-height: 1.25; letter-spacing: -.5px; margin: 0 0 var(--tv-s4); }
 .md h2 { font-size: 22px; font-weight: 650; line-height: 1.3; letter-spacing: -.3px; margin: var(--tv-s7) 0 var(--tv-s3); }
@@ -219,10 +331,26 @@ html, body, #tv-root {
   background: var(--tv-code-bg) !important; border: 1px solid var(--tv-code-border);
   border-radius: 5px; padding: .1em .4em;
 }
+/* L-01: changed overflow:hidden → overflow-x:auto so long code lines scroll
+   horizontally instead of being clipped. overflow-y:visible avoids clipping
+   tall content. Thin quiet scrollbar appears on hover (quiet-scrollbar pattern). */
 .md pre {
   background: var(--tv-code-bg) !important; border: 1px solid var(--tv-code-border);
   border-radius: var(--tv-radius-md); padding: var(--tv-s4) var(--tv-s4);
-  overflow: hidden; margin: 0 0 var(--tv-s4);
+  overflow-x: auto; overflow-y: visible; margin: 0 0 var(--tv-s4);
+  /* quiet scrollbar — hidden at rest, thin thumb on hover */
+  scrollbar-width: none;
+}
+.md pre::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.md pre:hover {
+  scrollbar-width: thin;
+  scrollbar-color: var(--tv-scrollthumb) transparent;
+}
+.md pre:hover::-webkit-scrollbar { height: 4px; display: block; }
+.md pre:hover::-webkit-scrollbar-track { background: transparent; }
+.md pre:hover::-webkit-scrollbar-thumb {
+  background: var(--tv-scrollthumb) !important;
+  border-radius: 4px;
 }
 .md pre code { background: none !important; border: 0; padding: 0; font-size: 13px; line-height: 1.6; display: block; }
 .md .c-com { color: var(--tv-syn-comment) !important; font-style: italic; }
@@ -239,8 +367,11 @@ html, body, #tv-root {
 }
 .md blockquote p:last-child { margin-bottom: 0; }
 
-/* tables */
-.md .tbl-wrap { margin: 0 0 var(--tv-s4); border: 1px solid var(--tv-border); border-radius: var(--tv-radius-md); overflow: hidden; }
+/* tables — L-02: changed overflow:hidden → overflow-x:auto on .tbl-wrap so wide
+   tables scroll horizontally inside the rounded wrapper. overflow-y:hidden keeps
+   the border-radius clip clean vertically. The outer .tv-scroll keeps overflow-x
+   hidden (intentional) — the table self-contains its scroll within .tbl-wrap. */
+.md .tbl-wrap { margin: 0 0 var(--tv-s4); border: 1px solid var(--tv-border); border-radius: var(--tv-radius-md); overflow-x: auto; overflow-y: hidden; }
 .md table { width: 100%; border-collapse: collapse; font-size: 14px; }
 .md th {
   text-align: left; font-weight: 600; color: var(--tv-text-secondary) !important;
@@ -263,11 +394,62 @@ html, body, #tv-root {
 }
 .md .md-img .cap { font-size: 12.5px; color: var(--tv-text-muted) !important; padding: 8px 12px; border-top: 1px solid var(--tv-border); }
 
+/* ── inline image chip (E-09 / E-10 support) ─────────────────
+   Renderer emits <span class="md-inline-img">[img: alt]</span>
+   for inline ![alt](url) occurrences inside paragraphs.
+   Styled as a subtle pill: readable, unobtrusive, inline.       */
+.md-inline-img {
+  display: inline;
+  vertical-align: baseline;
+  font-family: var(--tv-font-mono);
+  font-size: .82em;
+  font-weight: 450;
+  color: var(--tv-text-muted) !important;
+  background: var(--tv-code-bg) !important;
+  border: 1px solid var(--tv-code-border);
+  border-radius: 4px;
+  padding: .05em .35em;
+  white-space: nowrap;
+  /* keep it from breaking the line rhythm */
+  line-height: 1;
+}
+
+/* ── nested list indentation ─────────────────────────────────
+   Renderer now emits genuine nested <ul>/<ol> elements.
+   Ensure each nesting level gets its own left indent and the
+   marker colour/style cascade correctly.                        */
+.md ul ul,
+.md ol ol,
+.md ul ol,
+.md ol ul {
+  /* reset top/bottom margin so nested lists don't add double spacing */
+  margin: 2px 0 2px;
+  padding-left: 20px;
+}
+/* third level — slightly tighter */
+.md ul ul ul,
+.md ol ol ol,
+.md ul ol ul,
+.md ol ul ol {
+  padding-left: 16px;
+}
+/* nested list items — reduce vertical gap relative to top level */
+.md ul ul li,
+.md ol ol li,
+.md ul ol li,
+.md ol ul li {
+  margin: 2px 0;
+}
+
 /* ── mermaid-style diagram (async render) ──────────────────── */
+/* L-10: .tv-diagram gets overflow-x:auto so wide SVGs (wide sequence/Gantt diagrams)
+   scroll within the diagram container. .tv-scroll keeps overflow-x:hidden (intentional
+   to prevent page-level lateral drift) — the diagram self-contains its overflow here. */
 .tv-diagram {
   margin: 0 0 var(--tv-s4); border: 1px solid var(--tv-border);
   border-radius: var(--tv-radius-md); background: var(--tv-bg-surface) !important;
   padding: var(--tv-s5) var(--tv-s4); position: relative; min-height: 132px;
+  overflow-x: auto;
 }
 .tv-diagram .dg-label {
   position: absolute; top: 10px; left: 12px; font-size: 10.5px; letter-spacing: .5px;
@@ -294,6 +476,41 @@ html, body, #tv-root {
   gap: 6px; padding-top: 10px; opacity: 0; animation: tv-fade .4s ease forwards;
 }
 @keyframes tv-fade { to { opacity: 1; } }
+
+/* ── real Mermaid SVG container ──────────────────────────────
+   When real Mermaid.js renders, it injects an <svg> directly
+   inside .tv-diagram. Ensure it centres, scales correctly,
+   and doesn't clip. The min-height only applies when the
+   .dg-load placeholder is present (loading state).
+   Once mermaid replaces .dg-load with an svg, min-height is
+   overridden to auto so the container grows with the diagram.   */
+.tv-diagram:has(> svg) {
+  /* remove loading min-height once real SVG is rendered */
+  min-height: auto;
+  padding: var(--tv-s4);
+}
+/* Centre and constrain the mermaid-emitted SVG */
+.tv-diagram > svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 0 auto;
+  /* ensure text in the SVG is readable on both themes */
+  font-family: var(--tv-font-ui);
+}
+/* Fallback for browsers without :has() support */
+.tv-diagram .mermaid-svg-wrapper {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  min-height: 0;
+}
+.tv-diagram .mermaid-svg-wrapper svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}
 .dg-node {
   font-size: 13px; font-weight: 550; color: var(--tv-text-primary) !important;
   background: var(--tv-bg-primary) !important; border: 1.5px solid var(--tv-border-strong);
@@ -320,9 +537,11 @@ html, body, #tv-root {
   background: var(--tv-bg-chrome) !important; border-top: 1px solid var(--tv-border);
   font-size: 12px; color: var(--tv-text-secondary) !important;
 }
+/* L-05: .live-pill text uses --tv-live (darkened in light theme to 4.72:1 on chrome).
+   .blip dot uses --tv-live-dot (vivid amber) — purely decorative, WCAG-exempt. */
 .tv-status .live-pill { display: inline-flex; align-items: center; gap: 6px; color: var(--tv-live) !important; font-weight: 600; }
 .tv-status .live-pill .blip {
-  width: 8px; height: 8px; border-radius: 50%; background: var(--tv-live) !important;
+  width: 8px; height: 8px; border-radius: 50%; background: var(--tv-live-dot) !important;
   box-shadow: 0 0 0 0 var(--tv-live-glow); animation: tv-blip 1.6s ease-out infinite;
 }
 @keyframes tv-blip { 0%{box-shadow:0 0 0 0 var(--tv-live-glow)} 70%{box-shadow:0 0 0 7px transparent} 100%{box-shadow:0 0 0 0 transparent} }
@@ -357,7 +576,11 @@ html, body, #tv-root {
 .tv-edit-meta { margin-left: auto; color: var(--tv-text-muted) !important; font-variant-numeric: tabular-nums; }
 
 /* edit source (monospace + gutter) -------------------------- */
-.tv-source { padding: var(--tv-s4) 0 80px; font-family: var(--tv-font-mono); font-size: 13px; line-height: 1.72; }
+/* L-08: changed backdrop padding-bottom from 80px → var(--tv-s4) to match the
+   textarea overlay's padding-bottom (tv-edit.js:83 inline style = var(--tv-s4)).
+   80px was reading-mode scroll-past-end comfort; in the edit backdrop it caused
+   gutter numbers to disappear below the last line on initial load of long files. */
+.tv-source { padding: var(--tv-s4) 0 var(--tv-s4); font-family: var(--tv-font-mono); font-size: 13px; line-height: 1.72; }
 .tv-srcline { display: flex; }
 .tv-srcline.cursor-line { background: var(--tv-accent-weak) !important; }
 .tv-gutter {
@@ -397,7 +620,9 @@ html, body, #tv-root {
 .tv-pal-input .ic { color: var(--tv-text-muted) !important; flex: 0 0 auto; }
 .tv-pal-input .typed { color: var(--tv-text-primary) !important; }
 .tv-pal-input .pal-caret { display:inline-block; width:1.5px; height:19px; background: var(--tv-accent) !important; animation: tv-blink 1.05s steps(1) infinite; }
-.tv-pal-list { padding: 6px; max-height: 360px; overflow: hidden; }
+/* D-04: palette results list must scroll so rows beyond max-height are reachable
+   and scrollIntoView works for keyboard arrow-down navigation. */
+.tv-pal-list { padding: 6px; max-height: 360px; overflow-y: auto; overflow-x: hidden; }
 .tv-pal-group { font-size: 10.5px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase;
   color: var(--tv-text-muted) !important; padding: 9px 12px 5px; }
 .tv-pal-row {
@@ -547,6 +772,195 @@ html, body, #tv-root {
 .tv-searchbar .field input::placeholder,
 .tv-search-input::placeholder { color: var(--tv-text-muted) !important; }
 
+/* ── copy-code button (.tv-copy / [data-copy]) ──────────── */
+/* U-04 / feature-gaps: copy button top-right of every <pre>.
+   Quiet at rest; appears on pre:hover; intensifies on its own :hover.
+   "Copied" state via .tv-copy--copied class (set/cleared by JS). */
+.md pre { position: relative; }      /* anchor for absolute copy btn   */
+.tv-copy {
+  position: absolute; top: 8px; right: 8px;
+  display: none;                     /* hidden until pre hovered        */
+  align-items: center; gap: 5px;
+  padding: 3px 8px;
+  font-family: var(--tv-font-ui); font-size: 11.5px; font-weight: 500;
+  color: var(--tv-text-muted) !important;
+  background: var(--tv-bg-surface) !important;
+  border: 1px solid var(--tv-border);
+  border-radius: var(--tv-radius-sm);
+  cursor: default;
+  opacity: 0;
+  transition: opacity .15s, background .12s, color .12s;
+  z-index: 2;
+  -webkit-user-select: none; user-select: none;
+}
+.md pre:hover .tv-copy,
+.md pre:focus-within .tv-copy { display: inline-flex; opacity: 1; }
+.tv-copy:hover {
+  background: var(--tv-bg-sel) !important;
+  color: var(--tv-text-secondary) !important;
+}
+.tv-copy--copied,
+.tv-copy--copied:hover {
+  color: var(--tv-accent-text) !important;
+  background: var(--tv-accent-weak) !important;
+  border-color: var(--tv-accent-weak);
+}
+
+/* ── find-in-page bar (.tv-find) ────────────────────────── */
+/* F-07 / U-03: slim macOS-style find bar, top-right of the viewer.
+   Dev-frontend uses: .tv-find, .tv-find-input, .tv-find-count,
+   .tv-find-nav, .tv-find-close, mark.tv-find-hit, mark.tv-find-current */
+.tv-find {
+  position: absolute; top: 8px; right: 12px; z-index: 25;
+  display: flex; align-items: center; gap: 6px;
+  padding: 5px 8px;
+  background: var(--tv-bg-elev) !important;
+  border: 1px solid var(--tv-border-strong);
+  border-radius: var(--tv-radius-md);
+  box-shadow: var(--tv-shadow-pop);
+  min-width: 280px; max-width: 360px;
+  -webkit-user-select: none; user-select: none;
+}
+.tv-find-input {
+  flex: 1; min-width: 0;
+  background: transparent; border: 0; outline: 0;
+  font-family: var(--tv-font-ui); font-size: 13px;
+  color: var(--tv-text-primary) !important;
+  caret-color: var(--tv-accent);
+}
+.tv-find-input::placeholder { color: var(--tv-text-muted) !important; }
+.tv-find-count {
+  font-size: 11.5px; color: var(--tv-text-muted) !important;
+  font-variant-numeric: tabular-nums; white-space: nowrap; flex: 0 0 auto;
+}
+.tv-find-nav {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 5px;
+  color: var(--tv-text-secondary) !important; cursor: default;
+  border: 0; background: transparent;
+  transition: background .1s;
+}
+.tv-find-nav:hover { background: var(--tv-bg-hover) !important; }
+.tv-find-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; border-radius: 4px;
+  color: var(--tv-text-muted) !important; cursor: default;
+  border: 0; background: transparent;
+  transition: background .1s;
+  margin-left: 2px;
+}
+.tv-find-close:hover { background: var(--tv-bg-hover) !important; color: var(--tv-text-secondary) !important; }
+/* Find hit highlights */
+mark.tv-find-hit {
+  background: var(--tv-accent-weak) !important;
+  color: var(--tv-accent-text) !important;
+  border-radius: 2px;
+  padding: 0 1px;
+  /* L-11-aligned: accent-text on accent-weak is AA-compliant after L-07 fix */
+}
+mark.tv-find-current {
+  background: var(--tv-accent) !important;
+  color: #fff !important;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* ── titlebar theme-toggle button (.tv-titlebtn) ─────────── */
+/* U-02: quiet icon button (sun/moon) on the titlebar right side.
+   In html.tauri mode: positioned to not overlap native traffic lights
+   or the drag region. Uses the same pill pattern as .tv-prefs-btn. */
+.tv-titlebtn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; border-radius: 7px;
+  border: 0; background: transparent; cursor: default;
+  color: var(--tv-text-muted) !important;
+  opacity: .55;
+  transition: opacity .15s, background .1s;
+  flex: 0 0 auto;
+}
+.tv-titlebtn:hover {
+  opacity: 1;
+  background: var(--tv-bg-hover) !important;
+  color: var(--tv-text-secondary) !important;
+}
+.tv-titlebtn:focus-visible {
+  outline: 2px solid var(--tv-accent);
+  outline-offset: 2px;
+  opacity: 1;
+}
+/* In Tauri overlay mode the titlebar right edge is ~12px from the window frame.
+   No additional offset needed as the traffic lights are on the left (84px pad). */
+html.tauri .tv-titlebtn { margin-right: 2px; }
+
+/* ── sidebar recent files section (.tv-side-recent) ─────── */
+/* F-02 / U-09: "Recent Files" rows — consistent with .tv-tree-row but
+   visually distinct: muted foreground, slightly smaller text, no bold.
+   Reuse .tv-tree-row base; add .tv-side-recent modifier on the section
+   and .tv-sr-recent class on individual rows. */
+.tv-side-recent-label {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .6px;
+  text-transform: uppercase; color: var(--tv-text-muted) !important;
+  padding: var(--tv-s2) var(--tv-s2) var(--tv-s1);
+  opacity: .8;
+}
+.tv-tree-row.recent {
+  /* inherits .tv-tree-row layout; tweak colour to be distinctly muted */
+  color: var(--tv-text-muted) !important;
+  font-size: 12.5px;
+}
+.tv-tree-row.recent .ic { opacity: .7; }
+.tv-tree-row.recent:hover:not(.active) {
+  background: var(--tv-bg-hover) !important;
+  color: var(--tv-text-secondary) !important;
+}
+
+/* ── font-size / zoom scaling support ───────────────────── */
+/* F-11 / U-07: if dev-frontend sets --tv-md-font or --tv-content-scale,
+   the .md block scales accordingly. JS should set --tv-md-font on .tv root.
+   Zoom utility classes .tv--zoom-sm / .tv--zoom-md / .tv--zoom-lg provided
+   as an alternative class-based approach. */
+.md { font-size: var(--tv-md-font, 16px); }
+.tv--zoom-sm .md { --tv-md-font: 14px; }
+.tv--zoom-md .md { --tv-md-font: 16px; }
+.tv--zoom-lg .md { --tv-md-font: 18px; }
+/* Headings scale proportionally — they already use px so recalc from root */
+.tv--zoom-sm .md h1 { font-size: 24px; }
+.tv--zoom-sm .md h2 { font-size: 19px; }
+.tv--zoom-sm .md h3 { font-size: 16px; }
+.tv--zoom-lg .md h1 { font-size: 32px; }
+.tv--zoom-lg .md h2 { font-size: 25px; }
+.tv--zoom-lg .md h3 { font-size: 20px; }
+
+/* ── <mark> highlight contrast ───────────────────────────── */
+/* Ensure <mark> elements in .md have sufficient contrast.
+   Browser default yellow (#ffff00) on white = 1.07:1 — fails badly.
+   Use the accent-weak background with accent-text foreground (AA-compliant
+   after L-07 fix). */
+.md mark {
+  background: var(--tv-accent-weak) !important;
+  color: var(--tv-accent-text) !important;
+  border-radius: 2px;
+  padding: 0 2px;
+}
+
+/* ── h5 / h6 heading scale (C-06) ───────────────────────── */
+.md h5 {
+  font-size: 14px; font-weight: 600;
+  margin: var(--tv-s4) 0 var(--tv-s2);
+  color: var(--tv-text-primary) !important;
+}
+.md h6 {
+  font-size: 13px; font-weight: 600;
+  margin: var(--tv-s4) 0 var(--tv-s1);
+  color: var(--tv-text-secondary) !important;
+}
+
+/* ── strikethrough (C-12) ────────────────────────────────── */
+.md del {
+  text-decoration: line-through;
+  color: var(--tv-text-secondary) !important;
+}
+
 /* ── drag-over drop affordance ──────────────────────────── */
 .tv-drag-over,
 .tv-drag-over .tv {
@@ -669,4 +1083,12 @@ input:focus-visible,
     opacity: 1 !important;
     transform: translateX(-50%) !important;
   }
+  /* L-16: suppress micro-transitions (0.10–0.12s) per WCAG 2.3.3 */
+  .tv-tab,
+  .tv-newtab,
+  .tv-close,
+  .tv-prefs-swatch,
+  .tv-prefs-btn,
+  .tv-tree-row,
+  .tv-pal-row { transition: none !important; }
 }

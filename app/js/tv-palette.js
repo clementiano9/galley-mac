@@ -4,6 +4,10 @@
 
    Builds .tv-palette-scrim > .tv-palette into TV.el().
    Live results from window.TV.state.tabs.
+   D-02: theme/accent switching available as Commands group.
+   D-07: ARIA roles on input, listbox, and option rows.
+   F-04: "Open File…" and "Open Folder…" commands.
+   U-05: "Theme: System" command.
    ─────────────────────────────────────────────────────────── */
 (function () {
   'use strict';
@@ -81,6 +85,23 @@
     return tab.path || tab.name || '';
   }
 
+  /* ── D-02 + F-04 + U-05: command rows ─────────────────── */
+  // Returns an array of command row objects matching query.
+  function _buildCommandRows(query) {
+    var commands = [
+      { ic: 'sun',    main: 'Theme: Light',       action: 'theme',  value: 'light' },
+      { ic: 'moon',   main: 'Theme: Dark',        action: 'theme',  value: 'dark' },
+      { ic: 'circle', main: 'Theme: System',      action: 'theme',  value: 'system' },
+      { ic: 'circle', main: 'Accent: Blue',       action: 'accent', value: 'blue' },
+      { ic: 'circle', main: 'Accent: Graphite',   action: 'accent', value: 'graphite' },
+      { ic: 'circle', main: 'Accent: Warm',       action: 'accent', value: 'warm' },
+      // F-04: file/folder open commands
+      { ic: 'doc',    main: 'Open File…',         action: 'openFile',   value: '' },
+      { ic: 'folder', main: 'Open Folder…',       action: 'openFolder', value: '' },
+    ];
+    return commands.filter(function (c) { return _matches(c.main, query); });
+  }
+
   /* ── build DOM string for the result list ─────────────────*/
   function _buildList(query, tabs, activeId) {
     var I = window.TV_ICONS || {};
@@ -156,6 +177,23 @@
     }
     if (recentRows.length) groups.push({ label: 'Recent', rows: recentRows });
 
+    // ── Group 4: Commands (D-02: theme/accent + F-04: file/folder) ───
+    var cmdRows = _buildCommandRows(query);
+    if (cmdRows.length) {
+      var builtCmdRows = cmdRows.map(function (c) {
+        return {
+          ic: c.ic,
+          main: c.main,
+          mainHtml: _highlight(c.main, query),
+          sub: '',
+          tabId: '',
+          action: c.action,
+          value: c.value,
+        };
+      });
+      groups.push({ label: 'Commands', rows: builtCmdRows });
+    }
+
     // ── Render HTML ───────────────────────────────────────
     if (!groups.length) {
       return '<div class="tv-pal-group" style="padding:18px 12px;text-align:center">No results</div>';
@@ -164,20 +202,24 @@
     var html = '';
     var rowIndex = 0;
     for (var gi = 0; gi < groups.length; gi++) {
-      if (gi) html += '<div class="tv-pal-divider"></div>';
+      if (gi) html += '<div class="tv-pal-divider" role="separator"></div>';
       html += '<div class="tv-pal-group">' + _esc(groups[gi].label) + '</div>';
       var rows = groups[gi].rows;
       for (var rri = 0; rri < rows.length; rri++) {
         var row = rows[rri];
         var isSel = (rowIndex === 0);
+        // D-07: role="option" + aria-selected on each palette row
         html += '<div class="tv-pal-row' + (isSel ? ' sel' : '') + '"' +
+          ' role="option"' +
+          ' aria-selected="' + (isSel ? 'true' : 'false') + '"' +
           ' data-action="' + row.action + '"' +
-          ' data-tab-id="' + _esc(row.tabId) + '"' +
+          (row.tabId ? ' data-tab-id="' + _esc(row.tabId) + '"' : '') +
           (row.action === 'heading' ? ' data-heading="' + _esc(row.headingText) + '"' : '') +
+          (row.value ? ' data-value="' + _esc(row.value) + '"' : '') +
           '>' +
           '<span class="ic">' + (I[row.ic] || '') + '</span>' +
           '<span>' + row.mainHtml + '</span>' +
-          '<span class="sub">' + row.sub + '</span>' +
+          (row.sub ? '<span class="sub">' + row.sub + '</span>' : '') +
           '</div>';
         rowIndex++;
       }
@@ -189,17 +231,22 @@
   function _buildOverlayHtml(query, tabs, activeId) {
     var I = window.TV_ICONS || {};
     var list = _buildList(query, tabs, activeId);
-    var hintStyle = query ? 'display:none' : '';
 
+    // D-07: aria-label on input, role="listbox" on list container
     return '<div class="tv-palette-scrim" id="tv-pal-scrim">' +
       '<div class="tv-palette" id="tv-pal-box">' +
         '<div class="tv-pal-input">' +
           '<span class="ic">' + (I.search || '') + '</span>' +
-          '<input class="tv-pal-input-field" type="text" autocomplete="off" spellcheck="false"' +
-            ' placeholder="Search files and headings"' +
+          '<input class="tv-pal-input-field" id="tv-pal-input-field" type="text" autocomplete="off" spellcheck="false"' +
+            ' aria-label="Command palette"' +
+            ' aria-autocomplete="list"' +
+            ' aria-controls="tv-pal-list"' +
+            ' placeholder="Search files, headings, and commands"' +
             ' value="' + _esc(query) + '">' +
         '</div>' +
-        '<div class="tv-pal-list" id="tv-pal-list">' + list + '</div>' +
+        '<div class="tv-pal-list" id="tv-pal-list" role="listbox" aria-label="Results">' +
+          list +
+        '</div>' +
         '<div class="tv-pal-foot">' +
           '<span class="k">' + (I.updown || '') + ' navigate</span>' +
           '<span class="k">' + (I.ret || '') + ' open</span>' +
@@ -234,6 +281,8 @@
     _selIndex = Math.max(0, Math.min(idx, rs.length - 1));
     for (var i = 0; i < rs.length; i++) {
       rs[i].classList.toggle('sel', i === _selIndex);
+      // D-07: update aria-selected dynamically
+      rs[i].setAttribute('aria-selected', i === _selIndex ? 'true' : 'false');
     }
     rs[_selIndex].scrollIntoView({ block: 'nearest' });
   }
@@ -249,8 +298,41 @@
     var action  = row.getAttribute('data-action');
     var tabId   = row.getAttribute('data-tab-id');
     var heading = row.getAttribute('data-heading');
+    var value   = row.getAttribute('data-value');
 
     if (!window.TV) { TVPalette.close(); return; }
+
+    // D-02: handle theme/accent command actions
+    if (action === 'theme' && value) {
+      window.TV.setTheme(value);
+      TVPalette.close();
+      return;
+    }
+    if (action === 'accent' && value) {
+      window.TV.setAccent(value);
+      TVPalette.close();
+      return;
+    }
+
+    // F-04: Open File action
+    if (action === 'openFile') {
+      TVPalette.close();
+      if (window.TVFiles && typeof TVFiles.openPicker === 'function') {
+        TVFiles.openPicker();
+      }
+      return;
+    }
+
+    // F-04: Open Folder action
+    if (action === 'openFolder') {
+      TVPalette.close();
+      if (window.TVNative && typeof TVNative.openFolder === 'function') {
+        TVNative.openFolder();
+      } else if (window.TV && typeof window.TV.openFolder === 'function') {
+        window.TV.openFolder();
+      }
+      return;
+    }
 
     if (action === 'heading' && tabId && heading) {
       window.TV.scrollToHeading(tabId, heading);

@@ -20,68 +20,114 @@
       width: 100%;
       position: relative;
     }
-    /* theme/accent controls — slim floating pill bottom-right (DR-07: quiet at rest) */
-    #tv-controls {
-      position: fixed;
-      bottom: 18px;
-      right: 20px;
-      z-index: 100;
+    /* ── Minimal fallback styles for new elements (dev-design owns full CSS) ── */
+
+    /* U-02: Theme toggle button in titlebar */
+    .tv-titlebtn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 4px 6px;
+      border-radius: 4px;
+      color: inherit;
+      opacity: 0.4;
       display: flex;
       align-items: center;
-      gap: 6px;
-      padding: 5px 10px;
-      border-radius: 20px;
-      background: rgba(128,128,128,.13);
-      border: 1px solid rgba(128,128,128,.18);
-      backdrop-filter: blur(8px);
-      -webkit-backdrop-filter: blur(8px);
-      opacity: 0.38;
-      transition: opacity .18s;
-      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
-      font-size: 11.5px;
-      user-select: none;
-      -webkit-user-select: none;
+      justify-content: center;
+      margin-left: auto;
+      margin-right: 8px;
+      flex-shrink: 0;
     }
-    #tv-controls:hover { opacity: 1; }
-    #tv-controls button {
-      border: 1px solid rgba(128,128,128,.25);
-      border-radius: 5px;
-      padding: 2px 8px;
-      font-size: 11px;
-      font-weight: 500;
-      cursor: default;
+    .tv-titlebtn:hover { opacity: 0.9; }
+    .tv-theme-toggle { line-height: 1; }
+
+    /* F-07: Find bar */
+    .tv-find {
+      position: absolute;
+      bottom: 12px;
+      right: 16px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: var(--tv-bg-chrome, #e9e9e6);
+      border: 1px solid var(--tv-border, rgba(0,0,0,.1));
+      border-radius: 8px;
+      padding: 4px 8px;
+      box-shadow: 0 2px 12px rgba(0,0,0,.12);
+      z-index: 40;
+      min-width: 260px;
+    }
+    .tv-find-input {
+      flex: 1;
+      border: none;
       background: transparent;
+      outline: none;
+      font-size: 13px;
       color: inherit;
-      transition: background .1s;
+      min-width: 120px;
     }
-    #tv-controls button:hover { background: rgba(128,128,128,.18); }
-    #tv-controls button.active {
-      background: rgba(128,128,128,.28);
-      font-weight: 600;
+    .tv-find-count {
+      font-size: 11px;
+      opacity: 0.6;
+      white-space: nowrap;
+      min-width: 40px;
+      text-align: center;
     }
-    #tv-controls .ctrl-sep {
-      width: 1px;
-      height: 14px;
-      background: rgba(128,128,128,.3);
+    .tv-find-nav {
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 2px 4px;
+      border-radius: 3px;
+      font-size: 12px;
+      color: inherit;
+      opacity: 0.6;
     }
-    .tv--dark #tv-controls { color: #ccc; }
-    .tv--light #tv-controls { color: #444; }
+    .tv-find-nav:hover { opacity: 1; background: var(--tv-bg-hover, rgba(0,0,0,.06)); }
+    .tv-find-close { margin-left: 2px; }
+
+    /* Find marks */
+    .md mark[data-find] {
+      background: var(--tv-accent-weak, rgba(45,104,216,.15));
+      color: inherit;
+      border-radius: 2px;
+      padding: 0 1px;
+    }
+    .md mark[data-find].current {
+      background: var(--tv-accent, #2d68d8);
+      color: #fff;
+    }
+
+    /* F-02: Recent sidebar section */
+    .tv-side-recent { opacity: 0.75; }
+    .tv-side-recent:hover { opacity: 1; }
+    .tv-side-recent-label { font-size: 10px; opacity: 0.5; text-transform: uppercase; letter-spacing: .04em; }
+
+    /* U-09: Empty state recent files */
+    .tv-empty-recent {
+      margin-top: 16px;
+      width: 100%;
+      max-width: 400px;
+    }
+    .tv-recent-row {
+      display: flex;
+      flex-direction: column;
+      padding: 6px 10px;
+      border-radius: 6px;
+      cursor: pointer;
+      gap: 1px;
+    }
+    .tv-recent-row:hover { background: var(--tv-bg-hover, rgba(0,0,0,.05)); }
+    .tv-recent-name { font-size: 13px; font-weight: 500; }
+    .tv-recent-path { font-size: 10px; opacity: 0.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   </style>
 </head>
 <body>
   <div id="tv-root"></div>
 
-  <!-- Theme / Accent controls (outside .tv so they survive full re-renders) -->
-  <div id="tv-controls" aria-label="Theme and accent controls">
-    <button id="ctrl-light" title="Light theme">Light</button>
-    <button id="ctrl-dark" title="Dark theme">Dark</button>
-    <div class="ctrl-sep"></div>
-    <button id="ctrl-blue" title="Blue accent">Blue</button>
-    <button id="ctrl-graphite" title="Graphite accent">Graphite</button>
-    <button id="ctrl-warm" title="Warm accent">Warm</button>
-  </div>
-
-  <!-- dependency order: icons → docs → markdown → feature modules → app → native bridge -->
+  <!-- D-02: #tv-controls persistent pill removed. Theme and accent switching
+       is available via the command palette (⌘K → "Commands" group).
+       dependency order: icons → docs → markdown → feature modules → app → native bridge -->
   <script src="js/tv-icons.js"></script>
   <script src="js/tv-docs.js"></script>
   <script src="js/tv-markdown.js"></script>
@@ -92,35 +138,5 @@
   <script src="js/tv-live.js"></script>
   <script src="js/tv-app.js"></script>
   <script src="js/tv-native.js"></script>
-
-  <script>
-    // Wire the theme/accent control pill to TV after it initialises
-    (function () {
-      function refreshControls() {
-        if (!window.TV) return;
-        var s = TV.state;
-        document.getElementById('ctrl-light').classList.toggle('active', s.theme === 'light');
-        document.getElementById('ctrl-dark').classList.toggle('active', s.theme === 'dark');
-        document.getElementById('ctrl-blue').classList.toggle('active', s.accent === 'blue');
-        document.getElementById('ctrl-graphite').classList.toggle('active', s.accent === 'graphite');
-        document.getElementById('ctrl-warm').classList.toggle('active', s.accent === 'warm');
-      }
-      function bindControls() {
-        if (!window.TV) { setTimeout(bindControls, 30); return; }
-        document.getElementById('ctrl-light').addEventListener('click', function () { TV.setTheme('light'); refreshControls(); });
-        document.getElementById('ctrl-dark').addEventListener('click', function () { TV.setTheme('dark'); refreshControls(); });
-        document.getElementById('ctrl-blue').addEventListener('click', function () { TV.setAccent('blue'); refreshControls(); });
-        document.getElementById('ctrl-graphite').addEventListener('click', function () { TV.setAccent('graphite'); refreshControls(); });
-        document.getElementById('ctrl-warm').addEventListener('click', function () { TV.setAccent('warm'); refreshControls(); });
-        TV.on('render', refreshControls);
-        refreshControls();
-      }
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', bindControls);
-      } else {
-        bindControls();
-      }
-    })();
-  </script>
 </body>
 </html>
