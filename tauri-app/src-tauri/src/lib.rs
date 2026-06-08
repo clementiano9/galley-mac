@@ -163,6 +163,7 @@ fn read_md_file(path: String) -> Result<FileDoc, String> {
     read_file_doc(&path)
 }
 
+
 /// Overwrite an existing file (Save). Writes ONLY the file explicitly chosen.
 #[tauri::command]
 fn save_md_file(path: String, content: String) -> Result<(), String> {

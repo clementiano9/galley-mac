@@ -476,12 +476,16 @@ html, body, #tv-root {
 /* ── mermaid-style diagram (async render) ──────────────────── */
 /* L-10: .tv-diagram gets overflow-x:auto so wide SVGs (wide sequence/Gantt diagrams)
    scroll within the diagram container. .tv-scroll keeps overflow-x:hidden (intentional
-   to prevent page-level lateral drift) — the diagram self-contains its overflow here. */
+   to prevent page-level lateral drift) — the diagram self-contains its overflow here.
+   font-size:14px is a hard reset that breaks the --tv-md-font cascade from .md —
+   diagram text must NOT scale with the reading-font zoom (⌘+/-). */
 .tv-diagram {
   margin: 0 0 var(--tv-s4); border: 1px solid var(--tv-border);
   border-radius: var(--tv-radius-md); background: var(--tv-bg-surface) !important;
   padding: var(--tv-s5) var(--tv-s4); position: relative; min-height: 132px;
   overflow-x: auto;
+  /* Isolate diagram text from the .md reading-font zoom */
+  font-size: 14px;
 }
 .tv-diagram .dg-label {
   position: absolute; top: 10px; left: 12px; font-size: 10.5px; letter-spacing: .5px;
@@ -517,12 +521,19 @@ html, body, #tv-root {
 .tv-diagram .dg-flow { animation-delay: 0s; }
 
 /* ── real Mermaid SVG container ──────────────────────────────
-   When real Mermaid.js renders, it injects an <svg> directly
-   inside .tv-diagram. Ensure it centres, scales correctly,
-   and doesn't clip. The min-height only applies when the
-   .dg-load placeholder is present (loading state).
-   Once mermaid replaces .dg-load with an svg, min-height is
-   overridden to auto so the container grows with the diagram.   */
+   Mermaid.render() returns an <svg> we inject directly as a
+   child of .tv-diagram. This keeps the `.tv-diagram > svg`
+   selector accurate and avoids double-wrapping.
+
+   Key constraints:
+   - max-width:100% + height:auto = proportional scaling, never distorted.
+   - NO forced height (e.g. height:300px) — that stretches the aspect ratio.
+   - font-size on the SVG is left to Mermaid's own <style> block (which
+     carries the themeVariables.fontSize:"13px" we set in JS). Specifying
+     font-size here would fight the mermaid <style> and lose.
+   - margin:0 auto centres the diagram when it's narrower than the container.
+
+   :has(> svg) collapses the loading min-height once the SVG arrives. */
 .tv-diagram:has(> svg) {
   /* remove loading min-height once real SVG is rendered */
   min-height: auto;
@@ -532,19 +543,13 @@ html, body, #tv-root {
 .tv-diagram > svg {
   display: block;
   max-width: 100%;
-  height: auto;
+  height: auto;        /* never force a height — preserves aspect ratio */
   margin: 0 auto;
-  /* ensure text in the SVG is readable on both themes */
-  font-family: var(--tv-font-ui);
+  overflow: visible;   /* avoid clipping arrowheads / shadows at edges */
 }
-/* Fallback for browsers without :has() support */
-.tv-diagram .mermaid-svg-wrapper {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 100%;
-  min-height: 0;
-}
+/* Fallback: if the SVG lands inside a .dg-flow wrapper
+   (error path in the renderer), still scale it correctly. */
+.tv-diagram .dg-flow svg,
 .tv-diagram .mermaid-svg-wrapper svg {
   display: block;
   max-width: 100%;
