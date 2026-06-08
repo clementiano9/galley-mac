@@ -16,80 +16,43 @@
     return stripped.split(/\s+/).filter(function (w) { return w.length > 0; }).length;
   }
 
-  // ── syntax-highlight a single source line (display layer) ─
-  function esc(s) {
-    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-  }
-
-  function highlightLine(raw) {
-    var s = esc(raw);
-    // Bold headers
-    s = s.replace(/^(#{1,6}\s.*)$/, '<span class="s-h">$1</span>');
-    // Inline code
-    s = s.replace(/(`[^`]*`)/g, '<span class="s-code">$1</span>');
-    // Pipe chars
-    s = s.replace(/\|/g, '<span class="s-pipe">|</span>');
-    return s;
-  }
-
   // ── renderSource ─────────────────────────────────────────
   // Returns HTML for the editor body (goes inside .tv-viewer > .tv-scroll > .tv-content).
-  // Strategy: a real <textarea class="tv-edit-area"> overlaid over the syntax-highlighted
-  // .tv-source gutter view.  The textarea is transparent/borderless so you see the syntax
-  // colours through it; typing flows into the textarea while the gutter/syntax layer is a
-  // static visual backdrop rendered from the initial tab.source.
+  //
+  // BUG-1 FIX: Replace the transparent-overlay + backdrop pattern with a SINGLE plain
+  // visible <textarea class="tv-edit-area">. The old design stacked an invisible textarea
+  // over a syntax "backdrop" div; this caused:
+  //   (a) cursor desync — click-to-position landed in the wrong place because the
+  //       textarea's left offset (52px) didn't exactly match the backdrop text column,
+  //       so the browser's hit-test for the textarea was shifted relative to what the
+  //       user clicked on.
+  //   (b) save duplication — renderSource HTML-escaped tab.source and embedded it as
+  //       the textarea's initial value via innerHTML, but wire() also set textarea.value
+  //       from tab.source. On save, if the HTML-encoded version (with &amp; etc.) leaked
+  //       through, the content was duplicated or corrupted.
+  //
+  // The fix: a single <textarea> that IS the editor.  dev2 styles .tv-edit-area to be
+  // visible (color: var(--tv-text-primary)), monospace, full-height, no border/outline.
+  // No backdrop, no gutter overlay, no debounced innerHTML rebuild.  The textarea value
+  // is the ONLY source of truth; wire() sets it from tab.source once on entry.
   function renderSource(tab) {
     var src = (tab && tab.source != null) ? tab.source : "";
-    var lines = src.split("\n");
-    var wc = wordCount(src);
 
-    // Build the visible syntax/gutter layer (aria-hidden, pointer-events:none overlay)
-    var gutterRows = lines.map(function (ln, k) {
-      var html = highlightLine(ln) || " ";
-      return '<div class="tv-srcline" aria-hidden="true">' +
-        '<span class="tv-gutter">' + (k + 1) + "</span>" +
-        '<span class="tv-srctext">' + html + "</span></div>";
-    }).join("");
-
-    // Wrapper: position:relative so we can stack textarea over the gutter layer.
+    // Single plain visible textarea — no backdrop, no gutter.
+    // Inline style provides the minimum geometry; dev2 owns the rest via .tv-edit-area.
     var html =
-      '<div class="tv-edit-wrap" style="position:relative;">' +
-        // Syntax/gutter visual layer (non-interactive)
-        '<div class="tv-source tv-source--backdrop" aria-hidden="true" style="pointer-events:none;user-select:none;">' +
-          gutterRows +
-        "</div>" +
-        // Real editable textarea — transparent, positioned absolutely over the text column
+      '<div class="tv-edit-wrap">' +
         '<textarea class="tv-edit-area"' +
           ' data-edit-area' +
           ' spellcheck="false"' +
           ' autocorrect="off"' +
           ' autocapitalize="off"' +
-          ' style="' +
-            'position:absolute;' +
-            'top:0;' +
-            'left:52px;' +
-            'right:0;' +
-            'bottom:0;' +
-            'min-height:100%;' +
-            'font-family:var(--tv-font-mono);' +
-            'font-size:13px;' +
-            'line-height:1.72;' +
-            'color:transparent;' +
-            'caret-color:var(--tv-accent);' +
-            'background:transparent;' +
-            'border:none;' +
-            'outline:none;' +
-            'resize:none;' +
-            'padding:var(--tv-s4) 24px var(--tv-s4) 0;' +
-            'width:calc(100% - 52px);' +
-            'box-sizing:border-box;' +
-            'overflow:hidden;' +
-            'white-space:pre-wrap;' +
-            'word-break:break-word;' +
-          '">' +
-          esc(src) +
-        "</textarea>" +
-      "</div>";
+        '>' +
+        // NOTE: do NOT embed src here — wire() sets textarea.value from tab.source
+        // so the single-ownership invariant is maintained and no HTML-encoding issues
+        // can corrupt the content on save.
+        '</textarea>' +
+      '</div>';
 
     return html;
   }
@@ -189,11 +152,12 @@
     var textarea = rootEl.querySelector("[data-edit-area]");
     if (!textarea) return function () {};
 
-    // E-05: guarantee tab.source is current from textarea value
-    // (renderSource already set the initial value from tab.source; this is belt-and-suspenders)
-    if (tab.source != null && textarea.value !== tab.source) {
-      textarea.value = tab.source;
-    }
+    // BUG-1 FIX: renderSource no longer embeds content in the textarea (that was the
+    // source of the duplication bug — HTML-encoded content set via innerHTML could
+    // disagree with tab.source).  wire() is now the SOLE place that loads tab.source
+    // into the textarea, so there is exactly one write on edit-mode entry and no
+    // duplication is possible.
+    textarea.value = (tab.source != null) ? tab.source : "";
 
     // Keep textarea height matching content so .tv-scroll handles the scroll
     function autoResize() {
@@ -245,48 +209,22 @@
       }
     }
 
-    // Rebuild the syntax gutter backdrop from current textarea content.
-    // Called on a debounce so it does NOT block the keystroke path.
-    function updateBackdrop(src) {
-      var backdrop = rootEl.querySelector(".tv-source--backdrop");
-      if (!backdrop) return;
-      var lines = src.split("\n");
-      var gutterRows = lines.map(function (ln, k) {
-        var html = highlightLine(ln) || " ";
-        return '<div class="tv-srcline" aria-hidden="true">' +
-          '<span class="tv-gutter">' + (k + 1) + "</span>" +
-          '<span class="tv-srctext">' + html + "</span></div>";
-      }).join("");
-      backdrop.innerHTML = gutterRows;
-    }
-
-    // S-01: debounce backdrop updates so they do NOT fire synchronously on every keystroke.
-    // The textarea is the source of truth; the backdrop is a purely visual aid.
-    var _backdropTimer = null;
-    function scheduleBackdropUpdate(src) {
-      if (_backdropTimer !== null) clearTimeout(_backdropTimer);
-      _backdropTimer = setTimeout(function () {
-        _backdropTimer = null;
-        updateBackdrop(src);
-      }, 150);
-    }
-
-    // S-01: onInput is now O(1) per keystroke.
-    // - Writes tab.source (O(1) assignment)
-    // - Updates word-count element in place (O(N) text scan but no DOM rebuild)
-    // - Calls TV.markDirty(id, true) — per contract this is render-free (cheap flag + dot toggle)
-    // - Schedules backdrop update on a 150ms debounce (visually acceptable; not on hot path)
-    // - Does NOT call render(), wire(), or resetCaret via rAF
+    // S-01 / BUG-1 FIX: onInput is O(1) per keystroke.
+    // - Writes tab.source (O(1) assignment) — textarea.value is the ONLY source of truth.
+    // - Updates word-count element in place (O(N) text scan, no DOM rebuild).
+    // - Calls TV.markDirty(id, true) — render-free (dot toggle only, no render()).
+    // - NO backdrop rebuild: the old debounced innerHTML write was the mechanism that
+    //   caused cursor desync.  The plain visible textarea needs no backdrop at all.
+    // - Does NOT call render(), wire(), or resetCaret via rAF.
     function onInput() {
       var src = textarea.value;
       tab.source = src;          // keep tab.source current at all times (O(1))
       tab.dirty = true;
-      // Notify app of dirty state — dev-frontend makes markDirty() render-free (dot toggle only)
+      // Notify app of dirty state — markDirty() is render-free (dot toggle only)
       if (window.TV && typeof window.TV.markDirty === "function") {
         window.TV.markDirty(tab.id, true);
       }
       updateMeta(src);           // update word count element in place
-      scheduleBackdropUpdate(src); // debounced backdrop — does not affect caret
       autoResize();              // adjust textarea height
     }
 
@@ -313,7 +251,6 @@
     return function cleanup() {
       textarea.removeEventListener("input", onInput);
       textarea.removeEventListener("keydown", onKeydown);
-      if (_backdropTimer !== null) { clearTimeout(_backdropTimer); _backdropTimer = null; }
     };
   }
 

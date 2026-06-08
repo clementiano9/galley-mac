@@ -44,6 +44,12 @@
     theme: localStorage.getItem('tv-theme') || 'light',
     accent: localStorage.getItem('tv-accent') || 'blue',
     fontSize: parseInt(localStorage.getItem('tv-font-size'), 10) || 16,
+    // BUG-4: sidebar drag-resize width (clamp 160–480px). Persisted to localStorage.
+    // dev2 reads --tv-sidebar-w on .tv-sidebar { width: var(--tv-sidebar-w, 224px) }.
+    sidebarWidth: (function () {
+      var stored = parseInt(localStorage.getItem('tv-sidebar-w'), 10);
+      return (stored >= 160 && stored <= 480) ? stored : 224;
+    }()),
   };
 
   /* ── Tab constructor ──────────────────────────────────────── */
@@ -280,6 +286,10 @@
             '<span class="kbd">⌘F</span>' +
           '</div>' +
         '</div>' +
+        // BUG-4: drag handle on the sidebar's right edge.
+        // dev2 styles this as a ~5px col-resize-cursor strip.
+        // Pointer drag logic is wired in wireSidebarResize().
+        '<div class="tv-sidebar-resizer" data-sidebar-resize></div>' +
       '</aside>'
     );
   }
@@ -445,6 +455,13 @@
     }
 
     root.innerHTML = '<div class="' + rootCls + '" style="--tv-md-font:' + state.fontSize + 'px">' + html + '</div>';
+
+    // BUG-4: Apply sidebar width CSS var to the .tv root so the sidebar can read it.
+    // dev2's CSS: .tv-sidebar { width: var(--tv-sidebar-w, 224px) }
+    var tvRootEl = root.querySelector('.tv');
+    if (tvRootEl) {
+      tvRootEl.style.setProperty('--tv-sidebar-w', state.sidebarWidth + 'px');
+    }
 
     // Restore scroll position (DR-03)
     var newScroll = root.querySelector('[data-scroll]');
@@ -693,8 +710,60 @@
   /* ────────────────────────────────────────────────────────────
      EVENT DELEGATION
    ──────────────────────────────────────────────────────────── */
+  /* ────────────────────────────────────────────────────────────
+     BUG-4: SIDEBAR DRAG-RESIZE
+     Pointer drag on .tv-sidebar-resizer adjusts --tv-sidebar-w on the .tv root.
+     Clamped 160–480 px. Persisted to localStorage 'tv-sidebar-w'.
+     Does NOT break ⌘B collapse (sidebarOpen is a separate boolean; the resizer
+     only changes the width when the sidebar is open).
+   ──────────────────────────────────────────────────────────── */
+  function wireSidebarResize(tvEl) {
+    if (!tvEl) return;
+    var resizer = tvEl.querySelector('[data-sidebar-resize]');
+    if (!resizer) return;
+
+    var _dragging = false;
+    var _startX = 0;
+    var _startWidth = 0;
+
+    resizer.addEventListener('pointerdown', function (e) {
+      if (!state.sidebarOpen) return; // don't resize when sidebar is collapsed
+      _dragging = true;
+      _startX = e.clientX;
+      _startWidth = state.sidebarWidth;
+      resizer.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+
+    resizer.addEventListener('pointermove', function (e) {
+      if (!_dragging) return;
+      var delta = e.clientX - _startX;
+      var newWidth = Math.max(160, Math.min(480, _startWidth + delta));
+      state.sidebarWidth = newWidth;
+      // Apply directly to the .tv root without a full re-render
+      tvEl.style.setProperty('--tv-sidebar-w', newWidth + 'px');
+    });
+
+    resizer.addEventListener('pointerup', function (e) {
+      if (!_dragging) return;
+      _dragging = false;
+      resizer.releasePointerCapture(e.pointerId);
+      // Persist to localStorage
+      localStorage.setItem('tv-sidebar-w', String(state.sidebarWidth));
+    });
+
+    resizer.addEventListener('pointercancel', function (e) {
+      if (!_dragging) return;
+      _dragging = false;
+      resizer.releasePointerCapture(e.pointerId);
+    });
+  }
+
   function wireEvents(tvEl) {
     if (!tvEl) return;
+
+    // BUG-4: wire the sidebar drag-resize handle
+    wireSidebarResize(tvEl);
 
     tvEl.addEventListener('click', function (e) {
       // Tab close button
@@ -1334,7 +1403,9 @@
    ──────────────────────────────────────────────────────────── */
   function wireNativeMenuEvents() {
     if (!window.__TAURI__ || !window.__TAURI__.event) return;
-    var listen = window.__TAURI__.event.listen;
+    // Bind to preserve `this` — a bare `var listen = ...event.listen` loses the
+    // method receiver and the listeners silently never fire (broke the menu bar).
+    var listen = window.__TAURI__.event.listen.bind(window.__TAURI__.event);
 
     listen('menu:open-file', function () {
       if (window.TVFiles && typeof TVFiles.openPicker === 'function') TVFiles.openPicker();
@@ -1372,12 +1443,11 @@
       toggleSidebar();
     }).catch(function () {});
 
-    listen('menu:theme-light', function () {
-      setTheme('light');
-    }).catch(function () {});
-
-    listen('menu:theme-dark', function () {
-      setTheme('dark');
+    // BUG-3 FIX: single toggle replaces the two separate Light/Dark items.
+    // Flips between light and dark; matches the "menu:theme-toggle" event emitted
+    // by lib.rs on_menu_event.
+    listen('menu:theme-toggle', function () {
+      setTheme(state.theme === 'dark' ? 'light' : 'dark');
     }).catch(function () {});
 
     listen('menu:next-tab', function () {
@@ -1426,11 +1496,14 @@
       TVFiles.init();
     }
 
-    // Wire native menu events (only effective under Tauri)
-    if (document.readyState === 'complete') {
-      wireNativeMenuEvents();
-    } else {
+    // Wire native menu events (only effective under Tauri).
+    // Run now if the DOM is already parsed (readyState 'interactive' or 'complete');
+    // only defer when still 'loading'. The previous '=== complete' check could miss
+    // the DOMContentLoaded that had already fired → menu bar never wired.
+    if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', wireNativeMenuEvents);
+    } else {
+      wireNativeMenuEvents();
     }
 
     // Demo mode: open seed docs if ?demo=1 (tv-docs.js already gates the data)

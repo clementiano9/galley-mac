@@ -364,7 +364,7 @@ fn unwatch_file(
 ///   Edit               — Undo, Redo, separator, Cut, Copy, Paste, Select All,
 ///                        separator, Find ⌘F, Find in Files ⌘⇧F
 ///   View               — Command Palette ⌘K, Toggle Sidebar ⌘B, separator,
-///                        Theme Light, Theme Dark, separator,
+///                        Toggle Dark Mode, separator,
 ///                        Zoom In ⌘+, Zoom Out ⌘-, Actual Size ⌘0
 ///   Go                 — Previous Tab ⌘[, Next Tab ⌘]
 ///
@@ -467,17 +467,13 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         Some("CmdOrCtrl+B"),
     )?)?;
     view_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    // BUG-3 FIX: Replace two separate Light/Dark items with a single toggle.
+    // Emits "menu:theme-toggle"; the JS listener in wireNativeMenuEvents flips
+    // state.theme between 'light' and 'dark' via setTheme().
     view_menu.append(&MenuItem::with_id(
         app,
-        "menu:theme-light",
-        "Appearance: Light",
-        true,
-        None::<&str>,
-    )?)?;
-    view_menu.append(&MenuItem::with_id(
-        app,
-        "menu:theme-dark",
-        "Appearance: Dark",
+        "menu:theme-toggle",
+        "Toggle Dark Mode",
         true,
         None::<&str>,
     )?)?;
@@ -573,8 +569,7 @@ pub fn run() {
                 // View menu
                 | "menu:command-palette"
                 | "menu:toggle-sidebar"
-                | "menu:theme-light"
-                | "menu:theme-dark"
+                | "menu:theme-toggle"
                 | "menu:zoom-in"
                 | "menu:zoom-out"
                 | "menu:zoom-reset"
