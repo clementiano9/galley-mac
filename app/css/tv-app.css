@@ -487,6 +487,34 @@ html, body, #tv-root {
   /* Isolate diagram text from the .md reading-font zoom */
   font-size: 14px;
 }
+
+/* ── pinch-zoom viewport — wraps the injected SVG ───────────
+   .tv-diagram-viewport is the scroll + zoom container inserted by JS.
+   It clips to a sensible max-height so very large diagrams don't push
+   the page off-screen; the SVG sits at natural size inside and is
+   scaled via transform:scale(z) (CSSOM — CSP-safe).
+   position:relative is required to anchor the .tv-zoom-ctrl badge.   */
+.tv-diagram-viewport {
+  position: relative;
+  overflow: auto;
+  /* 70 vh cap: large diagrams scroll within the viewport instead of
+     pushing the whole page. Small diagrams (shorter than 70 vh) size
+     naturally — no min-height here so the wrapper hugs the SVG.     */
+  max-height: 70vh;
+  /* quiet scrollbar — same pattern as .md pre */
+  scrollbar-width: none;
+}
+.tv-diagram-viewport::-webkit-scrollbar { width: 0; height: 0; display: none; }
+.tv-diagram-viewport:hover {
+  scrollbar-width: thin;
+  scrollbar-color: var(--tv-scrollthumb) transparent;
+}
+.tv-diagram-viewport:hover::-webkit-scrollbar { width: 5px; height: 5px; display: block; }
+.tv-diagram-viewport:hover::-webkit-scrollbar-track { background: transparent; }
+.tv-diagram-viewport:hover::-webkit-scrollbar-thumb {
+  background: var(--tv-scrollthumb) !important;
+  border-radius: 4px;
+}
 .tv-diagram .dg-label {
   position: absolute; top: 10px; left: 12px; font-size: 10.5px; letter-spacing: .5px;
   text-transform: uppercase; color: var(--tv-text-muted) !important; font-weight: 600;
@@ -534,18 +562,33 @@ html, body, #tv-root {
    - margin:0 auto centres the diagram when it's narrower than the container.
 
    :has(> svg) collapses the loading min-height once the SVG arrives. */
-.tv-diagram:has(> svg) {
+/* ── real Mermaid SVG container ──────────────────────────────
+   The SVG is now a child of .tv-diagram-viewport (the pinch-zoom
+   scroll container) which is itself a child of .tv-diagram.
+   The viewport wrapper handles overflow/scroll; the SVG sits at
+   natural size and is scaled via transform:scale(z) by JS.
+
+   Key constraints:
+   - display:block prevents the inline-block gap below SVGs.
+   - max-width:100% at zoom=1 so the diagram fits the container.
+   - height:auto preserves aspect ratio; NO forced height.
+   - transform-origin:0 0 set by JS so zoom anchors to pointer.
+   - overflow:visible avoids clipping arrowheads at SVG edges.
+
+   :has(.tv-diagram-viewport) collapses loading min-height once
+   the viewport wrapper (holding the SVG) arrives.               */
+.tv-diagram:has(.tv-diagram-viewport) {
   /* remove loading min-height once real SVG is rendered */
   min-height: auto;
   padding: var(--tv-s4);
 }
-/* Centre and constrain the mermaid-emitted SVG */
-.tv-diagram > svg {
+/* The SVG inside the viewport: natural size, scalable by JS transform */
+.tv-diagram-viewport > svg {
   display: block;
   max-width: 100%;
   height: auto;        /* never force a height — preserves aspect ratio */
-  margin: 0 auto;
   overflow: visible;   /* avoid clipping arrowheads / shadows at edges */
+  /* transform + transform-origin are set via CSSOM in _attachPinchZoom */
 }
 /* Fallback: if the SVG lands inside a .dg-flow wrapper
    (error path in the renderer), still scale it correctly. */
@@ -554,6 +597,43 @@ html, body, #tv-root {
   display: block;
   max-width: 100%;
   height: auto;
+}
+
+/* ── zoom reset control ─────────────────────────────────────
+   Quiet badge in the bottom-right of the viewport at rest
+   (opacity .38); rises to .82 on viewport hover; full on own :hover.
+   Clicking resets zoom to 100%. Double-clicking the viewport also resets.
+   Font-size is fixed 11px so it doesn't inherit the .md reading-zoom.  */
+.tv-zoom-ctrl {
+  position: sticky;
+  bottom: 6px;
+  float: right;
+  margin-right: 6px;
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 7px;
+  border-radius: 5px;
+  border: 1px solid var(--tv-border);
+  background: var(--tv-bg-surface) !important;
+  font-family: var(--tv-font-ui);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--tv-text-muted) !important;
+  cursor: default;
+  opacity: .38;
+  transition: opacity .15s, background .12s;
+  -webkit-user-select: none; user-select: none;
+  z-index: 2;
+  pointer-events: auto;
+}
+.tv-diagram-viewport:hover .tv-zoom-ctrl { opacity: .82; }
+.tv-zoom-ctrl:hover {
+  opacity: 1;
+  background: var(--tv-bg-sel) !important;
+  color: var(--tv-text-secondary) !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tv-zoom-ctrl { transition: none !important; }
 }
 .dg-node {
   font-size: 13px; font-weight: 550; color: var(--tv-text-primary) !important;
