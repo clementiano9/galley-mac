@@ -217,8 +217,8 @@ html, body, #tv-root {
 }
 .tv-tree-row.folder { color: var(--tv-text-primary) !important; font-weight: 600; }
 .tv-tree-row.file { padding-left: 26px; }
-.tv-tree-row.active { background: var(--tv-accent-weak) !important; color: var(--tv-accent-text) !important; border-left: 2px solid var(--tv-accent); padding-left: 24px; }
-.tv-tree-row.folder.active { padding-left: calc(var(--tv-s2) - 2px); }
+/* UX-26: selection cue is tint + semibold weight (non-color signal), macOS list-view style. */
+.tv-tree-row.active { background: var(--tv-accent-weak) !important; color: var(--tv-accent-text) !important; font-weight: 600; }
 .tv-tree-row.active .ic { color: var(--tv-accent-text) !important; }
 .tv-tree-row:hover:not(.active) { background: var(--tv-bg-hover) !important; }
 /* UX-10: Keyboard cursor highlight — visible in both light and dark themes,
@@ -793,7 +793,7 @@ html, body, #tv-root {
 .tv-pal-row .ic { color: var(--tv-text-muted) !important; flex: 0 0 auto; display: inline-flex; }
 .tv-pal-row .sub { color: var(--tv-text-muted) !important; font-size: 12.5px; margin-left: auto; }
 .tv-pal-row .hl { color: var(--tv-accent-text) !important; font-weight: 600; }
-.tv-pal-row.sel { background: var(--tv-accent-weak) !important; border-left: 2px solid var(--tv-accent); padding-left: 10px; }
+.tv-pal-row.sel { background: var(--tv-accent-weak) !important; color: var(--tv-accent-text) !important; font-weight: 600; }
 .tv-pal-row.sel .ic { color: var(--tv-accent-text) !important; }
 .tv-pal-row.sel .sub { color: var(--tv-accent-text) !important; opacity: .8; }
 .tv-pal-divider { height: 1px; background: var(--tv-border) !important; margin: 6px 8px; }
@@ -839,7 +839,11 @@ html, body, #tv-root {
   font-size: 13px; color: var(--tv-text-secondary) !important; cursor: default;
 }
 .tv-sr-row:hover { background: var(--tv-bg-hover) !important; }
-.tv-sr-row.sel { background: var(--tv-accent-weak) !important; border-left: 2px solid var(--tv-accent); padding-left: 10px; }
+.tv-sr-row.sel { background: var(--tv-accent-weak) !important; color: var(--tv-text-primary) !important; font-weight: 600; }
+/* UX-26: forced-colors fallback — selection maps to system Highlight in high-contrast mode. */
+@media (forced-colors: active) {
+  .tv-tree-row.active, .tv-pal-row.sel, .tv-sr-row.sel { background: Highlight !important; color: HighlightText !important; font-weight: 700; }
+}
 .tv-sr-row .ln { flex: 0 0 44px; color: var(--tv-text-muted) !important; font-variant-numeric: tabular-nums; font-family: var(--tv-font-mono); font-size: 12px; }
 .tv-sr-row .snip { flex: 1; }
 .tv-sr-row mark { background: var(--tv-accent-weak) !important; color: var(--tv-accent-text) !important; border-radius: 3px; padding: 0 2px; font-weight: 600; }
