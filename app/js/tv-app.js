@@ -52,6 +52,12 @@
     }()),
   };
 
+  // UX-10: JS keyboard cursor for sidebar navigation.
+  // Tracks which sidebar option is highlighted via keyboard.
+  // Uses ID (data-sidebar-tab value), NOT index, so it survives re-renders.
+  // active=false means arrow keys scroll content normally; they never hijack.
+  var sbKbd = { active: false, id: null };
+
   /* ── Tab constructor ──────────────────────────────────────── */
   function makeTab(opts) {
     return {
@@ -166,6 +172,7 @@
         '<div class="' + cls + '"' +
           ' role="tab"' +
           ' aria-selected="' + (isActive ? 'true' : 'false') + '"' +
+          ' aria-controls="tv-viewer-panel"' +
           ' tabindex="' + (isActive ? '0' : '-1') + '"' +
           ' data-tab-id="' + esc(t.id) + '">' +
           lead +
@@ -186,9 +193,9 @@
     return (
       '<div class="tv-tabbar" role="tablist">' +
         '<div class="tv-tab-strip">' + tabs + '</div>' +
-        '<div class="tv-newtab" data-newtab title="New tab (⌘O)">' +
+        '<button class="tv-newtab" data-newtab title="New tab (⌘O)" aria-label="Open new tab (⌘O)" type="button">' +
           (icons.plus || '') +
-        '</div>' +
+        '</button>' +
       '</div>'
     );
   }
@@ -210,46 +217,6 @@
       }
     });
 
-    var rows = '';
-
-    // Grouped entries (real directory paths from native opens)
-    Object.keys(groups).forEach(function (path) {
-      rows += (
-        '<div class="tv-tree-row folder">' +
-          ic('folder') +
-          '<span>' + esc(path) + '</span>' +
-        '</div>'
-      );
-      groups[path].forEach(function (t) {
-        var cls = 'tv-tree-row file' + (t.id === state.activeId ? ' active' : '');
-        rows += (
-          '<div class="' + cls + '" data-sidebar-tab="' + esc(t.id) + '">' +
-            ic('doc') +
-            '<span>' + esc(t.name) + '</span>' +
-            (t.live ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
-          '</div>'
-        );
-      });
-    });
-
-    // Ungrouped entries (browser drag-drop with no real path) under "Open"
-    if (ungrouped.length) {
-      if (Object.keys(groups).length) {
-        rows += '<div class="tv-side-divider"></div>';
-      }
-      rows += '<div class="tv-side-label">Open</div>';
-      ungrouped.forEach(function (t) {
-        var cls = 'tv-tree-row file' + (t.id === state.activeId ? ' active' : '');
-        rows += (
-          '<div class="' + cls + '" data-sidebar-tab="' + esc(t.id) + '">' +
-            ic('doc') +
-            '<span>' + esc(t.name) + '</span>' +
-            (t.live ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
-          '</div>'
-        );
-      });
-    }
-
     // F-02: Recent section — closed files from localStorage not currently open
     var recentPaths = loadRecentPaths();
     // Build a set of open nativePaths for dedup
@@ -260,6 +227,67 @@
     var closedRecent = recentPaths.filter(function (p) {
       return !openNativePaths[p];
     }).slice(0, 10);
+
+    // UX-10: Build rows with ARIA listbox/option roles.
+    // File rows (open tabs) get role="option" with a stable id="sbopt-<tabId>".
+    // No per-row roving tabindex — navigation is driven by the JS keyboard cursor
+    // (sbKbd) + aria-activedescendant, independent of DOM focus (WebKit-safe).
+    var rows = '';
+
+    // Sanitize a tab id for use in an HTML id attribute (ids must not contain spaces
+    // or characters invalid in selectors; TV ids are "tv-N-timestamp" which are safe,
+    // but we replace any non-word chars defensively).
+    function sbOptId(tabId) {
+      return 'sbopt-' + String(tabId).replace(/[^\w-]/g, '_');
+    }
+
+    Object.keys(groups).forEach(function (path) {
+      rows += (
+        '<div class="tv-tree-row folder" role="group" aria-label="' + esc(path) + '">' +
+          ic('folder') +
+          '<span>' + esc(path) + '</span>' +
+        '</div>'
+      );
+      groups[path].forEach(function (t) {
+        var isActive = t.id === state.activeId;
+        var cls = 'tv-tree-row file' + (isActive ? ' active' : '');
+        rows += (
+          '<div class="' + cls + '"' +
+            ' id="' + sbOptId(t.id) + '"' +
+            ' role="option"' +
+            ' aria-selected="' + (isActive ? 'true' : 'false') + '"' +
+            ' tabindex="-1"' +
+            ' data-sidebar-tab="' + esc(t.id) + '">' +
+            ic('doc') +
+            '<span>' + esc(t.name) + '</span>' +
+            (t.live ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
+          '</div>'
+        );
+      });
+    });
+
+    if (ungrouped.length) {
+      if (Object.keys(groups).length) {
+        rows += '<div class="tv-side-divider"></div>';
+      }
+      rows += '<div class="tv-side-label">Open</div>';
+      ungrouped.forEach(function (t) {
+        var isActive = t.id === state.activeId;
+        var cls = 'tv-tree-row file' + (isActive ? ' active' : '');
+        rows += (
+          '<div class="' + cls + '"' +
+            ' id="' + sbOptId(t.id) + '"' +
+            ' role="option"' +
+            ' aria-selected="' + (isActive ? 'true' : 'false') + '"' +
+            ' tabindex="-1"' +
+            ' data-sidebar-tab="' + esc(t.id) + '">' +
+            ic('doc') +
+            '<span>' + esc(t.name) + '</span>' +
+            (t.live ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
+          '</div>'
+        );
+      });
+    }
 
     if (closedRecent.length) {
       rows += '<div class="tv-side-divider"></div>';
@@ -278,18 +306,22 @@
     var sidebarCls = 'tv-sidebar' + (collapsed ? ' collapsed' : '');
     return (
       '<aside class="' + sidebarCls + '">' +
-        '<div class="tv-side-scroll">' + rows + '</div>' +
+        '<div class="tv-side-scroll"' +
+          ' id="tv-sidebar-listbox"' +
+          ' role="listbox"' +
+          ' aria-label="Open files"' +
+          ' aria-orientation="vertical"' +
+          ' tabindex="-1">' + rows + '</div>' +
         '<div class="tv-search">' +
           '<div class="tv-search-box" data-open-find>' +
             ic('search') +
-            '<span>Find…</span>' +
+            '<span>Find in document</span>' +
             '<span class="kbd">⌘F</span>' +
           '</div>' +
         '</div>' +
         // BUG-4: drag handle on the sidebar's right edge.
         // dev2 styles this as a ~5px col-resize-cursor strip.
         // Pointer drag logic is wired in wireSidebarResize().
-        '<div class="tv-sidebar-resizer" data-sidebar-resize></div>' +
       '</aside>'
     );
   }
@@ -305,7 +337,8 @@
         recentPaths.slice(0, 8).forEach(function (p) {
           var name = p.split('/').pop() || p;
           recentHtml += (
-            '<div class="tv-recent-row" data-recent-path="' + esc(p) + '">' +
+            '<div class="tv-recent-row" data-recent-path="' + esc(p) + '"' +
+              ' role="button" tabindex="0">' +
               '<span class="tv-recent-name">' + esc(name) + '</span>' +
               '<span class="tv-recent-path">' + esc(p) + '</span>' +
             '</div>'
@@ -314,7 +347,7 @@
         recentHtml += '</div>';
       }
       return (
-        '<div class="tv-viewer">' +
+        '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
           '<div class="tv-empty">' +
             '<div class="tv-dropzone">' +
               '<span class="dz-ic">' + ((window.TV_ICONS || {}).tray || '') + '</span>' +
@@ -353,13 +386,13 @@
       }
       var toolbar = (
         '<div class="tv-edit-toolbar">' +
-          '<span class="tv-edit-btn" data-edit-esc><span class="kbd">esc</span> Reading</span>' +
-          '<span class="tv-edit-btn primary" data-edit-save><span class="kbd">⌘S</span> Save</span>' +
+          '<button class="tv-edit-btn" type="button" data-edit-esc><span class="kbd">esc</span> Reading</button>' +
+          '<button class="tv-edit-btn primary" type="button" data-edit-save><span class="kbd">⌘S</span> Save</button>' +
           '<span class="tv-edit-meta">' + wordCount + ' words</span>' +
         '</div>'
       );
       return (
-        '<div class="tv-viewer">' +
+        '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
           toolbar +
           '<div class="tv-scroll" data-scroll>' +
             '<div class="tv-content">' +
@@ -375,14 +408,26 @@
     if (window.tvRenderMarkdown) {
       mdHtml = window.tvRenderMarkdown(tab.source);
     }
+    // UX-21: pencil hover button (top-right of .tv-content on hover)
+    var pencilIc = (window.TV_ICONS && window.TV_ICONS.pencil) ? window.TV_ICONS.pencil : '';
+    var pencilBtn = (
+      '<button class="tv-edit-pencil" data-edit-pencil' +
+        ' title="Edit (⌘E)" aria-label="Edit document (⌘E)" type="button">' +
+        pencilIc +
+      '</button>'
+    );
+    // UX-21: status bar hint — "⌘E to edit" shown in reading mode
+    var editHint = '<div class="tv-edit-hint">⌘E to edit</div>';
     return (
-      '<div class="tv-viewer">' +
+      '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
         '<div class="tv-scroll" data-scroll>' +
-          '<div class="tv-content">' +
+          '<div class="tv-content tv-content--readable">' +
+            pencilBtn +
             '<div class="md" data-md>' + mdHtml + '</div>' +
           '</div>' +
           '<div class="tv-overlay-fade"></div>' +
         '</div>' +
+        editHint +
       '</div>'
     );
   }
@@ -402,9 +447,9 @@
         '</div>' +
       '</div>' +
       '<div class="tv-tabbar" role="tablist">' +
-        '<div class="tv-newtab" data-newtab title="Open file (⌘O)">' +
+        '<button class="tv-newtab" data-newtab title="Open file (⌘O)" aria-label="Open new tab (⌘O)" type="button">' +
           (icons.plus || '') +
-        '</div>' +
+        '</button>' +
       '</div>' +
       '<div class="tv-body">' +
         buildViewer() +
@@ -455,8 +500,13 @@
     if (!state.tabs.length) {
       html = buildEmpty();
     } else {
+      // UX-20: resizer is a sibling of the sidebar in .tv-body (not a child of .tv-sidebar)
+      // so .tv-sidebar overflow:hidden does not clip its grab zone.
+      var resizerHtml = state.sidebarOpen
+        ? '<div class="tv-sidebar-resizer" data-sidebar-resize></div>'
+        : '';
       html = buildTitlebar() + buildTabbar() +
-        '<div class="tv-body">' + buildSidebar() + buildViewer() + '</div>';
+        '<div class="tv-body">' + buildSidebar() + resizerHtml + buildViewer() + '</div>';
     }
 
     root.innerHTML = '<div class="' + rootCls + '" style="--tv-md-font:' + state.fontSize + 'px">' + html + '</div>';
@@ -482,6 +532,28 @@
         }, { passive: true });
       })(newScroll, activeTab);
     }
+
+    // UX-25: Set document language from YAML front-matter (lang:/language: key)
+    // Minimal implementation: check front-matter at top of active doc source only.
+    // Resets to "en" if no lang found or no active tab.
+    (function () {
+      var langTab = getActiveTab();
+      var docLang = 'en';
+      if (langTab && langTab.source) {
+        var src = langTab.source;
+        // Check for YAML front-matter block at start: ---\n...\n---
+        var fmMatch = src.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+        if (fmMatch) {
+          var fm = fmMatch[1];
+          // Look for lang: or language: key (case-insensitive)
+          var langMatch = fm.match(/^(?:lang|language)\s*:\s*["']?([a-zA-Z]{2,8}(?:-[a-zA-Z0-9]{1,8})*)["']?\s*$/im);
+          if (langMatch && langMatch[1]) {
+            docLang = langMatch[1].trim();
+          }
+        }
+      }
+      document.documentElement.lang = docLang;
+    }());
 
     // Resolve diagrams after paint (DR-02)
     if (state.mode === 'reading' && window.tvResolveDiagrams) {
@@ -526,6 +598,47 @@
     }
 
     tvEmit('render', { state: state });
+
+    // UX-10: Reapply keyboard cursor highlight after every render (innerHTML rebuild
+    // wipes class state). Only runs when sbKbd.active is true.
+    renderSidebarCursor();
+  }
+
+  // UX-10: Renders the sidebar keyboard cursor highlight using .kbd-cursor class
+  // and aria-activedescendant on the listbox. Uses sbKbd.id (tab id) NOT index,
+  // so it survives re-renders correctly. No DOM focus() call — WebKit-safe.
+  function renderSidebarCursor() {
+    var listbox = document.getElementById('tv-sidebar-listbox');
+    if (!listbox) return;
+
+    // Clear all cursor highlights and aria-activedescendant
+    var opts = Array.prototype.slice.call(
+      listbox.querySelectorAll('[role="option"][data-sidebar-tab]')
+    );
+    opts.forEach(function (el) { el.classList.remove('kbd-cursor'); });
+    listbox.removeAttribute('aria-activedescendant');
+
+    if (!sbKbd.active || !sbKbd.id) return;
+
+    // Find the option matching sbKbd.id
+    var target = null;
+    for (var i = 0; i < opts.length; i++) {
+      if (opts[i].getAttribute('data-sidebar-tab') === sbKbd.id) {
+        target = opts[i]; break;
+      }
+    }
+
+    // If the cursor id no longer exists (tab was closed), clamp to first option
+    if (!target && opts.length) {
+      target = opts[0];
+      sbKbd.id = target.getAttribute('data-sidebar-tab');
+    }
+
+    if (target) {
+      target.classList.add('kbd-cursor');
+      listbox.setAttribute('aria-activedescendant', target.id);
+      target.scrollIntoView({ block: 'nearest' });
+    }
   }
 
   /* ────────────────────────────────────────────────────────────
@@ -796,6 +909,27 @@
     // BUG-4: wire the sidebar drag-resize handle
     wireSidebarResize(tvEl);
 
+    // UX-11: keyboard activation for .tv-recent-row (role="button")
+    tvEl.addEventListener('keydown', function (e) {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      var recentRow = e.target.closest('[data-recent-path]');
+      if (!recentRow) return;
+      e.preventDefault();
+      recentRow.click();
+    });
+
+    // UX-10: Deactivate sidebar keyboard cursor when user scrolls content.
+    // Wheel on the content/viewer area means the user's attention is there.
+    var scrollArea = tvEl.querySelector('.tv-scroll');
+    if (scrollArea) {
+      scrollArea.addEventListener('wheel', function () {
+        if (sbKbd.active) {
+          sbKbd.active = false;
+          renderSidebarCursor();
+        }
+      }, { passive: true });
+    }
+
     tvEl.addEventListener('click', function (e) {
       // Tab close button
       var closeBtn = e.target.closest('[data-close-tab]');
@@ -812,11 +946,30 @@
         return;
       }
 
-      // Sidebar row click
+      // Sidebar row click: activate tab and engage keyboard cursor mode.
       var sidebarRow = e.target.closest('[data-sidebar-tab]');
       if (sidebarRow) {
-        activateTab(sidebarRow.getAttribute('data-sidebar-tab'));
+        var sidebarTabId = sidebarRow.getAttribute('data-sidebar-tab');
+        activateTab(sidebarTabId);
+        // UX-10: engage keyboard cursor on the clicked row so ArrowDown/Up work
+        // immediately without any dependence on DOM focus (WebKit-safe).
+        sbKbd.active = true;
+        sbKbd.id = sidebarTabId;
+        // renderSidebarCursor is already called inside render() via activateTab,
+        // but sbKbd may have been set after that render; apply it now via rAF
+        // so the new DOM is available.
+        requestAnimationFrame(function () { renderSidebarCursor(); });
         return;
+      }
+
+      // UX-10: Clicking the content/viewer area deactivates sidebar keyboard mode
+      // so arrow keys revert to scrolling content (normal browser behaviour).
+      if (e.target.closest('.tv-scroll') || e.target.closest('.tv-content') ||
+          e.target.closest('#tv-viewer-panel')) {
+        if (sbKbd.active) {
+          sbKbd.active = false;
+          renderSidebarCursor();
+        }
       }
 
       // F-02: sidebar recent row click → reopen closed file
@@ -857,6 +1010,14 @@
       // Sidebar find → open in-doc find bar (F-07/F-14)
       if (e.target.closest('[data-open-find]')) {
         _openFindBar();
+        return;
+      }
+
+      // UX-21: pencil hover button → enter edit mode
+      if (e.target.closest('[data-edit-pencil]')) {
+        if (state.tabs.length && state.mode === 'reading') {
+          setMode('edit');
+        }
         return;
       }
 
@@ -1282,13 +1443,110 @@
   }
 
   /* ────────────────────────────────────────────────────────────
+     UX-10: SIDEBAR KEYBOARD CURSOR HANDLER (document-level)
+     Replaces the old roving-tabindex approach which relied on
+     el.focus() on non-form elements — a silent no-op on macOS
+     when AppleKeyboardUIMode=0 (Full Keyboard Access is OFF).
+     This handler is entirely focus-independent (WebKit-safe).
+   ──────────────────────────────────────────────────────────── */
+  document.addEventListener('keydown', function (e) {
+    // Never hijack typing inside form controls or any overlay/editor.
+    // Check for: inputs, textareas, contenteditable, find bar, palette, search, edit area.
+    if (e.target.closest('input, textarea, [contenteditable]')) return;
+    if (e.target.closest('.tv-find, .tv-palette-scrim, .tv-search-container, .tv-edit-area')) return;
+
+    // Only handle navigation keys here; other keys fall through to the keyboard router below.
+    var navKey = (e.key === 'ArrowDown' || e.key === 'ArrowUp' ||
+                  e.key === 'Enter' || e.key === ' ' ||
+                  e.key === 'Home' || e.key === 'End' ||
+                  e.key === 'Escape');
+    if (!navKey) return;
+
+    // Escape: deactivate cursor if active. Both this handler and the main keyboard
+    // router are separate document listeners so both always fire. The main router
+    // handles Escape priority (find bar → palette → edit mode → sbKbd). This handler
+    // just ensures sbKbd is cleared; the main router will also call renderSidebarCursor
+    // via its own guard. No preventDefault here — the main router owns that.
+    if (e.key === 'Escape') {
+      if (sbKbd.active) {
+        sbKbd.active = false;
+        renderSidebarCursor();
+      }
+      return; // return so arrows/Enter/etc below don't run on Escape
+    }
+
+    // All remaining nav keys (arrows, Enter, Space, Home, End) only act when
+    // the sidebar keyboard cursor is active. Otherwise let the browser handle
+    // them (e.g. arrow keys scroll content normally).
+    if (!sbKbd.active) return;
+
+    var listbox = document.getElementById('tv-sidebar-listbox');
+    if (!listbox) return;
+    var opts = Array.prototype.slice.call(
+      listbox.querySelectorAll('[role="option"][data-sidebar-tab]')
+    );
+    if (!opts.length) return;
+
+    // Find current cursor index (fallback to 0)
+    var curIdx = 0;
+    for (var i = 0; i < opts.length; i++) {
+      if (opts[i].getAttribute('data-sidebar-tab') === sbKbd.id) {
+        curIdx = i; break;
+      }
+    }
+
+    if (e.key === 'ArrowDown') {
+      e.preventDefault();
+      var nextIdx = Math.min(curIdx + 1, opts.length - 1);
+      sbKbd.id = opts[nextIdx].getAttribute('data-sidebar-tab');
+      renderSidebarCursor();
+      return;
+    }
+
+    if (e.key === 'ArrowUp') {
+      e.preventDefault();
+      var prevIdx = Math.max(curIdx - 1, 0);
+      sbKbd.id = opts[prevIdx].getAttribute('data-sidebar-tab');
+      renderSidebarCursor();
+      return;
+    }
+
+    if (e.key === 'Home') {
+      e.preventDefault();
+      sbKbd.id = opts[0].getAttribute('data-sidebar-tab');
+      renderSidebarCursor();
+      return;
+    }
+
+    if (e.key === 'End') {
+      e.preventDefault();
+      sbKbd.id = opts[opts.length - 1].getAttribute('data-sidebar-tab');
+      renderSidebarCursor();
+      return;
+    }
+
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      if (sbKbd.id) {
+        activateTab(sbKbd.id);
+        // activateTab → render → renderSidebarCursor (called inside render).
+        // sbKbd.active stays true so arrows keep working post-Enter.
+        // The cursor id stays on the just-opened row; reapply after rAF
+        // to ensure the new DOM has the class.
+        requestAnimationFrame(function () { renderSidebarCursor(); });
+      }
+      return;
+    }
+  });
+
+  /* ────────────────────────────────────────────────────────────
      KEYBOARD ROUTER
    ──────────────────────────────────────────────────────────── */
   document.addEventListener('keydown', function (e) {
     var meta = e.metaKey || e.ctrlKey;
     var k = e.key;
 
-    // Esc — close find bar first, then overlays, then exit edit
+    // Esc — close find bar first, then overlays, then exit edit, then sidebar cursor
     if (k === 'Escape') {
       if (_findOpen) {
         _closeFindBar(); e.preventDefault(); return;
@@ -1310,6 +1568,9 @@
     // ⌘K — command palette toggle
     if (k === 'k' || k === 'K') {
       e.preventDefault();
+      // UX-10: opening an overlay deactivates sidebar keyboard cursor
+      sbKbd.active = false;
+      renderSidebarCursor();
       if (window.TVPalette) {
         TVPalette.isOpen && TVPalette.isOpen() ? TVPalette.close() : TVPalette.open();
       }
@@ -1367,6 +1628,11 @@
     if (k === 'e' || k === 'E') {
       e.preventDefault();
       if (state.tabs.length) {
+        // UX-10: entering edit mode deactivates sidebar keyboard cursor
+        if (state.mode !== 'edit') {
+          sbKbd.active = false;
+          renderSidebarCursor();
+        }
         setMode(state.mode === 'edit' ? 'reading' : 'edit');
       }
       return;

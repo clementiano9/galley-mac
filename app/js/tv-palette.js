@@ -197,7 +197,7 @@
 
     // ── Render HTML ───────────────────────────────────────
     if (!groups.length) {
-      return '<div class="tv-pal-group" style="padding:18px 12px;text-align:center">No results</div>';
+      return '<div class="tv-pal-empty">No results</div>';
     }
 
     var html = '';
@@ -239,6 +239,9 @@
         '<div class="tv-pal-input">' +
           '<span class="ic">' + (I.search || '') + '</span>' +
           '<input class="tv-pal-input-field" id="tv-pal-input-field" type="text" autocomplete="off" spellcheck="false"' +
+            ' role="combobox"' +
+            ' aria-expanded="true"' +
+            ' aria-haspopup="listbox"' +
             ' aria-label="Command palette"' +
             ' aria-autocomplete="list"' +
             ' aria-controls="tv-pal-list"' +

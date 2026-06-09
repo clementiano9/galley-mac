@@ -69,7 +69,17 @@
     document.body.appendChild(t);
     setTimeout(function () {
       t.classList.add('out');
-      setTimeout(function () { if (t.parentNode) t.parentNode.removeChild(t); }, 400);
+      // UX-17: animationend may never fire when prefers-reduced-motion disables
+      // the animation. setTimeout fallback ensures removal regardless.
+      var removed = false;
+      function removeSelf() {
+        if (!removed && t.parentNode) {
+          removed = true;
+          t.parentNode.removeChild(t);
+        }
+      }
+      t.addEventListener('animationend', removeSelf);
+      setTimeout(removeSelf, 400); // fallback: remove after animation duration
     }, 3000);
   }
 

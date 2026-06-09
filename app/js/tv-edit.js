@@ -9,11 +9,24 @@
 (function () {
 
   // ── wordCount ─────────────────────────────────────────────
-  // Strip markdown punctuation then count whitespace-separated tokens.
+  // UX-27: Strip non-human-readable content before counting:
+  //   1. YAML front-matter block (---…---) at document start
+  //   2. URLs (http/https)
+  //   3. HTML tags
+  //   4. Markdown punctuation characters
+  // Approximation — closer to human-readable counts than raw token split.
   function wordCount(src) {
     if (!src) return 0;
-    var stripped = src.replace(/[#>*`|_\-]/g, " ");
-    return stripped.split(/\s+/).filter(function (w) { return w.length > 0; }).length;
+    var s = src;
+    // 1. Strip YAML front-matter at document start
+    s = s.replace(/^---[\s\S]*?---\n?/m, " ");
+    // 2. Strip URLs
+    s = s.replace(/https?:\/\/\S+/g, " ");
+    // 3. Strip HTML tags
+    s = s.replace(/<[^>]+>/g, " ");
+    // 4. Strip markdown punctuation
+    s = s.replace(/[#>*`|_\-]/g, " ");
+    return s.split(/\s+/).filter(function (w) { return w.length > 0; }).length;
   }
 
   // ── renderSource ─────────────────────────────────────────
@@ -47,6 +60,7 @@
           ' spellcheck="false"' +
           ' autocorrect="off"' +
           ' autocapitalize="off"' +
+          ' aria-label="Edit document source"' +
         '>' +
         // NOTE: do NOT embed src here — wire() sets textarea.value from tab.source
         // so the single-ownership invariant is maintained and no HTML-encoding issues

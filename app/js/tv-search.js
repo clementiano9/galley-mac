@@ -106,12 +106,12 @@
     var html = '';
 
     if (!query) {
-      html = '<div class="tv-sr-count" style="padding-top:8px">Type to search across all open tabs…</div>';
+      html = '<div class="tv-sr-count tv-sr-count--hint">Type to search across all open tabs…</div>';
       return html;
     }
 
     if (!result.totalMatches) {
-      html = '<div class="tv-sr-count" style="padding-top:8px">No results for <strong>' + _esc(query) + '</strong></div>';
+      html = '<div class="tv-sr-count tv-sr-count--hint">No results for <strong>' + _esc(query) + '</strong></div>';
       return html;
     }
 
@@ -272,23 +272,21 @@
 
       _containerEl = document.createElement('div');
       _containerEl.className = 'tv-search-container';
-      _containerEl.style.cssText = 'display:flex;flex-direction:column;flex:1;min-height:0;overflow:hidden;';
 
       var barHtml =
         '<div class="tv-searchbar">' +
           '<div class="field">' +
             '<span class="ic">' + (I.search || '') + '</span>' +
             '<input class="tv-search-field" type="text" autocomplete="off" spellcheck="false"' +
-              ' placeholder="Search…" style="flex:1;border:none;outline:none;background:transparent;' +
-              'font-size:14px;color:inherit;">' +
+              ' placeholder="Search…" aria-label="Search across all open tabs">' +
           '</div>' +
           '<span class="scope">All open tabs · ⌘⇧F</span>' +
         '</div>';
 
       var resultsHtml =
-        '<div class="tv-scroll" style="flex:1;overflow-y:auto;">' +
+        '<div class="tv-scroll tv-search-scroll">' +
           '<div class="tv-search-results">' +
-            '<div class="tv-sr-count" style="padding-top:8px">Type to search across all open tabs…</div>' +
+            '<div class="tv-sr-count tv-sr-count--hint">Type to search across all open tabs…</div>' +
           '</div>' +
         '</div>';
 

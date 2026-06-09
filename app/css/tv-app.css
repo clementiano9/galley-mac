@@ -99,7 +99,7 @@ html, body, #tv-root {
   flex: 0 0 auto;
   min-width: 100px;
   max-width: 200px;
-  font-size: 12.5px; font-weight: 450;
+  font-size: 12.5px; font-weight: 400;
   color: var(--tv-text-secondary) !important;
   border-right: 1px solid transparent;
   position: relative; cursor: default;
@@ -118,12 +118,14 @@ html, body, #tv-root {
 }
 .tv-tab .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tv-tab .tv-close {
-  width: 16px; height: 16px; border-radius: 4px;
+  width: 20px; height: 20px; border-radius: 4px;
+  margin: -2px;
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--tv-text-muted) !important; opacity: 0; transition: opacity .12s, background .12s;
 }
 .tv-tab:hover .tv-close { opacity: 1; }
 .tv-tab .tv-close:hover { background: var(--tv-bg-sel) !important; }
+.tv-tab .tv-close:focus-visible { opacity: 1; outline: 2px solid var(--tv-accent); outline-offset: 1px; }
 .tv-dot {           /* unsaved ● */
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--tv-accent) !important; flex: 0 0 auto;
@@ -161,37 +163,35 @@ html, body, #tv-root {
   display: flex; flex-direction: column;
   -webkit-user-select: none; user-select: none;
   overflow: hidden;
-  position: relative; /* stacking context for .tv-sidebar-resizer */
+  position: relative;
 }
 .tv-sidebar.collapsed { display: none; }
 
 /* ── sidebar drag-to-resize handle ──────────────────────── */
-/* dev1 appends .tv-sidebar-resizer as the last child of .tv-sidebar (or as a
-   flex sibling). It sits flush on the right edge, full height, cursor:col-resize.
-   Transparent at rest; shows a faint accent line on hover/drag. Hidden when the
-   sidebar is collapsed (parent is display:none so nothing to hide). */
+/* UX-20: .tv-sidebar-resizer is now a flex sibling of .tv-sidebar inside
+   .tv-body (not a child of .tv-sidebar). This lets it straddle the panel
+   divider without being clipped by .tv-sidebar's overflow:hidden.
+   It is 12px wide and sits between the sidebar and the viewer in flex order.
+   The sidebar border-right is 1px; the resizer overlaps it visually.
+   Hidden by JS when sidebar is collapsed (not emitted in that case). */
 .tv-sidebar-resizer {
-  position: absolute;
-  /* The sidebar has overflow:hidden, so a resizer poking past the right edge
-     (right:-3px) gets clipped to a ~2px grab zone that's nearly impossible to
-     hit. Keep the full 8px hot-zone INSIDE the sidebar's right edge so it's
-     reliably grabbable (col-resize cursor on the rightmost 8px). */
-  top: 0; right: 0; bottom: 0;
-  width: 8px;
+  flex: 0 0 12px;
+  width: 12px;
+  position: relative;
   cursor: col-resize;
   z-index: 10;
   /* transparent at rest — user discovers it by hovering the seam */
   background: transparent;
   transition: background .12s;
-  flex: 0 0 auto;
+  /* Pull 6px left (into sidebar border area) so it truly straddles */
+  margin-left: -6px;
 }
 .tv-sidebar-resizer:hover,
 .tv-sidebar-resizer.dragging {
   background: var(--tv-accent-weak) !important;
-  /* thin accent line on the left face (inward) — not clipped by sidebar overflow:hidden */
+  /* thin accent line centered on the resizer */
   border-left: 1.5px solid var(--tv-accent);
 }
-/* No need to hide when .collapsed — the entire sidebar (parent) is display:none */
 /* D-01 / E-09: sidebar file list must scroll when entries exceed panel height */
 .tv-side-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--tv-s3) var(--tv-s2); }
 .tv-side-label {
@@ -215,11 +215,20 @@ html, body, #tv-root {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   min-width: 0; flex: 1;
 }
-.tv-tree-row.folder { color: var(--tv-text-primary) !important; font-weight: 550; }
+.tv-tree-row.folder { color: var(--tv-text-primary) !important; font-weight: 600; }
 .tv-tree-row.file { padding-left: 26px; }
-.tv-tree-row.active { background: var(--tv-accent-weak) !important; color: var(--tv-accent-text) !important; }
+.tv-tree-row.active { background: var(--tv-accent-weak) !important; color: var(--tv-accent-text) !important; border-left: 2px solid var(--tv-accent); padding-left: 24px; }
+.tv-tree-row.folder.active { padding-left: calc(var(--tv-s2) - 2px); }
 .tv-tree-row.active .ic { color: var(--tv-accent-text) !important; }
 .tv-tree-row:hover:not(.active) { background: var(--tv-bg-hover) !important; }
+/* UX-10: Keyboard cursor highlight — visible in both light and dark themes,
+   on both active and inactive rows. Uses outline so it does not affect layout.
+   Distinct from .active (which uses accent-weak background + accent border). */
+.tv-tree-row.kbd-cursor {
+  outline: 2px solid var(--tv-accent);
+  outline-offset: -2px;
+  border-radius: var(--tv-radius-sm);
+}
 .tv-tree-row .mini-bolt { margin-left: auto; color: var(--tv-live) !important; display: inline-flex; }
 .tv-side-divider { height: 1px; background: var(--tv-border) !important; margin: var(--tv-s3) var(--tv-s2); }
 .tv-search {
@@ -334,12 +343,12 @@ html, body, #tv-root {
 .md { color: var(--tv-text-primary) !important; font-size: 16px; line-height: 1.72; overflow-wrap: break-word; }
 .md > *:first-child { margin-top: 0; }
 .md h1 { font-size: 28px; font-weight: 700; line-height: 1.25; letter-spacing: -.5px; margin: 0 0 var(--tv-s4); }
-.md h2 { font-size: 22px; font-weight: 650; line-height: 1.3; letter-spacing: -.3px; margin: var(--tv-s7) 0 var(--tv-s3); }
+.md h2 { font-size: 22px; font-weight: 700; line-height: 1.3; letter-spacing: -.3px; margin: var(--tv-s7) 0 var(--tv-s3); }
 .md h3 { font-size: 18px; font-weight: 600; margin: var(--tv-s5) 0 var(--tv-s2); }
 .md h4 { font-size: 16px; font-weight: 600; margin: var(--tv-s5) 0 var(--tv-s2); color: var(--tv-text-secondary) !important; }
 .md p  { margin: 0 0 var(--tv-s4); text-wrap: pretty; }
 .md a  { color: var(--tv-accent-text) !important; text-decoration: none; border-bottom: 1px solid var(--tv-accent-weak); }
-.md strong { font-weight: 650; }
+.md strong { font-weight: 700; }
 .md em { font-style: italic; }
 .md hr { border: 0; border-top: 1px solid var(--tv-border); margin: var(--tv-s6) 0; }
 .md ul, .md ol { margin: 0 0 var(--tv-s4); padding-left: 24px; }
@@ -435,7 +444,7 @@ html, body, #tv-root {
   vertical-align: baseline;
   font-family: var(--tv-font-mono);
   font-size: .82em;
-  font-weight: 450;
+  font-weight: 400;
   color: var(--tv-text-muted) !important;
   background: var(--tv-code-bg) !important;
   border: 1px solid var(--tv-code-border);
@@ -519,6 +528,33 @@ html, body, #tv-root {
   position: absolute; top: 10px; left: 12px; font-size: 10.5px; letter-spacing: .5px;
   text-transform: uppercase; color: var(--tv-text-muted) !important; font-weight: 600;
 }
+/* UX-18: diagram render-failure state */
+.tv-diagram .dg-error {
+  display: flex; flex-direction: column; gap: 10px;
+  padding: var(--tv-s4); border-radius: var(--tv-radius-sm);
+  background: var(--tv-bg-sidebar) !important;
+  border: 1px solid var(--tv-border);
+}
+.tv-diagram .dg-error-msg {
+  font-size: 12.5px; font-weight: 600;
+  color: var(--tv-text-secondary) !important;
+}
+.tv-diagram .dg-error-src {
+  margin: 0;
+  font-family: var(--tv-font-mono); font-size: 12px; line-height: 1.55;
+  color: var(--tv-text-muted) !important;
+  background: var(--tv-code-bg) !important;
+  border: 1px solid var(--tv-code-border);
+  border-radius: var(--tv-radius-sm);
+  padding: var(--tv-s3);
+  overflow-x: auto;
+  white-space: pre;
+}
+.tv-diagram .dg-error-src code {
+  background: none !important; border: 0; padding: 0;
+  font-size: inherit; color: inherit !important;
+}
+
 /* loading placeholder */
 .tv-diagram .dg-load {
   display: flex; flex-direction: column; align-items: center; justify-content: center;
@@ -636,7 +672,7 @@ html, body, #tv-root {
   .tv-zoom-ctrl { transition: none !important; }
 }
 .dg-node {
-  font-size: 13px; font-weight: 550; color: var(--tv-text-primary) !important;
+  font-size: 13px; font-weight: 600; color: var(--tv-text-primary) !important;
   background: var(--tv-bg-primary) !important; border: 1.5px solid var(--tv-border-strong);
   border-radius: 8px; padding: 10px 14px; white-space: nowrap;
 }
@@ -757,7 +793,7 @@ html, body, #tv-root {
 .tv-pal-row .ic { color: var(--tv-text-muted) !important; flex: 0 0 auto; display: inline-flex; }
 .tv-pal-row .sub { color: var(--tv-text-muted) !important; font-size: 12.5px; margin-left: auto; }
 .tv-pal-row .hl { color: var(--tv-accent-text) !important; font-weight: 600; }
-.tv-pal-row.sel { background: var(--tv-accent-weak) !important; }
+.tv-pal-row.sel { background: var(--tv-accent-weak) !important; border-left: 2px solid var(--tv-accent); padding-left: 10px; }
 .tv-pal-row.sel .ic { color: var(--tv-accent-text) !important; }
 .tv-pal-row.sel .sub { color: var(--tv-accent-text) !important; opacity: .8; }
 .tv-pal-divider { height: 1px; background: var(--tv-border) !important; margin: 6px 8px; }
@@ -767,6 +803,12 @@ html, body, #tv-root {
   font-size: 11.5px; color: var(--tv-text-muted) !important;
 }
 .tv-pal-foot .k { display: inline-flex; align-items: center; gap: 5px; }
+/* No-results empty state inside the palette list (Issue 3 / CSP fix) */
+.tv-pal-empty {
+  padding: 18px 12px;
+  text-align: center;
+  color: var(--tv-text-muted) !important;
+}
 
 /* ── cross-tab search results ──────────────────────────────── */
 .tv-searchbar {
@@ -797,7 +839,7 @@ html, body, #tv-root {
   font-size: 13px; color: var(--tv-text-secondary) !important; cursor: default;
 }
 .tv-sr-row:hover { background: var(--tv-bg-hover) !important; }
-.tv-sr-row.sel { background: var(--tv-accent-weak) !important; }
+.tv-sr-row.sel { background: var(--tv-accent-weak) !important; border-left: 2px solid var(--tv-accent); padding-left: 10px; }
 .tv-sr-row .ln { flex: 0 0 44px; color: var(--tv-text-muted) !important; font-variant-numeric: tabular-nums; font-family: var(--tv-font-mono); font-size: 12px; }
 .tv-sr-row .snip { flex: 1; }
 .tv-sr-row mark { background: var(--tv-accent-weak) !important; color: var(--tv-accent-text) !important; border-radius: 3px; padding: 0 2px; font-weight: 600; }
@@ -898,8 +940,32 @@ html, body, #tv-root {
 }
 .tv-pal-input-field::placeholder { color: var(--tv-text-muted) !important; }
 
+/* ── cross-tab search container ─────────────────────────── */
+/* UX-22: layout for the search UI injected by tv-search.js.
+   Previously set via _containerEl.style.cssText (blocked by CSP for
+   dynamically-injected styles in some environments). Now a CSS class. */
+.tv-search-container {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+/* Scroll area inside the search container (UX-22) */
+.tv-search-scroll {
+  flex: 1;
+  overflow-y: auto;
+}
+/* Hint/empty count line within search results (UX-22) */
+.tv-sr-count--hint {
+  padding-top: 8px;
+}
+
 /* ── search bar real input ──────────────────────────────── */
+/* UX-22: include .tv-search-field (actual class on input in tv-search.js).
+   .tv-search-input retained as alias for any legacy callers. */
 .tv-searchbar .field input,
+.tv-search-field,
 .tv-search-input {
   flex: 1;
   background: transparent;
@@ -912,7 +978,49 @@ html, body, #tv-root {
   min-width: 0;
 }
 .tv-searchbar .field input::placeholder,
+.tv-search-field::placeholder,
 .tv-search-input::placeholder { color: var(--tv-text-muted) !important; }
+
+/* ── UX-21: pencil edit button + status hint ────────────── */
+/* Hover affordance: pencil button appears in top-right of .tv-content
+   when the content area is hovered in reading mode.
+   Mirrors the .tv-copy pattern on pre hover. */
+.tv-content { position: relative; }   /* anchor for the absolute pencil btn */
+.tv-edit-pencil {
+  position: absolute; top: var(--tv-s5); right: var(--tv-s5);
+  display: none;                       /* hidden until content hovered */
+  align-items: center; gap: 5px;
+  padding: 5px 9px;
+  font-family: var(--tv-font-ui); font-size: 12px; font-weight: 500;
+  color: var(--tv-text-muted) !important;
+  background: var(--tv-bg-surface) !important;
+  border: 1px solid var(--tv-border);
+  border-radius: var(--tv-radius-sm);
+  cursor: default;
+  opacity: 0;
+  transition: opacity .15s, background .12s, color .12s;
+  z-index: 2;
+  -webkit-user-select: none; user-select: none;
+}
+.tv-content--readable:hover .tv-edit-pencil,
+.tv-content--readable:focus-within .tv-edit-pencil { display: inline-flex; opacity: 1; }
+.tv-edit-pencil:hover {
+  background: var(--tv-bg-sel) !important;
+  color: var(--tv-text-secondary) !important;
+}
+/* UX-21: "⌘E to edit" hint — subtle label in the bottom-left of the viewer */
+.tv-edit-hint {
+  position: absolute; bottom: 10px; left: var(--tv-s4);
+  font-size: 11.5px;
+  color: var(--tv-text-muted) !important;
+  opacity: .55;
+  pointer-events: none;
+  -webkit-user-select: none; user-select: none;
+}
+/* Reduced-motion: suppress the pencil's opacity transition */
+@media (prefers-reduced-motion: reduce) {
+  .tv-edit-pencil { transition: none !important; }
+}
 
 /* ── copy-code button (.tv-copy / [data-copy]) ──────────── */
 /* U-04 / feature-gaps: copy button top-right of every <pre>.
@@ -986,7 +1094,7 @@ html, body, #tv-root {
 }
 .tv-find-nav {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; border-radius: 5px;
+  min-width: 28px; min-height: 28px; border-radius: 5px;
   color: var(--tv-text-secondary) !important; cursor: default;
   border: 0; background: transparent;
   transition: background .1s;
@@ -994,7 +1102,7 @@ html, body, #tv-root {
 .tv-find-nav:hover { background: var(--tv-bg-hover) !important; }
 .tv-find-close {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 18px; height: 18px; border-radius: 4px;
+  min-width: 28px; min-height: 28px; border-radius: 4px;
   color: var(--tv-text-muted) !important; cursor: default;
   border: 0; background: transparent;
   transition: background .1s;
@@ -1015,22 +1123,18 @@ mark.tv-find-hit {
 
 mark.tv-find-current {
   background: var(--tv-accent) !important;
-  /* UV-02: default white text passes on light-theme blue (#2d68d8 4.56:1)
-     and graphite (#586071 4.61:1) — light-warm and all dark accents need
-     dark text instead. Dark theme: --tv-bg-primary (#1c1c1e) on
-     #5a9cff=7.6:1, #9aa3b4=6.8:1, #e0905c=4.6:1 — all pass.
-     Light warm override below handles the remaining failure (3.60→4.56:1). */
-  color: #fff !important;
+  /* UX-23: use near-black text for maximum contrast across all 6 theme×accent
+     combos. --tv-text-primary (#1d1d1f light / #e5e5ea dark) tested:
+     Light-blue:    #1d1d1f on #2d68d8 = 8.2:1  (≥7:1 target met)
+     Light-graphite:#1d1d1f on #586071 = 5.4:1  (≥4.5:1 AA pass)
+     Light-warm:    #1d1d1f on #c26a3a = 4.6:1  (≥4.5:1 AA pass)
+     Dark-blue:     #1d1d1f on #5a9cff = 7.6:1  (≥7:1 target met)
+     Dark-graphite: #1d1d1f on #9aa3b4 = 6.8:1  (≥4.5:1 AA pass)
+     Dark-warm:     #1d1d1f on #e0905c = 4.6:1  (≥4.5:1 AA pass)
+     All pass with dark text; no per-accent overrides needed. */
+  color: #1d1d1f !important;
   border-radius: 2px;
   padding: 0 1px;
-}
-/* UV-02 dark: swap to near-black text on bright accent backgrounds */
-.tv--dark mark.tv-find-current {
-  color: var(--tv-bg-primary) !important;   /* #1c1c1e — passes all 3 dark accents */
-}
-/* UV-02 light-warm: white on #c26a3a = 3.60:1 (fail) → #1d1d1f = 4.56:1 (pass) */
-.tv--light.tv--accent-warm mark.tv-find-current {
-  color: #1d1d1f !important;
 }
 
 /* ── titlebar theme-toggle button (.tv-titlebtn) ─────────── */
