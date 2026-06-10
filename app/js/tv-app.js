@@ -242,10 +242,13 @@
     }
 
     Object.keys(groups).forEach(function (path) {
+      // UX-SB2: show basename of the path (last segment), not the full path.
+      // Full path is kept in aria-label for a11y; visible label is the folder name only.
+      var folderBasename = path.split('/').filter(Boolean).pop() || path;
       rows += (
-        '<div class="tv-tree-row folder" role="group" aria-label="' + esc(path) + '">' +
+        '<div class="tv-tree-row folder" role="group" aria-label="' + esc(path) + '" title="' + esc(path) + '">' +
           ic('folder') +
-          '<span>' + esc(path) + '</span>' +
+          '<span>' + esc(folderBasename) + '</span>' +
         '</div>'
       );
       groups[path].forEach(function (t) {
@@ -306,6 +309,15 @@
     var sidebarCls = 'tv-sidebar' + (collapsed ? ' collapsed' : '');
     return (
       '<aside class="' + sidebarCls + '">' +
+        // UX-SB3: sidebar header — "Files" label + ⌘B collapse button.
+        // Surfaces the sidebar toggle affordance that was previously undiscoverable.
+        '<div class="tv-side-header">' +
+          '<span class="tv-side-header-label">Files</span>' +
+          '<button class="tv-side-collapse" data-sidebar-toggle' +
+            ' title="Hide sidebar (⌘B)" aria-label="Hide sidebar (⌘B)" type="button">' +
+            '<span class="kbd">⌘B</span>' +
+          '</button>' +
+        '</div>' +
         '<div class="tv-side-scroll"' +
           ' id="tv-sidebar-listbox"' +
           ' role="listbox"' +
@@ -313,7 +325,9 @@
           ' aria-orientation="vertical"' +
           ' tabindex="-1">' + rows + '</div>' +
         '<div class="tv-search">' +
-          '<div class="tv-search-box" data-open-find>' +
+          // UX-SB4: add title + aria-label so purpose is discoverable on hover/AT.
+          '<div class="tv-search-box" data-open-find' +
+            ' title="Find in document (⌘F)" aria-label="Find in document (⌘F)" role="button" tabindex="0">' +
             ic('search') +
             '<span>Find in document</span>' +
             '<span class="kbd">⌘F</span>' +
@@ -912,6 +926,12 @@
     // UX-11: keyboard activation for .tv-recent-row (role="button")
     tvEl.addEventListener('keydown', function (e) {
       if (e.key !== 'Enter' && e.key !== ' ') return;
+      // UX-SB3/SB4: keyboard activation for sidebar collapse button + find box
+      if (e.target.closest('[data-sidebar-toggle]') || e.target.closest('[data-open-find]')) {
+        e.preventDefault();
+        e.target.closest('[data-sidebar-toggle], [data-open-find]').click();
+        return;
+      }
       var recentRow = e.target.closest('[data-recent-path]');
       if (!recentRow) return;
       e.preventDefault();
@@ -1004,6 +1024,12 @@
         } else if (window.TVPalette && typeof TVPalette.open === 'function') {
           TVPalette.open();
         }
+        return;
+      }
+
+      // UX-SB3: sidebar collapse button → toggleSidebar (same as ⌘B)
+      if (e.target.closest('[data-sidebar-toggle]')) {
+        toggleSidebar();
         return;
       }
 

@@ -192,6 +192,31 @@ html, body, #tv-root {
   /* thin accent line centered on the resizer */
   border-left: 1.5px solid var(--tv-accent);
 }
+/* UX-SB3: sidebar top header — "Files" label + ⌘B collapse button.
+   Gives the sidebar a clear identity and surfaces the toggle affordance. */
+.tv-side-header {
+  flex: 0 0 auto;
+  display: flex; align-items: center;
+  padding: 8px var(--tv-s3) 6px;
+  border-bottom: 1px solid var(--tv-border);
+}
+.tv-side-header-label {
+  font-size: 11px; font-weight: 600; letter-spacing: .4px;
+  text-transform: uppercase; color: var(--tv-text-muted) !important;
+  flex: 1;
+}
+.tv-side-collapse {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 3px 6px; border-radius: 4px;
+  border: 0; background: transparent; cursor: default;
+  font-size: 11px; color: var(--tv-text-muted) !important;
+  opacity: .7;
+  transition: opacity .12s, background .12s;
+  -webkit-user-select: none; user-select: none;
+}
+.tv-side-collapse:hover { opacity: 1; background: var(--tv-bg-hover) !important; }
+.tv-side-collapse .kbd { font-size: 10px; padding: 1px 4px; }
+
 /* D-01 / E-09: sidebar file list must scroll when entries exceed panel height */
 .tv-side-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--tv-s3) var(--tv-s2); }
 .tv-side-label {
@@ -201,11 +226,14 @@ html, body, #tv-root {
 }
 .tv-tree-row {
   display: flex; align-items: center; gap: 7px;
-  padding: 5px var(--tv-s2); margin: 1px 0;
+  /* UX-SB1: min-height ≥28px for comfortable hit targets (was 25px via 5px pad) */
+  padding: 6px var(--tv-s2); margin: 1px 0;
   font-size: 13px; color: var(--tv-text-secondary) !important;
   border-radius: var(--tv-radius-sm); cursor: default; position: relative;
   /* L-09: row must not expand vertically due to long path text */
   min-width: 0;
+  /* UX-SB1: left-border space reserved for active indicator (transparent at rest) */
+  border-left: 2px solid transparent;
 }
 .tv-tree-row .ic { color: var(--tv-text-muted) !important; display: inline-flex; flex: 0 0 auto; }
 /* L-09: any direct text span (filename, folder path) gets ellipsis.
@@ -215,10 +243,28 @@ html, body, #tv-root {
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
   min-width: 0; flex: 1;
 }
-.tv-tree-row.folder { color: var(--tv-text-primary) !important; font-weight: 600; }
+/* UX-SB2: folder row is a group header, not an item — give it section-label treatment.
+   Uppercase + muted colour aligns it with .tv-side-label; icon adds folder affordance.
+   top margin adds breathing room before each folder group. */
+.tv-tree-row.folder {
+  color: var(--tv-text-muted) !important;
+  font-size: 10.5px; font-weight: 600;
+  letter-spacing: .5px; text-transform: uppercase;
+  margin-top: var(--tv-s2);
+  padding-top: 4px; padding-bottom: 4px;
+  border-left: 2px solid transparent; /* keep left-border reservation consistent */
+}
+.tv-tree-row.folder .ic { color: var(--tv-text-muted) !important; opacity: .7; }
 .tv-tree-row.file { padding-left: 26px; }
-/* UX-26: selection cue is tint + semibold weight (non-color signal), macOS list-view style. */
-.tv-tree-row.active { background: var(--tv-accent-weak) !important; color: var(--tv-accent-text) !important; font-weight: 600; }
+/* UX-26 / UX-SB1: selection cue — filled tint + left accent bar + semibold weight.
+   Left bar gives a strong non-color signal; tint provides the filled-background cue.
+   border-left overrides the transparent reservation set on .tv-tree-row. */
+.tv-tree-row.active {
+  background: var(--tv-accent-weak) !important;
+  color: var(--tv-accent-text) !important;
+  font-weight: 600;
+  border-left: 2px solid var(--tv-accent) !important;
+}
 .tv-tree-row.active .ic { color: var(--tv-accent-text) !important; }
 .tv-tree-row:hover:not(.active) { background: var(--tv-bg-hover) !important; }
 /* UX-10: Keyboard cursor highlight — visible in both light and dark themes,
@@ -242,6 +288,13 @@ html, body, #tv-root {
   border: 1px solid var(--tv-border);
   border-radius: var(--tv-radius-sm);
   font-size: 12.5px; color: var(--tv-text-muted) !important;
+  /* UX-SB4: show pointer cursor — this is a clickable affordance, not static label */
+  cursor: default;
+  transition: background .1s, border-color .1s;
+}
+.tv-search-box:hover {
+  background: var(--tv-bg-hover) !important;
+  border-color: var(--tv-border-strong);
 }
 .tv-search-box .kbd { margin-left: auto; }
 
@@ -616,7 +669,11 @@ html, body, #tv-root {
 .tv-diagram:has(.tv-diagram-viewport) {
   /* remove loading min-height once real SVG is rendered */
   min-height: auto;
-  padding: var(--tv-s4);
+  /* UX-26-overlap: top padding must clear the absolute-positioned .dg-label
+     (top:10px + ~18px line-height = 28px from border) so the SVG viewport
+     doesn't render on top of the "Diagram" badge. 32px (--tv-s6) gives a
+     4px gap between the label bottom and the viewport top edge. */
+  padding: var(--tv-s6) var(--tv-s4) var(--tv-s4);
 }
 /* The SVG inside the viewport: natural size, scalable by JS transform */
 .tv-diagram-viewport > svg {
@@ -1344,4 +1401,7 @@ input:focus-visible,
   .tv-find-nav,
   .tv-find-close,
   .tv-sidebar-resizer { transition: none !important; }
+  /* UX-SB: new sidebar header/search transitions */
+  .tv-side-collapse,
+  .tv-search-box { transition: none !important; }
 }
