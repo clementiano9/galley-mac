@@ -24,6 +24,145 @@
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
   }
 
+  /* ── fuzzy search (launcher) ──────────────────────────────────
+     Self-contained subsequence scorer. fuzzyScore() matches every
+     query char against `text` in order (case-insensitive) and returns
+     { score, indices } where indices are positions in `text` that
+     matched, or null when no subsequence match exists. fuzzyMatchFile()
+     scores a file across three fields (basename > folder > full path),
+     returns the best field's score plus the matched indices IN THE
+     DISPLAYED STRING (name or path) so the UI can highlight safely. */
+
+  // Characters that begin a "segment" — matches landing right after one
+  // (or at index 0) earn a boundary bonus, mirroring CamelCase/path-part
+  // intuition used by editor fuzzy finders.
+  function _isBoundaryChar(ch) {
+    return ch === '/' || ch === '.' || ch === '-' || ch === '_' || ch === ' ' || ch === '\\';
+  }
+
+  // Greedy left-to-right subsequence match with positional bonuses.
+  // Scoring (higher = better):
+  //   +base per matched char, +consecutive-run bonus when the previous
+  //   query char matched the immediately preceding text char, +boundary
+  //   bonus when a match lands at a segment start, and a gap penalty for
+  //   skipped text characters between matches. Returns null on no match.
+  function fuzzyScore(query, text) {
+    if (!query) return { score: 0, indices: [] };
+    var q = String(query).toLowerCase();
+    var t = String(text);
+    var tl = t.toLowerCase();
+    var indices = [];
+    var score = 0;
+    var ti = 0;
+    var prevMatch = -2; // index of previous matched char (for run/gap calc)
+    for (var qi = 0; qi < q.length; qi++) {
+      var qc = q.charAt(qi);
+      var found = -1;
+      for (; ti < tl.length; ti++) {
+        if (tl.charAt(ti) === qc) { found = ti; break; }
+      }
+      if (found === -1) return null; // query char not found in order → no match
+      indices.push(found);
+      score += 10; // base per-char credit
+      // Consecutive run: this match directly follows the previous match.
+      if (found === prevMatch + 1) {
+        score += 15;
+      } else if (prevMatch >= 0) {
+        // Gap between matches: penalize proportional to how far we jumped,
+        // capped so long paths don't drown out a real hit.
+        var gap = found - prevMatch - 1;
+        score -= Math.min(gap, 8) * 2;
+      }
+      // Boundary: match at start of string or right after a separator.
+      if (found === 0 || _isBoundaryChar(t.charAt(found - 1))) {
+        score += 12;
+      }
+      prevMatch = found;
+      ti = found + 1;
+    }
+    // Reward matches that cover a larger share of the text (tighter match).
+    score += Math.round((q.length / Math.max(t.length, 1)) * 8);
+    return { score: score, indices: indices };
+  }
+
+  // Score one file across basename / folder / full path. Fields carry
+  // descending weight so a basename hit outranks a path-only hit. Returns
+  // the best result with indices mapped into the string the UI shows:
+  //   field 'name'  → indices into `name`
+  //   field 'folder'/'path' → indices into `path`
+  // Returns null when the query matches none of the fields.
+  function fuzzyMatchFile(query, f) {
+    var q = String(query == null ? '' : query).replace(/\s+/g, '');
+    if (!q) return { score: 0, field: 'name', nameIndices: [], pathIndices: [] };
+    var name = f.name || '';
+    var folder = f.folder || '';
+    var path = f.path || '';
+
+    var sName = fuzzyScore(q, name);
+    var sFolder = folder ? fuzzyScore(q, folder) : null;
+    var sPath = path ? fuzzyScore(q, path) : null;
+
+    // Field weighting: basename strongest, folder next, full path weakest.
+    var best = null;
+    if (sName) best = { score: sName.score + 120, field: 'name', sName: sName, sPath: null };
+    if (sFolder) {
+      var fScore = sFolder.score + 60;
+      if (!best || fScore > best.score) {
+        // Map folder match onto the displayed path for highlighting.
+        best = { score: fScore, field: 'folder', sName: null, sPath: _mapFolderToPath(sFolder, folder, path) };
+      }
+    }
+    if (sPath) {
+      var pScore = sPath.score + 0;
+      if (!best || pScore > best.score) {
+        best = { score: pScore, field: 'path', sName: null, sPath: sPath };
+      }
+    }
+    if (!best) return null;
+    return {
+      score: best.score,
+      field: best.field,
+      nameIndices: best.sName ? best.sName.indices : [],
+      pathIndices: best.sPath ? best.sPath.indices : []
+    };
+  }
+
+  // Translate indices found within the folder substring into indices
+  // within the full displayed path, so a folder-field match still
+  // highlights the right characters in the path text.
+  function _mapFolderToPath(folderResult, folder, path) {
+    if (!path) return { indices: [] };
+    var at = path.toLowerCase().indexOf(folder.toLowerCase());
+    if (at === -1) return { indices: folderResult.indices.slice() };
+    return {
+      indices: folderResult.indices.map(function (i) { return i + at; })
+    };
+  }
+
+  // Build highlighted, ESCAPED HTML: wrap matched indices in <span class="hl">.
+  // `text` is untrusted (user file names/paths) so every slice is escaped;
+  // we never inject raw strings into innerHTML.
+  function highlightIndices(text, indices) {
+    var s = String(text);
+    if (!indices || !indices.length) return esc(s);
+    var mark = {};
+    indices.forEach(function (i) { mark[i] = true; });
+    var out = '';
+    var run = '';
+    var inHl = false;
+    for (var i = 0; i < s.length; i++) {
+      var hit = !!mark[i];
+      if (hit !== inHl) {
+        if (run) out += inHl ? '<span class="hl">' + esc(run) + '</span>' : esc(run);
+        run = '';
+        inHl = hit;
+      }
+      run += s.charAt(i);
+    }
+    if (run) out += inHl ? '<span class="hl">' + esc(run) + '</span>' : esc(run);
+    return out;
+  }
+
   /* ── tiny event emitter ───────────────────────────────────── */
   var _listeners = {};
   function tvOn(event, fn) {
@@ -68,6 +207,8 @@
       scrollTop: 0,
       dirty: false,
       live: !!opts.live,
+      // Browser-style new-tab page (⌘T) — no document, renders the NTP.
+      untitled: !!opts.untitled,
       fileHandle: opts.fileHandle || null,
       // nativePath: set by tv-native.js after openDoc() returns the tab id.
       // E-13: native tabs opened via Tauri NEVER have tab.fileHandle set;
@@ -81,6 +222,9 @@
   // in different directories don't collide. For browser tabs without a real
   // path, use just the name so they can still be deduplicated by name.
   function tabKey(opts) {
+    // Untitled new-tab pages key on their own id so they can never collide
+    // with name/path keys (e.g. a real file named "Untitled") in openDoc dedup.
+    if (opts.untitled) return 'untitled:' + (opts.id || '');
     // If opts is a Tab object already in state, prefer nativePath
     if (opts.nativePath) return 'native:' + opts.nativePath;
     if (opts.path) return opts.path + '/' + opts.name;
@@ -89,33 +233,88 @@
 
   /* ────────────────────────────────────────────────────────────
      RECENT FILES — localStorage persistence (E-02)
-     Stores absolute native paths only; capped at 10 entries.
+     Stores absolute native paths with open timestamps; capped at 10.
+     Canonical on-disk shape: [{ path: <abs>, ts: <epoch-ms> }].
+     Back-compat: legacy entries were bare path strings (string[]);
+     loadRecentEntries() silently migrates them to {path, ts:0}
+     (ts:0 → no/blank relative-time label in the launcher panel).
+     loadRecentPaths() still returns a plain string[] so every
+     existing consumer (sidebar Recent, empty-state, native bridge)
+     keeps working unchanged.
    ──────────────────────────────────────────────────────────── */
   var RECENT_KEY = 'tv-recent-files';
   var RECENT_MAX = 10;
 
-  function loadRecentPaths() {
+  // Returns [{ path, ts }] with legacy string entries migrated in place.
+  function loadRecentEntries() {
     try {
       var raw = localStorage.getItem(RECENT_KEY);
       if (!raw) return [];
       var parsed = JSON.parse(raw);
-      return Array.isArray(parsed) ? parsed : [];
+      if (!Array.isArray(parsed)) return [];
+      var out = [];
+      for (var i = 0; i < parsed.length; i++) {
+        var e = parsed[i];
+        if (typeof e === 'string') {
+          // legacy string[] format — no timestamp recorded
+          if (e) out.push({ path: e, ts: 0 });
+        } else if (e && typeof e === 'object' && e.path) {
+          out.push({ path: e.path, ts: (typeof e.ts === 'number' ? e.ts : 0) });
+        }
+      }
+      return out;
     } catch (e) {
       return [];
     }
   }
 
+  // Legacy/string accessor — derives plain paths from the entries so
+  // older call sites (sidebar Recent rows, empty-state recents,
+  // tv-native bridge) keep functioning without change.
+  function loadRecentPaths() {
+    return loadRecentEntries().map(function (e) { return e.path; });
+  }
+
   function saveRecentPath(absolutePath) {
     if (!absolutePath) return;
-    var list = loadRecentPaths();
-    // Dedupe: remove any existing entry for this path
-    list = list.filter(function (p) { return p !== absolutePath; });
-    // Prepend and cap
-    list.unshift(absolutePath);
+    var list = loadRecentEntries();
+    // Dedupe: drop any existing entry for this path (keeps move-to-front)
+    list = list.filter(function (e) { return e.path !== absolutePath; });
+    // Prepend with a fresh timestamp and cap
+    list.unshift({ path: absolutePath, ts: Date.now() });
     if (list.length > RECENT_MAX) list.length = RECENT_MAX;
     try {
       localStorage.setItem(RECENT_KEY, JSON.stringify(list));
     } catch (e) { /* storage full or private mode — ignore */ }
+  }
+
+  // Compact "time ago" label for the launcher Recent section.
+  // ts === 0 (migrated legacy / unknown) → '' so the row shows no label.
+  function relativeTime(ts) {
+    if (!ts) return '';
+    var diff = Date.now() - ts;
+    if (diff < 0) diff = 0;
+    var sec = Math.floor(diff / 1000);
+    if (sec < 60) return 'just now';
+    var min = Math.floor(sec / 60);
+    if (min < 60) return min + 'm ago';
+    var hr = Math.floor(min / 60);
+    if (hr < 24) return hr + 'h ago';
+    var day = Math.floor(hr / 24);
+    if (day < 7) return day + 'd ago';
+    var wk = Math.floor(day / 7);
+    if (wk < 5) return wk + 'w ago';
+    var mo = Math.floor(day / 30);
+    if (mo < 12) return mo + 'mo ago';
+    return Math.floor(day / 365) + 'y ago';
+  }
+
+  // Immediate parent folder name of a path, e.g. "/a/b/c.md" → "b".
+  // Empty string when the path has no parent segment.
+  function parentFolderName(p) {
+    if (!p) return '';
+    var parts = String(p).split('/').filter(function (s) { return s.length; });
+    return parts.length >= 2 ? parts[parts.length - 2] : '';
   }
 
   /* ────────────────────────────────────────────────────────────
@@ -193,7 +392,7 @@
     return (
       '<div class="tv-tabbar" role="tablist">' +
         '<div class="tv-tab-strip">' + tabs + '</div>' +
-        '<button class="tv-newtab" data-newtab title="New tab (⌘O)" aria-label="Open new tab (⌘O)" type="button">' +
+        '<button class="tv-newtab" data-newtab title="New tab (⌘T)" aria-label="New tab (⌘T)" type="button">' +
           (icons.plus || '') +
         '</button>' +
       '</div>'
@@ -241,14 +440,49 @@
       return 'sbopt-' + String(tabId).replace(/[^\w-]/g, '_');
     }
 
+    // UX-SB5: close × button HTML shared by grouped and ungrouped file rows.
+    // Hidden at rest via CSS (.tv-sb-close opacity:0); revealed on row hover.
+    // data-sb-close-tab carries the tab id so the click handler can call closeTab()
+    // without activating the row first (works for non-active rows too).
+    function sbCloseBtn(tabId, tabName) {
+      return (
+        '<button class="tv-sb-close"' +
+          ' data-sb-close-tab="' + esc(tabId) + '"' +
+          ' title="Close file"' +
+          ' aria-label="Close ' + esc(tabName) + '"' +
+          ' type="button"' +
+          ' tabindex="-1">' +
+          '&#x2715;' +
+        '</button>'
+      );
+    }
+
     Object.keys(groups).forEach(function (path) {
       // UX-SB2: show basename of the path (last segment), not the full path.
       // Full path is kept in aria-label for a11y; visible label is the folder name only.
       var folderBasename = path.split('/').filter(Boolean).pop() || path;
+      // UX-SB6: compute a display-friendly parent path for the muted suffix.
+      // We show everything except the last segment (the basename we already show).
+      // Replace the user's home dir prefix with ~ for brevity.
+      var folderParent = (function () {
+        var segs = path.split('/').filter(Boolean);
+        if (segs.length <= 1) return '';          // top-level: no parent to show
+        segs.pop();                               // remove the basename segment
+        var parent = '/' + segs.join('/');
+        // Swap /Users/<name> or /home/<name> prefix with ~
+        parent = parent.replace(/^\/(Users|home)\/[^/]+/, '~');
+        // Start-truncate so the rightmost (most specific) segments stay
+        // visible. Done here rather than CSS direction:rtl, which reorders
+        // bidi-neutral chars (~, trailing /) and garbles the path.
+        var MAX = 30;
+        if (parent.length > MAX) parent = '…' + parent.slice(parent.length - (MAX - 1));
+        return parent;
+      }());
       rows += (
         '<div class="tv-tree-row folder" role="group" aria-label="' + esc(path) + '" title="' + esc(path) + '">' +
           ic('folder') +
-          '<span>' + esc(folderBasename) + '</span>' +
+          '<span class="folder-name">' + esc(folderBasename) + '</span>' +
+          (folderParent ? '<span class="folder-path">' + esc(folderParent) + '</span>' : '') +
         '</div>'
       );
       groups[path].forEach(function (t) {
@@ -264,6 +498,7 @@
             ic('doc') +
             '<span>' + esc(t.name) + '</span>' +
             (t.live ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
+            sbCloseBtn(t.id, t.name) +
           '</div>'
         );
       });
@@ -287,6 +522,7 @@
             ic('doc') +
             '<span>' + esc(t.name) + '</span>' +
             (t.live ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
+            sbCloseBtn(t.id, t.name) +
           '</div>'
         );
       });
@@ -376,6 +612,11 @@
       );
     }
 
+    // Untitled tab → new-tab page (regardless of mode; edit is blocked anyway)
+    if (tab.untitled) {
+      return buildNewTabPage();
+    }
+
     // Edit mode
     if (state.mode === 'edit') {
       var wordCount = 0;
@@ -446,6 +687,189 @@
     );
   }
 
+  // Untitled new-tab viewer body. The launcher PANEL itself is rendered
+  // separately as an app-level overlay (buildNewTabOverlay) so it centers on
+  // the full window. This viewer keeps an (empty) .tv-scroll[data-scroll]
+  // element so the load-bearing contracts still hold: TVSearch.open()
+  // hides/restores .tv-scroll to overlay ⌘⇧F results, and activateTab's
+  // E-04 scroll save queries [data-scroll].
+  function buildNewTabPage() {
+    return (
+      '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
+        '<div class="tv-scroll" data-scroll>' +
+          '<div class="tv-ntp-canvas" aria-hidden="true"></div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  // Launcher PANEL + theme pill, rendered as an app-level overlay centered on
+  // the full window (mock: .scratch/ntp-design-target.png). Returns markup for
+  // a .tv-ntp container holding the elevated .tv-ntp-box panel and the floating
+  // .tv-theme-pill. Inserted as a sibling of .tv-body under .tv so window
+  // centering is exact. All actionable items are .tv-ntp-row carrying data
+  // attrs describing their action (QA hooks). Palette/search overlays sit
+  // ABOVE this via their own higher z-index.
+  function buildNewTabOverlay() {
+    var icons = window.TV_ICONS || {};
+    var clockIc = icons.clock || '';
+    var docIc = icons.doc || '';
+    var folderIc = icons.folder || '';
+
+    // ── OPEN section: fixed actions (always visible, never filtered) ──
+    var openRows = (
+      '<div class="tv-ntp-row tv-ntp-open" role="option" aria-selected="false"' +
+        ' data-ntp-act="open-file" title="Open a file (⌘O)">' +
+        '<span class="ic tv-ntp-ic">' + docIc + '</span>' +
+        '<span class="tv-ntp-name">Open File…</span>' +
+        '<span class="tv-ntp-meta"><span class="kbd">⌘O</span></span>' +
+      '</div>' +
+      '<div class="tv-ntp-row" role="option" aria-selected="false"' +
+        ' data-ntp-act="open-folder" title="Open a folder (⌘⇧O)">' +
+        '<span class="ic tv-ntp-ic">' + folderIc + '</span>' +
+        '<span class="tv-ntp-name">Open Folder…</span>' +
+        '<span class="tv-ntp-meta"><span class="kbd">⌘⇧O</span></span>' +
+      '</div>'
+    );
+
+    // ── RECENT section: timestamped recents not currently open as a tab ──
+    var openNativePaths = {};
+    state.tabs.forEach(function (t) {
+      if (t.nativePath) openNativePaths[t.nativePath] = true;
+    });
+    var recentEntries = loadRecentEntries().filter(function (e) {
+      return !openNativePaths[e.path];
+    }).slice(0, 8);
+    var recentRows = recentEntries.map(function (e) {
+      var p = e.path;
+      var name = p.split('/').pop() || p;
+      var folder = parentFolderName(p);
+      var when = relativeTime(e.ts);
+      // data-ntp-name / data-ntp-folder carry the raw scoring sources so the
+      // launcher's fuzzy matcher and highlighter work off original strings,
+      // independent of how the row is rendered.
+      return (
+        '<div class="tv-ntp-row" role="option" aria-selected="false"' +
+          ' data-ntp-path="' + esc(p) + '"' +
+          ' data-ntp-name="' + esc(name) + '"' +
+          ' data-ntp-folder="' + esc(folder) + '"' +
+          ' title="' + esc(p) + '">' +
+          '<span class="ic tv-ntp-ic">' + clockIc + '</span>' +
+          '<span class="tv-ntp-name">' + esc(name) + '</span>' +
+          (when ? '<span class="tv-ntp-meta">' + esc(when) + '</span>' : '') +
+        '</div>'
+      );
+    }).join('');
+
+    // ── FILES section: union of sidebar folder-tree files + open tabs ──
+    // Each known file shows "already open" when it is open as a tab; clicking
+    // an open file activates that tab (and closes the untitled one), an
+    // unopened known file fills the untitled tab in place.
+    // Map of nativePath → open tab id (real docs only; skip untitled).
+    var openByPath = {};
+    state.tabs.forEach(function (t) {
+      if (!t.untitled && t.nativePath) openByPath[t.nativePath] = t.id;
+    });
+    // Build the known-file union, de-duped by path. Currently the app only
+    // tracks files via open tabs (no persisted folder tree separate from
+    // tabs), so the union is the set of open real-document tabs; recents
+    // already have their own section. Keep dedupe so future folder-tree
+    // sources can be merged here without double rows.
+    var filesSeen = {};
+    var fileItems = [];
+    state.tabs.forEach(function (t) {
+      if (t.untitled) return;
+      var key = t.nativePath || t.path ? (t.nativePath || (t.path + '/' + t.name)) : t.name;
+      if (filesSeen[key]) return;
+      filesSeen[key] = true;
+      fileItems.push({
+        name: t.name,
+        path: t.nativePath || null,
+        openId: t.id, // these are all open tabs
+      });
+    });
+    var fileRows = fileItems.map(function (f) {
+      var openId = f.path ? openByPath[f.path] : f.openId;
+      var dataAttr = openId
+        ? ' data-ntp-open-id="' + esc(openId) + '"'
+        : (f.path ? ' data-ntp-path="' + esc(f.path) + '"' : '');
+      var folder = f.path ? parentFolderName(f.path) : '';
+      // Raw scoring sources for the fuzzy matcher (see recentRows note).
+      var scoreAttrs =
+        ' data-ntp-name="' + esc(f.name) + '"' +
+        (folder ? ' data-ntp-folder="' + esc(folder) + '"' : '') +
+        (f.path ? ' data-ntp-fullpath="' + esc(f.path) + '"' : '');
+      return (
+        '<div class="tv-ntp-row" role="option" aria-selected="false"' +
+          dataAttr + scoreAttrs + ' title="' + esc(f.path || f.name) + '">' +
+          '<span class="ic tv-ntp-ic">' + docIc + '</span>' +
+          '<span class="tv-ntp-name">' + esc(f.name) + '</span>' +
+          (openId ? '<span class="tv-ntp-meta tv-ntp-status">already open</span>' : '') +
+        '</div>'
+      );
+    }).join('');
+
+    var sections = '';
+    sections += (
+      '<div class="tv-ntp-group" data-ntp-group="open">' +
+        '<div class="tv-ntp-section">Open</div>' +
+        openRows +
+      '</div>'
+    );
+    if (recentRows) {
+      sections += (
+        '<div class="tv-ntp-group" data-ntp-group="recent">' +
+          '<div class="tv-ntp-section">Recent</div>' +
+          recentRows +
+        '</div>'
+      );
+    }
+    if (fileRows) {
+      sections += (
+        '<div class="tv-ntp-group" data-ntp-group="files">' +
+          '<div class="tv-ntp-section">Files</div>' +
+          fileRows +
+        '</div>'
+      );
+    }
+
+    // .tv-ntp is the full-window positioning layer (pointer-events:none so it
+    // never blocks clicks on the tab bar / sidebar behind it); only the panel
+    // inside it is interactive.
+    return (
+      '<div class="tv-ntp" data-ntp-overlay>' +
+        '<div class="tv-ntp-box">' +
+          '<div class="tv-ntp-inputrow">' +
+            '<span class="ic tv-ntp-ic tv-ntp-input-ic">' + docIc + '</span>' +
+            '<input class="tv-ntp-input" type="text"' +
+              ' placeholder="Open a file…"' +
+              ' autocomplete="off" spellcheck="false"' +
+              ' aria-label="Open a file">' +
+          '</div>' +
+          '<div class="tv-ntp-sections">' +
+            // Direct path-entry row, pinned at the top and hidden until the
+            // typed query looks like a filesystem path. Its label + status are
+            // filled by wireNewTabPage(); the label always goes through esc()
+            // because paths are untrusted. data-ntp-pathrow is the JS hook.
+            '<div class="tv-ntp-row tv-ntp-pathrow" role="option"' +
+              ' aria-selected="false" data-ntp-pathrow style="display:none">' +
+              '<span class="ic tv-ntp-ic">' + docIc + '</span>' +
+              '<span class="tv-ntp-name tv-ntp-pathlabel"></span>' +
+              '<span class="tv-ntp-meta tv-ntp-pathstatus"></span>' +
+            '</div>' +
+            sections +
+          '</div>' +
+          '<div class="tv-ntp-empty" style="display:none">No matching files</div>' +
+          '<div class="tv-ntp-footer">' +
+            '<span class="tv-ntp-hint"><span class="kbd">↕</span> navigate</span>' +
+            '<span class="tv-ntp-hint"><span class="kbd">↵</span> open</span>' +
+            '<span class="tv-ntp-hint"><span class="kbd">esc</span> close</span>' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
   function buildEmpty() {
     var icons = window.TV_ICONS || {};
     return (
@@ -461,7 +885,7 @@
         '</div>' +
       '</div>' +
       '<div class="tv-tabbar" role="tablist">' +
-        '<button class="tv-newtab" data-newtab title="Open file (⌘O)" aria-label="Open new tab (⌘O)" type="button">' +
+        '<button class="tv-newtab" data-newtab title="New tab (⌘T)" aria-label="New tab (⌘T)" type="button">' +
           (icons.plus || '') +
         '</button>' +
       '</div>' +
@@ -519,8 +943,17 @@
       var resizerHtml = state.sidebarOpen
         ? '<div class="tv-sidebar-resizer" data-sidebar-resize></div>'
         : '';
+      // The launcher panel + theme pill render as an APP-LEVEL overlay
+      // (sibling of .tv-body, child of .tv) so they center on the FULL
+      // window like Spotlight/⌘K — not on the content area. The overlay
+      // exists only while the untitled new-tab page is the active view.
+      var activeForOverlay = getActiveTab();
+      var ntpOverlay = (activeForOverlay && activeForOverlay.untitled)
+        ? buildNewTabOverlay()
+        : '';
       html = buildTitlebar() + buildTabbar() +
-        '<div class="tv-body">' + buildSidebar() + resizerHtml + buildViewer() + '</div>';
+        '<div class="tv-body">' + buildSidebar() + resizerHtml + buildViewer() + '</div>' +
+        ntpOverlay;
     }
 
     root.innerHTML = '<div class="' + rootCls + '" style="--tv-md-font:' + state.fontSize + 'px">' + html + '</div>';
@@ -574,6 +1007,21 @@
       var mdEl = root.querySelector('.md');
       if (mdEl) {
         window.tvResolveDiagrams(root.querySelector('.tv'), 600);
+      }
+    }
+
+    // Resolve image paths so relative srcs load correctly (browser: base URL;
+    // Tauri: convertFileSrc → asset:// URL). Pass the active tab's nativePath
+    // (Tauri native mode) or openDoc path (browser mode) as the document base.
+    if (state.mode === 'reading' && window.tvResolveImages && activeTab) {
+      var imgRoot = root.querySelector('.tv-content');
+      if (imgRoot) {
+        // nativePath is the absolute fs path (Tauri); path is the sidebar group dir (browser).
+        // For browser mode we need the doc's actual directory, not a parent group.
+        // Use nativePath if available, else fall back to path (which is the parent dir
+        // as set by openDoc callers — good enough for relative-to-docdir resolution).
+        var docBase = activeTab.nativePath || activeTab.path || null;
+        window.tvResolveImages(imgRoot, docBase);
       }
     }
 
@@ -917,11 +1365,533 @@
     });
   }
 
+  // New-tab page wiring: focus the launcher input and drive a JS keyboard
+  // cursor over ALL actionable rows (OPEN + RECENT + FILES). The input is a
+  // real <input>, so .focus() is reliable in WKWebView even when Full Keyboard
+  // Access is off; rows carry NO tabindex and are never focused — the cursor
+  // is a CSS class, same pattern as the sidebar sbKbd cursor (WebKit-safe).
+  // Typing filters RECENT + FILES rows live; OPEN rows always stay visible.
+  function wireNewTabPage(tvEl) {
+    var input = tvEl.querySelector('.tv-ntp-input');
+    if (!input) return;
+
+    input.focus();
+
+    // -1 means "no explicit cursor yet"; we seed it to the first row below so
+    // the panel opens with "Open File…" highlighted (matches the mock) and
+    // Enter has a sensible default target even before any arrow press.
+    var cursor = -1;
+
+    // All actionable rows in DOM order, regardless of section.
+    function allRows() {
+      return Array.prototype.slice.call(tvEl.querySelectorAll('.tv-ntp-row'));
+    }
+
+    function visibleRows() {
+      return allRows().filter(function (r) { return r.style.display !== 'none'; });
+    }
+
+    function setCursor(idx) {
+      var rows = visibleRows();
+      // Default cursor lands on the first row (mock: "Open File…" selected).
+      if (!rows.length) { cursor = -1; clearCursor(); return; }
+      cursor = Math.max(0, Math.min(rows.length - 1, idx));
+      clearCursor();
+      var cur = rows[cursor];
+      cur.classList.add('cursor');
+      cur.setAttribute('aria-selected', 'true');
+      if (cur.scrollIntoView) cur.scrollIntoView({ block: 'nearest' });
+    }
+
+    function clearCursor() {
+      allRows().forEach(function (r) {
+        r.classList.remove('cursor');
+        r.setAttribute('aria-selected', 'false');
+      });
+    }
+
+    // ── fuzzy-filter support ──────────────────────────────────────
+    // Snapshot the original DOM order of each filterable group so an
+    // empty query restores it exactly (RECENT by recency, FILES stable)
+    // after fuzzy matching has reordered rows by score.
+    var groupOrder = {}; // group name → [row, row, …] in original order
+    Array.prototype.forEach.call(tvEl.querySelectorAll('.tv-ntp-group'), function (g) {
+      var key = g.getAttribute('data-ntp-group');
+      if (key === 'open') return; // OPEN never reorders
+      groupOrder[key] = Array.prototype.slice.call(g.querySelectorAll('.tv-ntp-row'));
+    });
+
+    /* ── direct path entry ────────────────────────────────────────
+       When the typed query looks like a filesystem path (/, ~/, ./, or
+       a file:// URL), the launcher switches to PATH MODE: a dedicated
+       .tv-ntp-pathrow appears pinned at the top, the path is validated
+       once (debounced) via read_md_file through the Tauri bridge, and
+       Enter / click opens it in place from the cached doc. The normal
+       RECENT/FILES fuzzy filter still runs underneath against the raw
+       query (it just won't usually match a path). */
+    var pathRow = tvEl.querySelector('[data-ntp-pathrow]');
+    var pathLabel = pathRow ? pathRow.querySelector('.tv-ntp-pathlabel') : null;
+    var pathStatus = pathRow ? pathRow.querySelector('.tv-ntp-pathstatus') : null;
+
+    // Session cache for the lifetime of THIS open launcher:
+    //   expanded path → { ok:true, doc } | { ok:false, err }
+    // Identical re-queries hit the cache instantly (no second disk read).
+    var pathCache = {};
+    // In-flight read_md_file promises keyed by expanded path. Lets a debounce
+    // read and an Enter-during-checking open SHARE one read instead of each
+    // issuing its own — exactly one disk read per path per launcher session.
+    var pathPending = {};
+    var pathDebounce = null;     // setTimeout handle for the validation delay
+    var pathSeq = 0;             // monotonic token guarding against stale async
+    var homeDirCache = null;     // resolved ~/ expansion target (string), once
+    var homeDirPending = false;  // a homeDir() lookup is in flight
+
+    // pathState mirrors what the path row currently shows so keydown/Enter and
+    // the cursor logic can act without re-reading the DOM. status is one of:
+    //   'hidden'      — not in path mode (row not shown)
+    //   'checking'    — validation in flight (or queued)
+    //   'found'       — validated OK; doc cached, openable
+    //   'notfound'    — validated, read failed
+    //   'unavailable' — plain-browser mode (no TVNative bridge)
+    var pathState = { active: false, raw: '', expanded: '', status: 'hidden' };
+
+    var nativeAvailable = !!(window.TVNative && TVNative.available);
+
+    // PATH MODE detection: after trim, the query begins with / , ~/ , ./ ,
+    // or a file:// URL. Paths may contain spaces, so we do NOT strip
+    // whitespace here (the fuzzy path does, separately, for non-path queries).
+    function isPathQuery(raw) {
+      return /^(file:\/\/)?(\/|~\/|\.\/)/.test(raw);
+    }
+
+    // Turn a raw path query into the absolute path we'll hand to read_md_file.
+    // Strips a leading file:// and expands a leading ~/ via the cached home
+    // dir. './' is resolved against the active folder if one is tracked; the
+    // app keeps no persistent folder root, so it stays literal and the read
+    // fails gracefully (→ not found). Returns the best-effort expanded string.
+    function expandPath(raw) {
+      var p = raw.replace(/^file:\/\//, '');
+      if (p.charAt(0) === '~' && p.charAt(1) === '/') {
+        if (homeDirCache != null) {
+          var home = homeDirCache.replace(/\/+$/, '');
+          p = home + p.slice(1); // p.slice(1) keeps the leading '/'
+        }
+        // else leave the literal ~ — read_md_file will fail → not found.
+      }
+      return p;
+    }
+
+    // Kick off a one-time homeDir() lookup so ~/ expansion works. Async; on
+    // resolution we re-run path mode for the current input so a query typed
+    // before the lookup landed gets re-expanded. No-op without the bridge.
+    function ensureHomeDir() {
+      if (homeDirCache != null || homeDirPending) return;
+      if (!(window.__TAURI__ && window.__TAURI__.path &&
+            typeof window.__TAURI__.path.homeDir === 'function')) return;
+      homeDirPending = true;
+      window.__TAURI__.path.homeDir()
+        .then(function (dir) {
+          homeDirCache = dir || '';
+          homeDirPending = false;
+          // Re-run path mode ONLY for a ~/ query whose expansion actually
+          // depends on the home dir. Re-running indiscriminately would bump
+          // pathSeq and invalidate an in-flight Enter read for a non-~ path.
+          if (pathState.active &&
+              /^(file:\/\/)?~\//.test(pathState.raw) &&
+              pathState.expanded !== expandPath(pathState.raw)) {
+            updatePathMode(pathState.raw);
+          }
+        })
+        .catch(function () {
+          homeDirCache = ''; // give up; ~ stays literal → not found
+          homeDirPending = false;
+        });
+    }
+
+    // Paint the path row's label + status from pathState, then reflect the
+    // openable state into the cursor (cursor auto-lands on a found row).
+    function renderPathRow() {
+      if (!pathRow) return;
+      // Hide on empty raw too — an active-but-empty state must never paint a
+      // blank row (seen in WKWebView; trigger unreproducible in Chrome).
+      // Clearing the label empties .tv-ntp-pathlabel so the CSS :empty guard
+      // (.tv-ntp-pathrow:has(.tv-ntp-pathlabel:empty){display:none!important})
+      // also forces it hidden — belt and suspenders against repaint ghosts.
+      if (!pathState.active || !pathState.raw) {
+        pathRow.style.display = 'none';
+        pathRow.classList.remove('cursor');
+        pathRow.setAttribute('aria-selected', 'false');
+        if (pathLabel) pathLabel.textContent = '';
+        if (pathStatus) pathStatus.textContent = '';
+        return;
+      }
+      pathRow.style.display = '';
+      if (pathLabel) pathLabel.textContent = pathState.raw; // textContent = safe
+      var msg = '';
+      if (pathState.status === 'unavailable') msg = 'unavailable in browser';
+      else if (pathState.status === 'checking') msg = 'checking…';
+      else if (pathState.status === 'found') msg = '↵ open';
+      else if (pathState.status === 'notfound') msg = 'not found';
+      if (pathStatus) pathStatus.textContent = msg;
+    }
+
+    // True when the path row is currently a valid, openable target.
+    function pathRowOpenable() {
+      return pathState.active && pathState.status === 'found';
+    }
+
+    // Apply a validation result for `expanded` IF the input still holds the
+    // same expanded path (token + value guard against out-of-order async).
+    function applyValidation(token, expanded, result) {
+      if (token !== pathSeq) return;            // a newer query superseded us
+      if (!pathState.active) return;            // left path mode meanwhile
+      if (pathState.expanded !== expanded) return; // input changed underneath
+      pathState.status = result.ok ? 'found' : 'notfound';
+      renderPathRow();
+      // On a fresh found-valid result, land the cursor on the path row.
+      if (result.ok) focusPathRow();
+    }
+
+    // Resolve the validation result for `expanded`, issuing AT MOST ONE
+    // read_md_file per path per session. Returns a promise of the cached
+    // { ok, doc|err } record:
+    //   • cache hit            → resolved immediately from pathCache
+    //   • read already in flight → the shared pending promise (no new read)
+    //   • otherwise            → a fresh read, recorded in pathPending so any
+    //                            concurrent caller (debounce + Enter) shares it
+    // The promise NEVER rejects — failures resolve to { ok:false, err }.
+    function getValidation(expanded) {
+      if (Object.prototype.hasOwnProperty.call(pathCache, expanded)) {
+        return Promise.resolve(pathCache[expanded]);
+      }
+      if (pathPending[expanded]) return pathPending[expanded];
+      var p = window.__TAURI__.core.invoke('read_md_file', { path: expanded })
+        .then(function (doc) { return { ok: true, doc: doc }; })
+        .catch(function (err) { return { ok: false, err: err }; })
+        .then(function (res) {
+          pathCache[expanded] = res;   // record outcome for instant re-queries
+          delete pathPending[expanded];
+          return res;
+        });
+      pathPending[expanded] = p;
+      return p;
+    }
+
+    // Validate `expanded` and reflect the outcome into the path row UI, guarded
+    // by the token + current-value check so a stale read never repaints.
+    function validatePath(expanded, token) {
+      getValidation(expanded).then(function (res) {
+        applyValidation(token, expanded, res);
+      });
+    }
+
+    // Enter PATH MODE for `raw` (already known to be a path query) or refresh
+    // it when the input changes. Updates pathState, paints the row, and (in
+    // native mode) schedules a debounced validation. Every call bumps pathSeq
+    // so any in-flight read for a previous value is ignored when it returns.
+    function updatePathMode(raw) {
+      if (!raw) { exitPathMode(); return; }
+      pathState.active = true;
+      pathState.raw = raw;
+      pathSeq++;
+      var token = pathSeq;
+
+      if (!nativeAvailable) {
+        pathState.expanded = '';
+        pathState.status = 'unavailable';
+        renderPathRow();
+        return;
+      }
+
+      ensureHomeDir();
+      var expanded = expandPath(raw);
+      pathState.expanded = expanded;
+
+      // Already validated this exact expanded path? Reflect it immediately.
+      if (Object.prototype.hasOwnProperty.call(pathCache, expanded)) {
+        var cached = pathCache[expanded];
+        pathState.status = cached.ok ? 'found' : 'notfound';
+        renderPathRow();
+        if (cached.ok) focusPathRow();
+        return;
+      }
+
+      pathState.status = 'checking';
+      renderPathRow();
+
+      if (pathDebounce) clearTimeout(pathDebounce);
+      pathDebounce = setTimeout(function () {
+        // Guard: only fire if this is still the current query.
+        if (token !== pathSeq || !pathState.active ||
+            pathState.expanded !== expanded) return;
+        validatePath(expanded, token);
+      }, 200);
+    }
+
+    // Leave PATH MODE entirely (input cleared or no longer path-like).
+    function exitPathMode() {
+      if (pathDebounce) { clearTimeout(pathDebounce); pathDebounce = null; }
+      pathSeq++; // invalidate any in-flight validation
+      pathState.active = false;
+      pathState.raw = '';
+      pathState.expanded = '';
+      pathState.status = 'hidden';
+      renderPathRow();
+    }
+
+    // Move the JS cursor onto the path row (kept in sync with visibleRows()).
+    function focusPathRow() {
+      if (!pathRow || pathRow.style.display === 'none') return;
+      var rows = visibleRows();
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i] === pathRow) { setCursor(i); return; }
+      }
+    }
+
+    // Open the validated path in place from the cached doc. When validation
+    // hasn't landed yet, CHAIN onto the in-flight validation read (via
+    // getValidation) rather than issuing a second read — so Enter-during-
+    // checking shares the debounce's read; exactly one disk read per path.
+    // No-op when the row isn't a valid target.
+    function openPathRow() {
+      if (!pathState.active || !nativeAvailable) return;
+      var expanded = pathState.expanded;
+      var cached = pathCache[expanded];
+      if (cached) {
+        // Already validated: open from cache (found) or no-op (not found).
+        if (cached.ok) fillUntitledWithDoc(cached.doc, expanded);
+        return;
+      }
+      // Not yet validated: await the shared validation (in-flight or fresh),
+      // then open only if the input STILL points at this path (token + value
+      // guard — same out-of-order semantics as applyValidation).
+      var token = pathSeq;
+      getValidation(expanded).then(function (res) {
+        if (token !== pathSeq || pathState.expanded !== expanded) return;
+        pathState.status = res.ok ? 'found' : 'notfound';
+        renderPathRow();
+        if (res.ok) fillUntitledWithDoc(res.doc, expanded);
+      });
+    }
+
+    // The scoring sources + displayed strings for one filterable row.
+    function rowFields(r) {
+      var name = r.getAttribute('data-ntp-name') || '';
+      var folder = r.getAttribute('data-ntp-folder') || '';
+      // RECENT carries the path on data-ntp-path; FILES (already-open rows)
+      // carry it on data-ntp-fullpath since data-ntp-path drives activation.
+      var path = r.getAttribute('data-ntp-path') || r.getAttribute('data-ntp-fullpath') || '';
+      return { name: name, folder: folder, path: path };
+    }
+
+    // Repaint a row's name/meta text, highlighting matched chars from a
+    // fuzzyMatchFile() result (or plain when result is null/empty query).
+    // All HTML is built from ESCAPED text via highlightIndices().
+    function paintRow(r, match) {
+      var f = rowFields(r);
+      var nameEl = r.querySelector('.tv-ntp-name');
+      if (nameEl) {
+        nameEl.innerHTML = match
+          ? highlightIndices(f.name, match.nameIndices)
+          : esc(f.name);
+      }
+      // RECENT rows show a timestamp in .tv-ntp-meta (not the path), and
+      // FILES rows show "already open" — neither is the path text, so we
+      // only highlight the name. Path matches still rank the row; we leave
+      // the meta untouched to avoid clobbering timestamps/status.
+    }
+
+    // Restore every filterable row to its original order, full visibility,
+    // and un-highlighted text (empty-query / cleared state).
+    function resetRows() {
+      Array.prototype.forEach.call(tvEl.querySelectorAll('.tv-ntp-group'), function (g) {
+        var key = g.getAttribute('data-ntp-group');
+        g.style.display = '';
+        if (key === 'open') return;
+        var ordered = groupOrder[key] || [];
+        ordered.forEach(function (r) {
+          r.style.display = '';
+          paintRow(r, null);
+          g.appendChild(r); // re-append in original order
+        });
+      });
+    }
+
+    // Activate a row by its data attributes (shared by click + Enter).
+    function activateRow(row) {
+      if (!row) return;
+      // Direct path-entry row: open the validated path (or read-then-open if
+      // validation hasn't landed). A not-found path row is a harmless no-op.
+      if (row.hasAttribute('data-ntp-pathrow')) {
+        openPathRow();
+        return;
+      }
+      var act = row.getAttribute('data-ntp-act');
+      if (act === 'open-file') {
+        if (window.TVFiles && typeof TVFiles.openPicker === 'function') {
+          TVFiles.openPicker();
+        }
+        return;
+      }
+      if (act === 'open-folder') {
+        openFolder();
+        return;
+      }
+      var openId = row.getAttribute('data-ntp-open-id');
+      if (openId) {
+        // Already-open file → activate that tab, then close the untitled one.
+        var untitled = findUntitledTab();
+        activateTab(openId);
+        if (untitled && untitled.id !== openId) closeTab(untitled.id);
+        return;
+      }
+      var path = row.getAttribute('data-ntp-path');
+      if (path) {
+        openRecentIntoUntitled(path);
+        return;
+      }
+    }
+
+    // Live fuzzy filter: OPEN rows always visible and excluded from
+    // scoring. RECENT + FILES rows are fuzzy-matched over basename, parent
+    // folder, and full path; non-matches hide, matches reorder by
+    // descending score WITHIN their section, matched chars highlight, and
+    // the cursor jumps to the highest-scoring row overall. An empty query
+    // restores the original order and parks the cursor on "Open File…".
+    input.addEventListener('input', function () {
+      var raw = input.value.trim();
+
+      // ── PATH MODE gate ──────────────────────────────────────────
+      // Path-like input drives the dedicated path row (no whitespace strip:
+      // paths may contain spaces). Non-path input keeps the fuzzy behavior
+      // below untouched. Detection is on the trimmed raw value.
+      var inPathMode = !!raw && isPathQuery(raw);
+      if (inPathMode) {
+        updatePathMode(raw);
+      } else if (pathState.active) {
+        exitPathMode();
+      }
+
+      var q = inPathMode
+        ? '' // path mode: don't fuzzy-filter on the raw path string
+        : input.value.replace(/\s+/g, ''); // "ar md" behaves like "armd"
+
+      if (!q) {
+        resetRows();
+        cursor = -1;
+        var emptyEl = tvEl.querySelector('.tv-ntp-empty');
+        if (emptyEl) emptyEl.style.display = 'none';
+        if (inPathMode) {
+          // The path row is the user's intent, so the cursor sits on it the
+          // whole time it's shown — making Enter target the path: open when
+          // found, validate-then-open while still 'checking…', no-op when
+          // 'not found'. Arrows still let the user step down to OPEN rows.
+          focusPathRow();
+        } else {
+          setCursor(0); // back on "Open File…"
+        }
+        return;
+      }
+
+      var filterableTotal = 0;
+      var best = null;      // highest-scoring visible row (for cursor)
+      var bestScore = -Infinity;
+
+      Array.prototype.forEach.call(tvEl.querySelectorAll('.tv-ntp-group'), function (g) {
+        var key = g.getAttribute('data-ntp-group');
+        if (key === 'open') { g.style.display = ''; return; }
+        var ordered = groupOrder[key] || [];
+        var scored = [];
+        ordered.forEach(function (r) {
+          filterableTotal++;
+          var match = fuzzyMatchFile(q, rowFields(r));
+          if (!match) {
+            r.style.display = 'none';
+            paintRow(r, null);
+            return;
+          }
+          r.style.display = '';
+          paintRow(r, match);
+          scored.push({ row: r, score: match.score });
+          if (match.score > bestScore) { bestScore = match.score; best = r; }
+        });
+        // Stable sort by descending score: tag original index then compare.
+        scored.forEach(function (s, i) { s._i = i; });
+        scored.sort(function (a, b) {
+          return b.score - a.score || a._i - b._i;
+        });
+        // Re-append matched rows in scored order; hidden rows can stay put.
+        scored.forEach(function (s) { g.appendChild(s.row); });
+        g.style.display = scored.length ? '' : 'none';
+      });
+
+      // Cursor jumps to the single highest-scoring row across all sections.
+      clearCursor();
+      if (best) {
+        var vis = visibleRows();
+        for (var i = 0; i < vis.length; i++) {
+          if (vis[i] === best) { cursor = i; break; }
+        }
+        best.classList.add('cursor');
+        best.setAttribute('aria-selected', 'true');
+        if (best.scrollIntoView) best.scrollIntoView({ block: 'nearest' });
+      } else {
+        cursor = -1;
+      }
+
+      var empty = tvEl.querySelector('.tv-ntp-empty');
+      if (empty) {
+        // "No matching files" only when there ARE filterable rows but none matched.
+        empty.style.display = (filterableTotal && !best) ? '' : 'none';
+      }
+    });
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setCursor(cursor + 1); // from -1 lands on the first visible row
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setCursor(cursor - 1); // clamped at 0
+        return;
+      }
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        var rows = visibleRows();
+        // Default: first row ("Open File…") when no explicit cursor.
+        var row = (cursor >= 0 && rows[cursor]) ? rows[cursor] : rows[0];
+        activateRow(row);
+        return;
+      }
+      // Escape / ⌘-shortcuts fall through to the global keyboard router.
+    });
+
+    // Click on the path row opens it (the global delegated NTP click handler
+    // skips it since it carries none of the data-ntp-* action attrs). Stop
+    // propagation so only this local handler runs.
+    if (pathRow) {
+      pathRow.addEventListener('click', function (e) {
+        e.stopPropagation();
+        openPathRow();
+      });
+    }
+
+    // Seed the cursor on the first row ("Open File…") so the panel opens
+    // pre-selected like the mock. Typing resets it (cursor = -1) so the
+    // highlight follows the filtered result set instead.
+    setCursor(0);
+  }
+
   function wireEvents(tvEl) {
     if (!tvEl) return;
 
     // BUG-4: wire the sidebar drag-resize handle
     wireSidebarResize(tvEl);
+
+    // New-tab page: focus filter input + wire filter/cursor keyboard model
+    wireNewTabPage(tvEl);
 
     // UX-11: keyboard activation for .tv-recent-row (role="button")
     tvEl.addEventListener('keydown', function (e) {
@@ -951,11 +1921,21 @@
     }
 
     tvEl.addEventListener('click', function (e) {
-      // Tab close button
+      // Tab close button (tabbar)
       var closeBtn = e.target.closest('[data-close-tab]');
       if (closeBtn) {
         e.stopPropagation();
         closeTab(closeBtn.getAttribute('data-close-tab'));
+        return;
+      }
+
+      // UX-SB5: Sidebar per-row close button — close WITHOUT activating.
+      // Must be checked before the sidebar-row handler so stopPropagation
+      // prevents the enclosing [data-sidebar-tab] row from activating the tab.
+      var sbCloseBtn = e.target.closest('[data-sb-close-tab]');
+      if (sbCloseBtn) {
+        e.stopPropagation();
+        closeTab(sbCloseBtn.getAttribute('data-sb-close-tab'));
         return;
       }
 
@@ -967,8 +1947,9 @@
       }
 
       // Sidebar row click: activate tab and engage keyboard cursor mode.
+      // Guard: ignore clicks that landed on the close button (already handled above).
       var sidebarRow = e.target.closest('[data-sidebar-tab]');
-      if (sidebarRow) {
+      if (sidebarRow && !e.target.closest('[data-sb-close-tab]')) {
         var sidebarTabId = sidebarRow.getAttribute('data-sidebar-tab');
         activateTab(sidebarTabId);
         // UX-10: engage keyboard cursor on the clicked row so ArrowDown/Up work
@@ -1017,13 +1998,45 @@
         return;
       }
 
-      // New tab button
-      if (e.target.closest('[data-newtab]')) {
-        if (window.TVFiles && typeof TVFiles.openPicker === 'function') {
-          TVFiles.openPicker();
-        } else if (window.TVPalette && typeof TVPalette.open === 'function') {
-          TVPalette.open();
+      // Launcher-panel rows. A single delegated handler covers every
+      // actionable row across OPEN / RECENT / FILES sections:
+      //   data-ntp-act="open-file"   → system file picker (same as ⌘O)
+      //   data-ntp-act="open-folder" → folder picker (same as ⌘⇧O)
+      //   data-ntp-open-id           → already-open file: activate + close untitled
+      //   data-ntp-path              → recent/known file: fill untitled in place
+      // (NTP rows use data-ntp-path, distinct from the sidebar's
+      // data-recent-path, so the two flows never cross.)
+      var ntpRow = e.target.closest('.tv-ntp-row');
+      if (ntpRow) {
+        var ntpAct = ntpRow.getAttribute('data-ntp-act');
+        if (ntpAct === 'open-file') {
+          if (window.TVFiles && typeof TVFiles.openPicker === 'function') {
+            TVFiles.openPicker();
+          }
+          return;
         }
+        if (ntpAct === 'open-folder') {
+          openFolder();
+          return;
+        }
+        var ntpOpenId = ntpRow.getAttribute('data-ntp-open-id');
+        if (ntpOpenId) {
+          var ntpUntitled = findUntitledTab();
+          activateTab(ntpOpenId);
+          if (ntpUntitled && ntpUntitled.id !== ntpOpenId) closeTab(ntpUntitled.id);
+          return;
+        }
+        var ntpPath = ntpRow.getAttribute('data-ntp-path');
+        if (ntpPath) {
+          openRecentIntoUntitled(ntpPath);
+          return;
+        }
+        return;
+      }
+
+      // New tab button — creates/activates the Untitled tab (browser-style ⌘T)
+      if (e.target.closest('[data-newtab]')) {
+        openUntitledTab();
         return;
       }
 
@@ -1154,6 +2167,98 @@
     return tab.id;
   }
 
+  // Browser-style new tab (⌘T / + button). Untitled tabs are a singleton:
+  // if one already exists, activate it instead of creating a second.
+  function findUntitledTab() {
+    for (var i = 0; i < state.tabs.length; i++) {
+      if (state.tabs[i].untitled) return state.tabs[i];
+    }
+    return null;
+  }
+
+  // Creation deliberately bypasses openDoc so its dedup never sees
+  // untitled tabs — they are pushed directly and activated.
+  function openUntitledTab() {
+    var existing = findUntitledTab();
+    if (existing) {
+      activateTab(existing.id);
+      return existing.id;
+    }
+    var tab = makeTab({ name: 'Untitled', untitled: true });
+    state.tabs.push(tab);
+    activateTab(tab.id);
+    return tab.id;
+  }
+
+  // Fill the untitled tab IN PLACE from an already-read document. `doc` is the
+  // read_md_file payload ({ name, content, path }); `requestedPath` is the path
+  // the caller used to read it (fallback for nativePath). Mirrors tv-native.js
+  // openInto() but mutates the existing untitled tab instead of pushing a new
+  // one. If the file is already open in another tab, activate that tab and
+  // close the untitled one. Returns true when it filled/activated a tab.
+  // Shared by recents AND direct path entry so the fill-in-place invariants
+  // (name/source/path/nativePath, live, scroll reset, saveRecentPath, TVLive)
+  // live in exactly one place.
+  function fillUntitledWithDoc(doc, requestedPath) {
+    if (!doc) return false;
+    var nativePath = doc.path || requestedPath || '';
+
+    var untitled = findUntitledTab();
+    if (!untitled) return false;
+
+    // Already open elsewhere? Activate it FIRST, then close the untitled
+    // tab — activate-first so _doCloseTab's neighbor-pick never fires.
+    if (nativePath) {
+      for (var i = 0; i < state.tabs.length; i++) {
+        if (state.tabs[i].nativePath === nativePath && state.tabs[i].id !== untitled.id) {
+          activateTab(state.tabs[i].id);
+          closeTab(untitled.id);
+          return true;
+        }
+      }
+    }
+
+    // Transform the untitled tab in place — do NOT push a new tab.
+    untitled.name = doc.name;
+    untitled.source = doc.content;
+    untitled.path = nativePath ? (nativePath.replace(/\/[^/]+$/, '') || '/') : '/';
+    untitled.nativePath = nativePath;
+    untitled.untitled = false;
+    untitled.live = true;
+    untitled.dirty = false;
+    if (untitled.nativePath) saveRecentPath(untitled.nativePath);
+    // Same-tab re-activation = canonical render + tabchange emit
+    activateTab(untitled.id);
+    // activateTab's E-04 save captured the NTP's scroll offset; the freshly
+    // opened document must start at the top, not the picker's position.
+    untitled.scrollTop = 0;
+    var scrollEl = document.querySelector('[data-scroll]');
+    if (scrollEl) scrollEl.scrollTop = 0;
+    if (window.TVLive && typeof TVLive.start === 'function') {
+      TVLive.start(untitled.id);
+    }
+    return true;
+  }
+
+  // Fill the untitled tab IN PLACE with a recent file (new-tab page row).
+  // Reads the file via the bridge, then hands the doc to fillUntitledWithDoc.
+  // Plain-browser mode: graceful no-op.
+  function openRecentIntoUntitled(path) {
+    if (!path || !(window.TVNative && TVNative.available)) return;
+    if (!findUntitledTab()) return;
+
+    window.__TAURI__.core.invoke('read_md_file', { path: path })
+      .then(function (doc) {
+        fillUntitledWithDoc(doc, path);
+      })
+      .catch(function (err) {
+        console.warn('[TV] new-tab recent open failed', path, err);
+        if (window.TVNative && typeof TVNative.showToast === 'function') {
+          TVNative.showToast('Could not open file: ' + (err || 'unknown error'));
+        }
+      });
+  }
+
   // E-04: Save outgoing tab's scroll BEFORE changing state.activeId,
   // then update activeId, render, and restore the incoming scroll.
   // E-06: Capture outgoing tab id before switch, include prevId in tabchange event.
@@ -1164,6 +2269,69 @@
     // Capture outgoing tab id BEFORE changing state.activeId (E-06)
     var prevId = state.activeId;
     var outgoing = getActiveTab();
+    var isCrossTabSwitch = (id !== state.activeId);
+
+    // UF-03/F3: If switching to a DIFFERENT tab while in edit mode, ask the user
+    // before proceeding. Content is committed regardless (UF-02/UF-04 below), but
+    // the UF-02 contract requires explicit confirmation.
+    // Guard: only prompt on user-initiated cross-tab switches; same-tab re-activations
+    // (openDoc dedup, programmatic same-id calls) pass silently.
+    if (isCrossTabSwitch && state.mode === 'edit' && outgoing) {
+      var confirmMsg = 'Leave edit mode? Your changes are kept in the tab.';
+      if (window.__TAURI__ && window.__TAURI__.dialog) {
+        // Tauri native dialog (async) — commit textarea first so content is safe
+        var editTextareaPre = document.querySelector('[data-edit-area]');
+        if (editTextareaPre && editTextareaPre.value !== outgoing.source) {
+          outgoing.source = editTextareaPre.value;
+          if (outgoing.source !== '') outgoing.dirty = true;
+        }
+        window.__TAURI__.dialog.ask(confirmMsg, { title: 'Leave Edit Mode?', kind: 'warning' })
+          .then(function (confirmed) {
+            if (!confirmed) {
+              // User declined: stay on current tab, refocus textarea
+              var ta = document.querySelector('[data-edit-area]');
+              if (ta) ta.focus();
+              return;
+            }
+            _doActivateTab(id, prevId, outgoing);
+          })
+          .catch(function () {
+            // Dialog plugin unavailable — fall back to sync confirm
+            if (!window.confirm(confirmMsg)) {
+              var ta = document.querySelector('[data-edit-area]');
+              if (ta) ta.focus();
+              return;
+            }
+            _doActivateTab(id, prevId, outgoing);
+          });
+        return;
+      } else {
+        // Browser sync confirm
+        if (!window.confirm(confirmMsg)) {
+          var editTextareaRefocus = document.querySelector('[data-edit-area]');
+          if (editTextareaRefocus) editTextareaRefocus.focus();
+          return;
+        }
+      }
+    }
+
+    _doActivateTab(id, prevId, outgoing, isCrossTabSwitch);
+  }
+
+  // Internal: performs the actual tab switch after any edit-mode confirmation.
+  function _doActivateTab(id, prevId, outgoing, isCrossTabSwitch) {
+    // Default isCrossTabSwitch when called from the non-edit path
+    if (isCrossTabSwitch === undefined) isCrossTabSwitch = (id !== prevId);
+
+    // F1: clear find state when actually switching to a different tab so render()
+    // does not restore a stale find bar from the outgoing tab's content.
+    // Sidebar toggles and same-tab re-renders keep _findOpen as-is (UF-06).
+    if (isCrossTabSwitch) {
+      _findOpen = false;
+      _findQuery = '';
+      _findMatches = [];
+      _findIndex = 0;
+    }
 
     // UF-02/UF-04: If switching away while in edit mode, commit the live textarea
     // value into tab.source so no typed text is lost, and keep dirty flag intact.
@@ -1190,13 +2358,8 @@
     state.activeId = id;
     state.mode = 'reading';
     render();
-
-    // Restore incoming tab's scroll after render
-    var newScrollEl = document.querySelector('[data-scroll]');
-    var incoming = getActiveTab();
-    if (newScrollEl && incoming) {
-      newScrollEl.scrollTop = incoming.scrollTop || 0;
-    }
+    // F6: scroll restore is handled inside render() via the [data-scroll] restore block
+    // (covers all render paths); duplicate restore here has been removed.
 
     // E-06: include prevId so tv-live.js can remove the outgoing tab's live UI
     tvEmit('tabchange', { id: id, prevId: prevId || null, tab: getActiveTab() });
@@ -1209,8 +2372,9 @@
 
     var tab = state.tabs[idx];
 
-    // S-03: Guard against silent data loss
-    if (tab.dirty) {
+    // S-03: Guard against silent data loss.
+    // Untitled new-tab pages never have anything to lose — close instantly.
+    if (tab.dirty && !tab.untitled) {
       var msg = 'Discard unsaved changes to "' + tab.name + '"?';
       // In Tauri, try native dialog; otherwise use window.confirm
       if (window.__TAURI__ && window.__TAURI__.dialog) {
@@ -1256,6 +2420,12 @@
 
   function setMode(m) {
     if (m !== 'reading' && m !== 'edit') return;
+    // Untitled new-tab pages have no document to edit — central guard that
+    // makes ⌘E, dblclick, and any future setMode('edit') caller a no-op.
+    if (m === 'edit') {
+      var t = getActiveTab();
+      if (t && t.untitled) return;
+    }
     state.mode = m;
     render();
     tvEmit('modechange', { mode: m });
@@ -1300,9 +2470,38 @@
   }
 
   // S-11 fix: capture tab id before rAF to avoid scrolling wrong tab
+  // F2: same-tab jump from edit mode stays in edit mode (scroll textarea to heading line).
   function scrollToHeading(tabId, headingText) {
     if (!tabId || !headingText) return;
     var targetTabId = tabId; // capture before rAF
+
+    // F2: if already on the target tab while in edit mode, do NOT call activateTab
+    // (which forces mode='reading'). Instead, scroll the textarea to the heading's line.
+    if (tabId === state.activeId && state.mode === 'edit') {
+      var tab = getActiveTab();
+      if (tab && tab.source) {
+        var lines = tab.source.split('\n');
+        var needle = headingText.toLowerCase().trim();
+        var lineIdx = -1;
+        for (var li = 0; li < lines.length; li++) {
+          if (lines[li].toLowerCase().replace(/^#{1,6}\s+/, '').trim().indexOf(needle) !== -1) {
+            lineIdx = li;
+            break;
+          }
+        }
+        if (lineIdx !== -1) {
+          var ta = document.querySelector('[data-edit-area]');
+          if (ta) {
+            // Approximate scroll: proportion of heading line within total lines
+            var ratio = lineIdx / Math.max(lines.length - 1, 1);
+            ta.scrollTop = Math.round(ratio * (ta.scrollHeight - ta.clientHeight));
+            ta.focus();
+          }
+        }
+      }
+      return;
+    }
+
     activateTab(tabId);
 
     // After render, find heading by text and scroll it into view
@@ -1401,6 +2600,9 @@
   function handleSave() {
     var tab = getActiveTab();
     if (!tab) return;
+
+    // Untitled new-tab pages have nothing to save (⌘S / menu:save no-op)
+    if (tab.untitled) return;
 
     // Not dirty: just exit edit mode without writing anything (DR-06)
     if (!tab.dirty) {
@@ -1586,6 +2788,14 @@
       if (state.mode === 'edit') {
         setMode('reading'); e.preventDefault(); return;
       }
+      // Launcher panel: Escape closes the untitled tab once everything
+      // higher in the ladder (find bar, palette, search, edit) has passed.
+      // Only when typing isn't focused elsewhere — the NTP input lives in
+      // this document, and its own keydown handler lets Escape bubble here.
+      var escTab = getActiveTab();
+      if (escTab && escTab.untitled) {
+        closeTab(escTab.id); e.preventDefault(); return;
+      }
       return;
     }
 
@@ -1600,6 +2810,16 @@
       if (window.TVPalette) {
         TVPalette.isOpen && TVPalette.isOpen() ? TVPalette.close() : TVPalette.open();
       }
+      return;
+    }
+
+    // ⌘T — browser-style new tab (creates/activates the Untitled tab)
+    if (k === 't' || k === 'T') {
+      e.preventDefault();
+      // UX-10: focus moves to the NTP input; deactivate sidebar keyboard cursor
+      sbKbd.active = false;
+      renderSidebarCursor();
+      openUntitledTab();
       return;
     }
 
@@ -1922,7 +3142,6 @@
           return;
         }
         var path = pending.shift();
-        var isMostRecent = (pending.length === recentPaths.length - 1 - openedCount);
         window.__TAURI__.core.invoke('read_md_file', { path: path })
           .then(function (doc) {
             if (!doc || !doc.name) { readNext(); return; }
@@ -1979,6 +3198,7 @@
     state: state,
     render: render,
     openDoc: openDoc,
+    openUntitledTab: openUntitledTab,
     activateTab: activateTab,
     closeTab: closeTab,
     getActiveTab: getActiveTab,

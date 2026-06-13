@@ -112,9 +112,11 @@ html, body, #tv-root {
   color: var(--tv-text-primary) !important;
   border-radius: 7px 7px 0 0;
 }
+/* Active-tab accent bar across the TOP edge (mock target). Spans the full
+   tab width so the warm/accent underline reads clearly on the active tab. */
 .tv-tab.active::after {
-  content: ""; position: absolute; left: 9px; right: 9px; top: 0;
-  height: 2px; border-radius: 0 0 2px 2px; background: var(--tv-accent) !important;
+  content: ""; position: absolute; left: 0; right: 0; top: 0;
+  height: 2px; background: var(--tv-accent) !important;
 }
 .tv-tab .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tv-tab .tv-close {
@@ -232,8 +234,6 @@ html, body, #tv-root {
   border-radius: var(--tv-radius-sm); cursor: default; position: relative;
   /* L-09: row must not expand vertically due to long path text */
   min-width: 0;
-  /* UX-SB1: left-border space reserved for active indicator (transparent at rest) */
-  border-left: 2px solid transparent;
 }
 .tv-tree-row .ic { color: var(--tv-text-muted) !important; display: inline-flex; flex: 0 0 auto; }
 /* L-09: any direct text span (filename, folder path) gets ellipsis.
@@ -252,18 +252,15 @@ html, body, #tv-root {
   letter-spacing: .5px; text-transform: uppercase;
   margin-top: var(--tv-s2);
   padding-top: 4px; padding-bottom: 4px;
-  border-left: 2px solid transparent; /* keep left-border reservation consistent */
 }
 .tv-tree-row.folder .ic { color: var(--tv-text-muted) !important; opacity: .7; }
 .tv-tree-row.file { padding-left: 26px; }
-/* UX-26 / UX-SB1: selection cue — filled tint + left accent bar + semibold weight.
-   Left bar gives a strong non-color signal; tint provides the filled-background cue.
-   border-left overrides the transparent reservation set on .tv-tree-row. */
+/* UX-26 / UX-SB1: selection cue — filled tint + semibold weight.
+   (Left accent border removed per user request 2026-06-10.) */
 .tv-tree-row.active {
   background: var(--tv-accent-weak) !important;
   color: var(--tv-accent-text) !important;
   font-weight: 600;
-  border-left: 2px solid var(--tv-accent) !important;
 }
 .tv-tree-row.active .ic { color: var(--tv-accent-text) !important; }
 .tv-tree-row:hover:not(.active) { background: var(--tv-bg-hover) !important; }
@@ -477,20 +474,59 @@ html, body, #tv-root {
 .md tbody tr:nth-child(even) { background: var(--tv-table-stripe) !important; }
 .md td.num { font-variant-numeric: tabular-nums; color: var(--tv-text-secondary) !important; }
 
-/* images */
+/* ── block images (figure.md-img > img) ─────────────────────
+   The renderer now emits a real <img> inside the figure wrapper.
+   The figure acts as the card; the img fills it naturally.
+   .tv-img-missing is added via onerror and swaps to the
+   SVG placeholder so users see alt text instead of a broken icon.  */
 .md .md-img {
   width: 100%; border-radius: var(--tv-radius-md); border: 1px solid var(--tv-border);
   background: var(--tv-bg-sidebar) !important; overflow: hidden; margin: 0 0 var(--tv-s4);
+  position: relative;
 }
-.md .md-img .frame {
-  aspect-ratio: 16/7; display: flex; align-items: center; justify-content: center;
-  position: relative; color: var(--tv-text-muted) !important;
+/* The actual image — fills width, auto height, capped at 480px */
+.md .md-img > img {
+  display: block; width: 100%; height: auto; max-height: 480px;
+  object-fit: contain; background: var(--tv-bg-surface) !important;
 }
+/* Hide the broken-image placeholder until onerror fires */
+.md .md-img .tv-img-placeholder { display: none; }
+
+/* Broken / missing image state — show placeholder, hide the broken <img> */
+.md .md-img.tv-img-missing > img { display: none; }
+.md .md-img.tv-img-missing .tv-img-placeholder {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 6px; padding: 28px 16px; min-height: 80px;
+  color: var(--tv-text-muted) !important;
+}
+.md .md-img.tv-img-missing .tv-img-placeholder-text {
+  font-size: 12px; color: var(--tv-text-muted) !important; text-align: center;
+  max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Blocked-scheme images (javascript:, file:, etc.) — text only */
+.md .md-img--blocked {
+  width: 100%; border-radius: var(--tv-radius-md); border: 1px dashed var(--tv-border);
+  background: var(--tv-bg-sidebar) !important; padding: 8px 12px; margin: 0 0 var(--tv-s4);
+}
+
 .md .md-img .cap { font-size: 12.5px; color: var(--tv-text-muted) !important; padding: 8px 12px; border-top: 1px solid var(--tv-border); }
 
-/* ── inline image chip (E-09 / E-10 support) ─────────────────
+/* ── inline images ───────────────────────────────────────────
+   Renderer now emits a real <img class="md-inline-img-el"> for
+   inline ![alt](url) occurrences inside paragraphs.
+   Constrained height so inline images don't blow up the line height.
+   The fallback chip class .md-inline-img (blocked schemes) is kept.   */
+.md img.md-inline-img-el {
+  display: inline-block; vertical-align: middle;
+  max-height: 1.4em; width: auto; border-radius: 2px;
+}
+/* Broken inline image — hide the broken icon, show nothing (alt attr serves) */
+.md img.md-inline-img-el.tv-img-broken { display: none; }
+
+/* ── inline image chip fallback (blocked-scheme chips) ───────
    Renderer emits <span class="md-inline-img">[img: alt]</span>
-   for inline ![alt](url) occurrences inside paragraphs.
+   only when the scheme is blocked (javascript:, file:, etc.).
    Styled as a subtle pill: readable, unobtrusive, inline.       */
 .md-inline-img {
   display: inline;
@@ -899,7 +935,7 @@ html, body, #tv-root {
 .tv-sr-row.sel { background: var(--tv-accent-weak) !important; color: var(--tv-text-primary) !important; font-weight: 600; }
 /* UX-26: forced-colors fallback — selection maps to system Highlight in high-contrast mode. */
 @media (forced-colors: active) {
-  .tv-tree-row.active, .tv-pal-row.sel, .tv-sr-row.sel { background: Highlight !important; color: HighlightText !important; font-weight: 700; }
+  .tv-tree-row.active, .tv-pal-row.sel, .tv-sr-row.sel, .tv-ntp-row.cursor { background: Highlight !important; color: HighlightText !important; font-weight: 700; }
 }
 .tv-sr-row .ln { flex: 0 0 44px; color: var(--tv-text-muted) !important; font-variant-numeric: tabular-nums; font-family: var(--tv-font-mono); font-size: 12px; }
 .tv-sr-row .snip { flex: 1; }
@@ -922,6 +958,129 @@ html, body, #tv-root {
 .tv-dropzone .dz-cmd { display: inline-flex; align-items: center; gap: 8px; font-size: 13.5px; color: var(--tv-text-secondary) !important; }
 .tv-dropzone .dz-cmd .kbd { font-size: 12px; padding: 2px 7px; }
 .tv-empty-hint { position: absolute; bottom: 20px; left: 0; right: 0; text-align: center; font-size: 12px; color: var(--tv-text-muted) !important; }
+
+/* ── new tab page · launcher panel ─────────────────────────── */
+/* App-level overlay centered on the FULL window (Spotlight/⌘K style).
+   .tv-ntp is a child of .tv (sibling of .tv-body), so inset:0 spans the whole
+   window and the panel centers on window-x, not the content area. The layer is
+   click-through (pointer-events:none) so the tab bar / sidebar behind it stay
+   interactive; only the panel + pill capture pointer events. Panel top ≈99px
+   from the window top to match the mock. */
+.tv-ntp {
+  position: absolute; inset: 0;
+  display: flex; justify-content: center; align-items: flex-start;
+  padding: 99px 24px 64px;
+  pointer-events: none;
+  z-index: 20;
+  /* same blur as the ⌘K palette scrim (design ref: Command Palette mock) */
+  backdrop-filter: blur(3px);
+}
+.tv-ntp-box {
+  width: 560px; max-width: 100%;
+  display: flex; flex-direction: column;
+  background: var(--tv-bg-elev) !important;
+  border: 1px solid var(--tv-border);
+  border-radius: 12px;
+  box-shadow: var(--tv-shadow-pop);
+  overflow: hidden;
+  pointer-events: auto;
+}
+/* the empty placeholder left in the untitled tab's viewer (contracts only) */
+.tv-ntp-canvas { min-height: 100%; }
+/* When the command palette or cross-tab search opens over the launcher, hide
+   the launcher overlay so those surfaces own the screen (palette/search must
+   render above the NTP). They are dynamically appended without a re-render,
+   so this is keyed off their presence in the tree rather than a state class. */
+.tv:has(.tv-palette-scrim) .tv-ntp,
+.tv:has(.tv-search-container) .tv-ntp { display: none; }
+
+/* input row: leading muted doc icon + borderless input + hairline divider */
+.tv-ntp-inputrow {
+  display: flex; align-items: center; gap: 12px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--tv-border);
+}
+.tv-ntp-input-ic { color: var(--tv-text-muted) !important; flex: 0 0 auto; opacity: .8; }
+.tv-ntp-input {
+  flex: 1; min-width: 0; height: 24px;
+  border: 0; background: transparent;
+  font: inherit; font-size: 15.5px; font-family: var(--tv-font-ui);
+  color: var(--tv-text-primary) !important;
+  outline: 0; caret-color: var(--tv-accent);
+}
+.tv-ntp-input::placeholder { color: var(--tv-text-muted) !important; }
+/* The launcher input is permanently autofocused and intentionally borderless;
+   suppress the global focus ring (the panel + caret are the focus affordance). */
+.tv-ntp-input:focus-visible { outline: 0 !important; }
+
+/* scrollable section stack */
+.tv-ntp-sections { padding: 6px 8px; }
+.tv-ntp-group + .tv-ntp-group { margin-top: 4px; }
+
+/* uppercase, letter-spaced, muted section labels */
+.tv-ntp-section {
+  font-size: 10.5px; font-weight: 600; letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--tv-text-muted) !important;
+  padding: 10px 10px 5px;
+}
+
+/* actionable rows */
+.tv-ntp-row {
+  display: flex; align-items: center; gap: 11px;
+  padding: 8px 10px; border-radius: 8px; cursor: default;
+  font-size: 14px; color: var(--tv-text-primary) !important;
+  border: 1px solid transparent;
+}
+.tv-ntp-ic { color: var(--tv-text-muted) !important; flex: 0 0 auto; display: inline-flex; }
+.tv-ntp-name { font-weight: 500; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* fuzzy-match highlight inside launcher rows (mirrors .tv-pal-row .hl) */
+.tv-ntp-name .hl { color: var(--tv-accent-text) !important; font-weight: 700; }
+.tv-ntp-row.cursor .tv-ntp-name .hl { color: inherit !important; text-decoration: underline; }
+.tv-ntp-meta {
+  margin-left: auto; flex: 0 0 auto;
+  font-size: 12px; color: var(--tv-text-muted) !important;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tv-ntp-meta .kbd { font-size: 11.5px; }
+.tv-ntp-row:hover { background: var(--tv-bg-hover) !important; }
+/* selected/cursor row: accent-weak tint + subtle accent border */
+.tv-ntp-row.cursor {
+  background: var(--tv-accent-weak) !important;
+  border-color: var(--tv-accent) !important;
+  color: var(--tv-accent-text) !important;
+}
+.tv-ntp-row.cursor .tv-ntp-ic,
+.tv-ntp-row.cursor .tv-ntp-meta { color: var(--tv-accent-text) !important; opacity: .85; }
+/* direct path-entry row: pinned at the top of the sections in path mode.
+   The label is a path (often long) so it gets the same ellipsis treatment as
+   other names; the status pill on the right shows checking…/↵ open/not found. */
+.tv-ntp-pathrow { cursor: pointer; }
+/* Structural guard: the path row can NEVER show without a path label, no
+   matter what inline display state JS leaves behind (a WKWebView repaint
+   could otherwise ghost an empty cursored row). :empty + !important beats
+   any stray inline `display:''`. The row only appears once JS writes the
+   typed path into .tv-ntp-pathlabel. */
+.tv-ntp-pathrow:has(.tv-ntp-pathlabel:empty) { display: none !important; }
+.tv-ntp-pathrow .tv-ntp-pathlabel {
+  font-family: var(--tv-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 13px;
+}
+.tv-ntp-pathstatus { font-variant-numeric: tabular-nums; }
+
+.tv-ntp-empty { padding: 18px 12px; text-align: center; color: var(--tv-text-muted) !important; font-size: 13px; }
+
+/* footer hints inside the panel */
+.tv-ntp-footer {
+  display: flex; gap: 18px;
+  padding: 11px 16px;
+  border-top: 1px solid var(--tv-border);
+}
+.tv-ntp-hint {
+  display: inline-flex; align-items: center; gap: 6px;
+  font-size: 11.5px; color: var(--tv-text-muted) !important;
+}
+.tv-ntp-hint .kbd { font-size: 11px; padding: 1px 5px; }
 
 /* dim content behind palette */
 .tv-dim { filter: saturate(.92); }
@@ -985,6 +1144,137 @@ html, body, #tv-root {
    browser default that might dim it in a transparent background context. */
 .tv--light .tv-edit-area { caret-color: var(--tv-accent); }
 .tv--dark  .tv-edit-area { caret-color: var(--tv-accent); }
+
+/* ── EHL-01: edit syntax highlighting mirror ────────────────
+   Architecture: .tv-edit-wrap is a relative-positioned container.
+   .tv-edit-mirror is an absolutely-positioned div behind the textarea.
+   .tv-edit-area--hl makes the textarea text transparent so only the
+   caret and selection are visible; the mirror supplies the visible text.
+
+   CRITICAL METRIC CONSTRAINTS:
+   - Mirror and textarea MUST share identical font-family, font-size,
+     line-height, padding, white-space, word-break, and box-sizing.
+     Any mismatch causes visible desync between caret and text.
+   - We NEVER change font-size on any ehl-* span (would break line metrics).
+   - Bold and italic are safe in monospace stacks (SF Mono etc. ship
+     matched-metrics variants); any sub-pixel width difference is acceptable
+     since the mirror is decorative — the textarea caret is authoritative.
+   ─────────────────────────────────────────────────────────── */
+
+/* Container: relative so the mirror + textarea stack correctly */
+.tv-edit-wrap {
+  position: relative;
+  /* stretch to fill .tv-content column */
+  width: 100%;
+}
+
+/* Mirror div — same geometry as the textarea, sits behind it */
+.tv-edit-mirror {
+  /* Positioning: absolute so it occupies the same space as the textarea */
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  /* Match textarea geometry exactly */
+  font-family: var(--tv-font-mono);
+  font-size: 13px;
+  line-height: 1.72;
+  tab-size: 2;
+  padding: var(--tv-s6) var(--tv-s7) 80px;
+  box-sizing: border-box;
+  white-space: pre-wrap;
+  word-break: break-word;
+  /* Make the mirror's text visible but non-interactive */
+  color: var(--tv-text-primary);
+  pointer-events: none;
+  /* Hidden from AT — the textarea is the accessible element */
+  aria-hidden: true;
+  /* Allow the textarea (on top) to determine scroll position;
+     the mirror just needs to be tall enough to not clip */
+  overflow: hidden;
+  /* Match textarea font smoothing */
+  -webkit-font-smoothing: antialiased;
+  /* ensure border box matches textarea border: 0 */
+  border: 0;
+}
+
+/* Transparent textarea text — caret and selection still show */
+.tv-edit-area--hl {
+  color: transparent !important;
+  /* caret must stay visible (caret-color is already set above) */
+  caret-color: var(--tv-accent) !important;
+  /* selection colour: use a semi-transparent accent so you can still read
+     the highlighted text behind the selection */
+  /* position on top of mirror */
+  position: relative;
+  z-index: 1;
+  background: transparent !important;
+}
+
+/* ── Highlight token classes ─────────────────────────────── */
+
+/* Heading text — weight+color only, NO font-size (metric safety) */
+.ehl-h1 { font-weight: 700; color: var(--tv-text-primary); }
+.ehl-h2 { font-weight: 700; color: var(--tv-text-primary); }
+.ehl-h3 { font-weight: 600; color: var(--tv-text-secondary); }
+.ehl-h4 { font-weight: 600; color: var(--tv-text-secondary); }
+.ehl-h5 { font-weight: 600; color: var(--tv-text-muted); }
+.ehl-h6 { font-weight: 600; color: var(--tv-text-muted); }
+
+/* Bold span */
+.ehl-bold { font-weight: 700; }
+
+/* Italic span */
+.ehl-italic { font-style: italic; }
+
+/* Inline code */
+.ehl-code {
+  color: var(--tv-syn-fn);
+  /* subtle background not possible on a span in pre-wrap without layout cost;
+     color alone provides sufficient cue for source editing */
+}
+
+/* Fenced code block lines */
+.ehl-fence-line { color: var(--tv-syn-fn); }
+.ehl-fence-mark { color: var(--tv-text-muted); font-weight: 600; }
+
+/* Blockquote */
+.ehl-bq      { color: var(--tv-text-secondary); font-style: italic; }
+.ehl-bq-mark { color: var(--tv-accent); font-weight: 700; }
+
+/* List markers */
+.ehl-list-mark { color: var(--tv-accent); font-weight: 700; }
+
+/* Link text and URL */
+.ehl-link     { color: var(--tv-accent-text); }
+.ehl-link-url { color: var(--tv-text-muted); }
+
+/* Punctuation / marker characters (##, **, *, _, `, [], ()) */
+.ehl-mark { color: var(--tv-text-muted); }
+
+/* HR line */
+.ehl-hr { color: var(--tv-text-muted); }
+
+/* Sentinel — invisible trailing span that ensures mirror height matches textarea */
+.ehl-sentinel { visibility: hidden; white-space: pre; }
+
+/* ── Selection colour in the transparent textarea ─────────
+   Make the selection rect still legible over the highlighted mirror.
+   accent-weak at 0.35 opacity gives a clearly visible selection band. */
+.tv-edit-area--hl::selection {
+  background: var(--tv-accent-weak);
+  color: transparent;
+}
+.tv-edit-area--hl::-moz-selection {
+  background: var(--tv-accent-weak);
+  color: transparent;
+}
+
+/* Slightly stronger selection tint in dark theme */
+.tv--dark .tv-edit-area--hl::selection {
+  background: rgba(90, 156, 255, 0.30);
+}
+.tv--dark .tv-edit-area--hl::-moz-selection {
+  background: rgba(90, 156, 255, 0.30);
+}
 
 /* ── command palette real input ─────────────────────────── */
 .tv-pal-input-field {
@@ -1077,6 +1367,12 @@ html, body, #tv-root {
   opacity: .55;
   pointer-events: none;
   -webkit-user-select: none; user-select: none;
+}
+/* L-FIX: When the live status bar is present (.tv-live-status is a 32px flex
+   child at the bottom of .tv-viewer), the absolutely-positioned edit hint
+   overlaps it. Bump the hint up by the bar height (32px) + original 10px gap. */
+.tv-viewer:has(.tv-live-status) .tv-edit-hint {
+  bottom: calc(var(--tv-status-h) + 10px);
 }
 /* Reduced-motion: suppress the pencil's opacity transition */
 @media (prefers-reduced-motion: reduce) {
@@ -1252,6 +1548,85 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
   color: var(--tv-text-secondary) !important;
 }
 
+/* ── UX-SB5: sidebar per-row close button ────────────────────
+   Hidden at rest (opacity:0); visible when the row is hovered
+   or carries the keyboard cursor (.kbd-cursor). Flexes to the
+   right edge via margin-left:auto. Hit area is 20×20 px min.
+   Sits after .mini-bolt in the row flex layout; margin-left:auto
+   on .name already pushes trailing items right — the button uses
+   its own margin-left:auto so it always reaches the right edge
+   even when .mini-bolt is absent. */
+.tv-sb-close {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-left: auto;
+  width: 20px;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--tv-text-muted) !important;
+  font-size: 10px;
+  line-height: 1;
+  cursor: default;
+  opacity: 0;
+  transition: opacity .12s, background .12s;
+  /* Don't affect the row's own padding/alignment */
+  padding: 0;
+  -webkit-user-select: none;
+  user-select: none;
+}
+/* Reveal on row hover */
+.tv-tree-row:hover .tv-sb-close { opacity: 1; }
+/* Reveal when row has keyboard cursor */
+.tv-tree-row.kbd-cursor .tv-sb-close { opacity: 1; }
+/* Intensify on direct button hover */
+.tv-sb-close:hover { background: var(--tv-bg-sel) !important; color: var(--tv-text-secondary) !important; }
+/* Active (pressed) state */
+.tv-sb-close:active { background: var(--tv-border) !important; }
+/* Focus ring for keyboard access */
+.tv-sb-close:focus-visible { outline: 2px solid var(--tv-accent); outline-offset: 1px; opacity: 1; }
+
+/* ── UX-SB6: folder row muted path suffix ────────────────────
+   .folder-name is the uppercase basename (already present via > span).
+   .folder-path is the new muted parent-path span placed after it.
+   It ellipsises at start (direction:rtl + text-overflow:ellipsis) so
+   the rightmost path segments stay visible on narrow sidebars.
+   Never wraps; never pushes the basename out. */
+.tv-tree-row.folder {
+  /* Allow the path span to truncate instead of overflowing */
+  overflow: hidden;
+}
+.tv-tree-row.folder .folder-name {
+  /* Basename: always fully visible, shrinks with the row but never disappears */
+  flex: 0 0 auto;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 50%;           /* give path at least half the row space when present */
+}
+.tv-tree-row.folder .folder-path {
+  flex: 1;
+  min-width: 0;
+  /* Muted, lower-contrast text: use --tv-text-muted at reduced opacity */
+  color: var(--tv-text-muted) !important;
+  opacity: .75;
+  font-size: 10px;
+  font-weight: 400;
+  letter-spacing: 0;
+  text-transform: none;     /* override .folder's uppercase */
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* Start-truncation is done in JS (buildSidebar) — direction:rtl reorders
+     bidi-neutral chars like ~ and trailing slashes, garbling the path. */
+  /* Add a small left gap between basename and path */
+  padding-left: 6px;
+}
+
 /* ── font-size / zoom scaling support ───────────────────── */
 /* F-11 / U-07: if dev-frontend sets --tv-md-font or --tv-content-scale,
    the .md block scales accordingly. JS should set --tv-md-font on .tv root.
@@ -1404,4 +1779,6 @@ input:focus-visible,
   /* UX-SB: new sidebar header/search transitions */
   .tv-side-collapse,
   .tv-search-box { transition: none !important; }
+  /* UX-SB5: sidebar row close button transition */
+  .tv-sb-close { transition: none !important; }
 }

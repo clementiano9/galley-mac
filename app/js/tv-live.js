@@ -104,7 +104,17 @@
 
   /* ── elapsed timer ─────────────────────────────────────────── */
   function startElapsedTimer(watchState) {
-    watchState.lastModTime = Date.now();
+    // Only reset lastModTime on the very first start (when it has not been
+    // set by a real file-change event yet). On tab-switch re-starts, preserve
+    // the existing value so the display shows correct elapsed since last change.
+    if (!watchState.lastModTime) {
+      watchState.lastModTime = Date.now();
+    }
+    // Guard against double-start (tabchange + render racing each other).
+    if (watchState.elapsedInterval) {
+      clearInterval(watchState.elapsedInterval);
+      watchState.elapsedInterval = null;
+    }
     watchState.elapsedInterval = setInterval(function () {
       if (!watchState.statusBarEl) return;
       var elapsed = watchState.statusBarEl.querySelector('[data-elapsed]');
@@ -169,10 +179,10 @@
 
           tab.source = newText;
 
-          // Update status bar timestamp
-          if (watchState.statusBarEl) {
-            watchState.lastModTime = Date.now();
-          }
+          // Update status bar timestamp unconditionally — even when the tab is
+          // not active (no statusBarEl yet), so the elapsed display is correct
+          // when the user later switches to this tab.
+          watchState.lastModTime = Date.now();
 
           // Only re-render if this is the active tab in reading mode
           var tv = getTV();
@@ -261,6 +271,10 @@
           if (!_watching[newId]) return;
           if (watchState.mode === 'poll' || watchState.mode === 'native') {
             injectStatusBarOnly(watchState);
+            // Start the elapsed timer if it was never started (e.g. native-mode tab
+            // was not the active tab when start() was called, so startElapsedTimer
+            // was skipped). startElapsedTimer guards against double-start internally.
+            startElapsedTimer(watchState);
           }
         }, 0);
       }
@@ -362,7 +376,10 @@
 
   /* ── public: refresh() — re-inject live UI for active live tab ─
      Called from tv-native.js handleFileChanged after tv.render()
-     so the status bar is restored after a file-changed render (L-04). */
+     so the status bar is restored after a file-changed render (L-04).
+     Also records the file-change timestamp so the elapsed display
+     counts from the actual change (native mode has no other place to
+     update lastModTime — poll mode updates it inline). */
   function refresh() {
     var tv = getTV();
     var activeId = tv && tv.state && tv.state.activeId;
@@ -373,6 +390,8 @@
     if (!tab || !tab.live) return;
 
     if (watchState.mode === 'poll' || watchState.mode === 'native') {
+      // Record when the change was detected so elapsed counts from now.
+      watchState.lastModTime = Date.now();
       injectStatusBarOnly(watchState);
     }
   }

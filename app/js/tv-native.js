@@ -117,11 +117,10 @@
       tv.saveRecentPath(doc.path);
     }
 
-    startWatch(tab);
-
-    // UF-01: TVLive.start() registers the watch state + shows the Live status bar.
-    // Without this call _watching[tab.id] is never populated, so TVLive.refresh()
-    // is a no-op and the bolt / elapsed timer / status bar never appear.
+    // R7-FIX: do NOT call startWatch(tab) directly here. TVLive.start() (below) calls
+    // TVNative.startWatch(tab) internally (tv-live.js line ~290). Calling startWatch
+    // here AND via TVLive.start results in watch_file being invoked twice per open,
+    // causing duplicate FSEvent subscriptions. TVLive.start is the single entry point.
     if (tab && tab.id && window.TVLive && typeof TVLive.start === 'function') {
       TVLive.start(tab.id);
     }
@@ -288,10 +287,10 @@
             if (d.path && typeof tv.saveRecentPath === 'function') {
               tv.saveRecentPath(d.path);
             }
-            // S-04: start watching the newly saved file (it now has a nativePath)
+            // S-04: start watching the newly saved file (it now has a nativePath).
+            // R7-FIX: TVLive.start() calls TVNative.startWatch() internally — do NOT
+            // call startWatch() directly here to avoid double watch_file invocation.
             tab.live = true;
-            startWatch(tab);
-            // UF-01: wire TVLive so the status bar / bolt / elapsed timer appear
             if (window.TVLive && typeof TVLive.start === 'function') {
               TVLive.start(tab.id);
             }

@@ -61,6 +61,7 @@
 
     for (var ti = 0; ti < tabs.length; ti++) {
       var tab = tabs[ti];
+      if (tab.untitled) continue; // untitled new-tab pages have no document content
       if (!tab.source) continue;
 
       var lines = tab.source.split('\n');
@@ -173,6 +174,8 @@
   function _activateSel() {
     var rs = _srRows();
     if (!rs.length) return;
+    // F5 invariant: _selIndex is always clamped to [0, rs.length-1] by _setSel;
+    // the rs[0] fallback below is untriggerable under normal usage.
     var row = rs[_selIndex] || rs[0];
     if (row) _activateRow(row);
   }

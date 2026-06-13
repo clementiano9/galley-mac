@@ -338,12 +338,15 @@
       return;
     }
 
+    // F7: close BEFORE scrollToHeading/activateTab so the palette is dismissed
+    // unconditionally. After the F2 fix, same-tab-edit-mode heading jumps no longer
+    // go through render(), so this explicit close is load-bearing in that path.
+    TVPalette.close();
     if (action === 'heading' && tabId && heading) {
       window.TV.scrollToHeading(tabId, heading);
     } else if (tabId) {
       window.TV.activateTab(tabId);
     }
-    TVPalette.close();
   }
 
   /* ── keyboard handler (attached while open) ───────────────*/
@@ -432,10 +435,16 @@
         TVPalette.close();
       });
 
-      // Click on row → activate
+      // Click on row → activate. Stop propagation: the dispatch path was
+      // computed before close() removed the overlay, so without this the
+      // click reaches tvEl's [data-tab-id] handler and re-activates the tab
+      // (forcing reading mode and defeating the same-tab edit-mode jump).
       _overlayEl.addEventListener('click', function (e) {
         var row = e.target.closest('.tv-pal-row');
-        if (row) _activateRow(row);
+        if (row) {
+          e.stopPropagation();
+          _activateRow(row);
+        }
       });
 
       // Hover → set selection
