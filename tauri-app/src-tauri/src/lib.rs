@@ -170,6 +170,18 @@ fn save_md_file(path: String, content: String) -> Result<(), String> {
     std::fs::write(&path, &content).map_err(|e| format!("write error for {}: {}", path, e))
 }
 
+/// Reveal a file in Finder, selecting it in its containing folder (F-10/F-16).
+/// Uses macOS `open -R <path>` which highlights the item rather than opening it.
+#[tauri::command]
+fn reveal_in_finder(path: String) -> Result<(), String> {
+    std::process::Command::new("open")
+        .arg("-R")
+        .arg(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("reveal error for {}: {}", path, e))
+}
+
 /// Native save-as dialog; writes content; returns Some(FileDoc) or None if cancelled.
 /// Uses the non-blocking callback API with a oneshot channel to avoid deadlocking
 /// the main thread (E-01 fix).
@@ -543,6 +555,7 @@ pub fn run() {
             read_md_file,
             save_md_file,
             save_md_file_as,
+            reveal_in_finder,
             watch_file,
             unwatch_file,
         ])

@@ -41,6 +41,32 @@
     return MD_EXTS.some(function (ext) { return lower.endsWith(ext); });
   }
 
+  /* ── classify a read_md_file error string (F-06/F-16) ─────── */
+  // The Rust side returns "read error for <path>: <os message>". Map the OS
+  // message to a tab error kind: missing file → 'not-found', UTF-8 decode
+  // failure → 'binary', anything else → 'not-found' (safe generic recovery).
+  function classifyReadError(err) {
+    var s = (typeof err === 'string' ? err : (err && err.message) || '').toLowerCase();
+    if (s.indexOf('utf-8') !== -1 || s.indexOf('utf8') !== -1 ||
+        s.indexOf('stream did not contain') !== -1) {
+      return 'binary';
+    }
+    if (s.indexOf('no such file') !== -1 || s.indexOf('os error 2') !== -1 ||
+        s.indexOf('cannot find') !== -1 || s.indexOf('not found') !== -1) {
+      return 'not-found';
+    }
+    return 'not-found';
+  }
+
+  /* ── reveal a file in Finder (F-10/F-16) ─────────────────── */
+  function revealInFinder(path) {
+    if (!available || !path) return;
+    invoke('reveal_in_finder', { path: path }).catch(function (err) {
+      console.warn('[TVNative] reveal_in_finder failed', path, err);
+      showToast('Could not reveal file in Finder');
+    });
+  }
+
   /* ── helpers to access TV safely ────────────────────────── */
   function getTV() {
     return window.TV || null;
@@ -136,9 +162,14 @@
       invoke('read_md_file', { path: path })
         .then(function (doc) { openInto(doc); })
         .catch(function (err) {
-          // N-09: show toast for binary/non-UTF8 drag-drop failures
+          // F-06/F-16: surface a per-tab error state instead of only a toast.
           var fileName = path.split('/').pop() || path;
-          showToast('Cannot open "' + fileName + '": file is not valid UTF-8 text');
+          var tv = getTV();
+          if (tv && typeof tv.openErrorTab === 'function') {
+            tv.openErrorTab(fileName, path, classifyReadError(err));
+          } else {
+            showToast('Cannot open "' + fileName + '": ' + (err || 'read failed'));
+          }
           console.error('[TVNative] drag-drop read_md_file failed', path, err);
         });
     });
@@ -435,6 +466,8 @@
     saveTab: saveTab,
     startWatch: startWatch,
     stopWatch: stopWatch,
+    revealInFinder: revealInFinder,    // F-10/F-16
+    classifyReadError: classifyReadError,
     showToast: showToast,  // exposed so tv-app.js handleSave can surface errors
   };
 

@@ -178,7 +178,11 @@
   var state = {
     tabs: [],
     activeId: null,
+    // F-09: default is set responsively in init() from window width
+    // (≥1440 → open). sidebarUserToggled flips true on the first ⌘B/toggle so
+    // the resize handler stops overriding the user's explicit choice.
     sidebarOpen: true,
+    sidebarUserToggled: false,
     mode: 'reading',       // 'reading' | 'edit'
     theme: localStorage.getItem('tv-theme') || 'light',
     accent: localStorage.getItem('tv-accent') || 'blue',
@@ -209,6 +213,11 @@
       live: !!opts.live,
       // Browser-style new-tab page (⌘T) — no document, renders the NTP.
       untitled: !!opts.untitled,
+      // F-06/F-16: error tab state. null = normal; 'not-found' = file moved/
+      // deleted (renders "Locate file…" recovery); 'binary' = non-UTF-8 file
+      // (renders "cannot be rendered" + "Show in Finder"). buildViewer() routes
+      // any truthy error to buildErrorViewer() before the normal render paths.
+      error: opts.error || null,
       fileHandle: opts.fileHandle || null,
       // nativePath: set by tv-native.js after openDoc() returns the tab id.
       // E-13: native tabs opened via Tauri NEVER have tab.fileHandle set;
@@ -617,6 +626,12 @@
       return buildNewTabPage();
     }
 
+    // F-06/F-16: error tab states — render before any normal mode path.
+    // A tab with .error has no usable source, so edit/reading are skipped.
+    if (tab.error) {
+      return buildErrorViewer(tab);
+    }
+
     // Edit mode
     if (state.mode === 'edit') {
       var wordCount = 0;
@@ -659,6 +674,33 @@
     }
 
     // Reading mode
+
+    // F-21: empty .md file → explicit "This file is empty." message, no spinner.
+    if (!tab.source || !tab.source.trim()) {
+      return (
+        '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
+          '<div class="tv-scroll" data-scroll>' +
+            '<div class="tv-content tv-content--readable">' +
+              '<div class="tv-empty-doc">This file is empty.</div>' +
+            '</div>' +
+          '</div>' +
+        '</div>'
+      );
+    }
+
+    // F-15: large file (>5 MB) → non-blocking banner (renders anyway, auto-dismisses).
+    // Dismissed-per-tab so it doesn't reappear on every theme/sidebar re-render.
+    var largeBanner = '';
+    if (tab.source.length > 5 * 1024 * 1024 && !tab._largeDismissed) {
+      largeBanner = (
+        '<div class="tv-large-banner" data-large-banner role="status">' +
+          '<span class="tv-large-banner-text">Large file — rendering may be slower</span>' +
+          '<button class="tv-large-banner-x" data-large-dismiss type="button"' +
+            ' aria-label="Dismiss">&#10005;</button>' +
+        '</div>'
+      );
+    }
+
     var mdHtml = '';
     if (window.tvRenderMarkdown) {
       mdHtml = window.tvRenderMarkdown(tab.source);
@@ -676,6 +718,7 @@
     return (
       '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
         '<div class="tv-scroll" data-scroll>' +
+          largeBanner +
           '<div class="tv-content tv-content--readable">' +
             pencilBtn +
             '<div class="md" data-md>' + mdHtml + '</div>' +
@@ -683,6 +726,49 @@
           '<div class="tv-overlay-fade"></div>' +
         '</div>' +
         editHint +
+      '</div>'
+    );
+  }
+
+  // F-06/F-16: error tab body. Renders a centered recovery card instead of
+  // document content. 'not-found' → ⚠ moved/deleted + "Locate file…" (re-opens
+  // the picker). 'binary' → cannot-render + "Show in Finder" (reveals the path).
+  // The filename and path are always run through esc() because they are
+  // untrusted disk strings.
+  function buildErrorViewer(tab) {
+    var icons = window.TV_ICONS || {};
+    var name = esc(tab.name || 'File');
+    var path = tab.nativePath || tab.path || '';
+    var title, detail, actionBtn;
+
+    if (tab.error === 'binary') {
+      title = 'This file cannot be rendered as markdown';
+      detail = 'It appears to be a binary or non-text file.';
+      actionBtn = path
+        ? '<button class="tv-error-btn" data-reveal-finder="' + esc(path) + '"' +
+            ' type="button">Show in Finder</button>'
+        : '';
+    } else {
+      // 'not-found' (default for any unknown error kind)
+      title = 'File moved or deleted';
+      detail = 'The file is no longer at its original location on disk.';
+      actionBtn = '<button class="tv-error-btn" data-find-locate' +
+        ' type="button">Locate file…</button>';
+    }
+
+    return (
+      '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
+        '<div class="tv-scroll" data-scroll>' +
+          '<div class="tv-content tv-content--readable">' +
+            '<div class="tv-error-state">' +
+              '<span class="tv-error-badge" aria-hidden="true">&#9888;</span>' +
+              '<div class="tv-error-title">' + title + '</div>' +
+              '<div class="tv-error-name">' + name + '</div>' +
+              '<div class="tv-error-detail">' + detail + '</div>' +
+              actionBtn +
+            '</div>' +
+          '</div>' +
+        '</div>' +
       '</div>'
     );
   }
@@ -1993,6 +2079,10 @@
             })
             .catch(function (err) {
               console.warn('[TV] recent file open failed', rpath, err);
+              // F-06/F-16: surface a recovery tab for the missing/binary file.
+              var kind = (window.TVNative && typeof TVNative.classifyReadError === 'function')
+                ? TVNative.classifyReadError(err) : 'not-found';
+              openErrorTab(rpath.split('/').pop() || rpath, rpath, kind);
             });
         }
         return;
@@ -2057,6 +2147,35 @@
         if (state.tabs.length && state.mode === 'reading') {
           setMode('edit');
         }
+        return;
+      }
+
+      // F-06: "Locate file…" on a not-found error tab → open the file picker
+      // so the user can re-open the moved/renamed file.
+      if (e.target.closest('[data-find-locate]')) {
+        if (window.TVFiles && typeof TVFiles.openPicker === 'function') {
+          TVFiles.openPicker();
+        } else if (window.TVNative && typeof TVNative.openPicker === 'function') {
+          TVNative.openPicker();
+        }
+        return;
+      }
+
+      // F-16/F-10: "Show in Finder" on a binary error tab → reveal the path.
+      var revealBtn = e.target.closest('[data-reveal-finder]');
+      if (revealBtn) {
+        revealInFinder(revealBtn.getAttribute('data-reveal-finder'));
+        return;
+      }
+
+      // F-15: dismiss the large-file banner (persist per-tab so it stays gone
+      // across re-renders) and remove it from the DOM without a full re-render.
+      var largeDismiss = e.target.closest('[data-large-dismiss]');
+      if (largeDismiss) {
+        var at = getActiveTab();
+        if (at) at._largeDismissed = true;
+        var banner = largeDismiss.closest('[data-large-banner]');
+        if (banner && banner.parentNode) banner.parentNode.removeChild(banner);
         return;
       }
 
@@ -2167,6 +2286,46 @@
     return tab.id;
   }
 
+  // F-06/F-16: open (or reuse) a tab in an error state for a path that could
+  // not be read. errorKind ∈ {'not-found','binary'}. If a tab for this native
+  // path already exists, flip it into the error state in place; otherwise push
+  // a new error tab. Always activates so the user sees the recovery card.
+  function openErrorTab(name, nativePath, errorKind) {
+    // Reuse an existing tab for the same path (e.g. it vanished mid-session).
+    if (nativePath) {
+      for (var i = 0; i < state.tabs.length; i++) {
+        if (state.tabs[i].nativePath === nativePath) {
+          var existing = state.tabs[i];
+          existing.error = errorKind || 'not-found';
+          existing.live = false;
+          existing.dirty = false;
+          if (window.TVLive && typeof TVLive.stop === 'function') {
+            TVLive.stop(existing.id);
+          }
+          activateTab(existing.id); // _doActivateTab renders
+          return existing.id;
+        }
+      }
+    }
+    var tab = makeTab({
+      name: name || (nativePath ? nativePath.split('/').pop() : 'File'),
+      path: nativePath ? (nativePath.replace(/\/[^/]+$/, '') || '/') : '/',
+      error: errorKind || 'not-found',
+    });
+    if (nativePath) tab.nativePath = nativePath;
+    state.tabs.push(tab);
+    activateTab(tab.id); // _doActivateTab renders
+    return tab.id;
+  }
+
+  // F-10/F-16: reveal a file in Finder via the native bridge. No-op in browser.
+  function revealInFinder(path) {
+    if (!path) return;
+    if (window.TVNative && typeof TVNative.revealInFinder === 'function') {
+      TVNative.revealInFinder(path);
+    }
+  }
+
   // Browser-style new tab (⌘T / + button). Untitled tabs are a singleton:
   // if one already exists, activate it instead of creating a second.
   function findUntitledTab() {
@@ -2253,9 +2412,10 @@
       })
       .catch(function (err) {
         console.warn('[TV] new-tab recent open failed', path, err);
-        if (window.TVNative && typeof TVNative.showToast === 'function') {
-          TVNative.showToast('Could not open file: ' + (err || 'unknown error'));
-        }
+        // F-06/F-16: surface a recovery tab instead of a transient toast.
+        var kind = (window.TVNative && typeof TVNative.classifyReadError === 'function')
+          ? TVNative.classifyReadError(err) : 'not-found';
+        openErrorTab(path.split('/').pop() || path, path, kind);
       });
   }
 
@@ -2454,6 +2614,9 @@
 
   function toggleSidebar() {
     state.sidebarOpen = !state.sidebarOpen;
+    // F-09: an explicit user toggle pins the choice — the responsive
+    // ResizeObserver stops auto-adjusting the sidebar default after this.
+    state.sidebarUserToggled = true;
     render();
   }
 
@@ -3044,6 +3207,35 @@
      S-05 fix: track first-opened (MRU index 0) tab and activate it last.
    ──────────────────────────────────────────────────────────── */
   function init() {
+    // F-09: responsive sidebar default by window width (step-6 breakpoints).
+    //   ≥1440px → sidebar visible by default
+    //   <1440px → hidden by default
+    // A ResizeObserver/resize listener keeps the default in sync until the user
+    // makes an explicit toggle (sidebarUserToggled), after which their choice
+    // wins and width changes no longer move the sidebar.
+    state.sidebarOpen = window.innerWidth >= 1440;
+    (function () {
+      var resizeRaf = null;
+      function applyResponsive() {
+        if (state.sidebarUserToggled) return; // user choice wins
+        var shouldOpen;
+        if (window.innerWidth >= 1440) shouldOpen = true;
+        else if (window.innerWidth < 1024) shouldOpen = false;
+        else return; // 1024–1439: leave current state, don't fight the user
+        if (shouldOpen !== state.sidebarOpen) {
+          state.sidebarOpen = shouldOpen;
+          if (state.tabs.length) render();
+        }
+      }
+      window.addEventListener('resize', function () {
+        if (resizeRaf) return;
+        resizeRaf = requestAnimationFrame(function () {
+          resizeRaf = null;
+          applyResponsive();
+        });
+      }, { passive: true });
+    }());
+
     // U-05: System theme auto-detection
     var savedTheme = localStorage.getItem('tv-theme');
     if (!savedTheme || savedTheme === 'system') {
@@ -3198,6 +3390,7 @@
     state: state,
     render: render,
     openDoc: openDoc,
+    openErrorTab: openErrorTab,
     openUntitledTab: openUntitledTab,
     activateTab: activateTab,
     closeTab: closeTab,
