@@ -7,6 +7,18 @@
 (function () {
   'use strict';
 
+  /* ── augment icon set with F-19 / F-22 icons ─────────────── */
+  // tv-icons.js loads first; we add the keys that were not in the original set.
+  // Using Object.assign-style guard so existing keys are never clobbered.
+  (function () {
+    var I = window.TV_ICONS = window.TV_ICONS || {};
+    if (!I.chevron) I.chevron = '<svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M3.4 2 6.6 5 3.4 8z"/></svg>';
+    if (!I.reveal)  I.reveal  = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M6.5 3H3.5v9.5h9.5V9.5"/><path d="M9.5 3H13v3.5M13 3 7.5 8.5"/></svg>';
+    if (!I.refresh) I.refresh = '<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M12.8 3.6v3.2H9.6"/><path d="M12.4 6.4A5 5 0 1 0 13 9.4"/></svg>';
+    if (!I.ellipsis)I.ellipsis= '<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor"><circle cx="4" cy="8" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="12" cy="8" r="1.25"/></svg>';
+    if (!I.kbd)     I.kbd     = '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="1.5" y="4" width="13" height="8" rx="1.6"/><path d="M4 6.6h.01M6.5 6.6h.01M9 6.6h.01M11.5 6.6h.01M4.6 9.5h6.8" stroke-linecap="round"/></svg>';
+  }());
+
   /* ── tiny id generator ────────────────────────────────────── */
   var _idSeq = 0;
   function uid() { return 'tv-' + (++_idSeq) + '-' + Date.now(); }
@@ -196,6 +208,20 @@
     // DR-56: true while session restore is in progress; external file-open events
     // are buffered via enqueueExternalOpen() and drained once restore completes.
     sessionRestoring: false,
+    // F-19 / DR-33: open folder tree objects, ordered most-recently-opened last.
+    // Each entry is the tree object returned by TVNative.readDirTree():
+    //   { path, files:[{name,path}], subfolders:[{name,files}], deep:[{name,path,from}] }
+    // keyed by `path` (unique per folder).
+    openFolders: [],
+    // F-19: per-folder collapse state. Keys:
+    //   <folderPath>           → true = folder head collapsed
+    //   <folderPath>/<subName> → true = subfolder collapsed
+    //   <folderPath>/__deep    → true = deep-bucket collapsed
+    folderCollapsed: {},
+    // F-22 / U-06: shortcut overlay open flag
+    shortcutsOpen: false,
+    // F-19 TASK 3: context menu state { x, y, path } or null
+    folderCtx: null,
   };
 
   // DR-56: external file-open queue (Finder "Open With" / double-click during restore)
@@ -488,26 +514,382 @@
     );
   }
 
+  /* ── F-19 helpers ──────────────────────────────────────────── */
+  // Basename of an absolute path: "/a/b/c" → "c"
+  function pathBasename(p) {
+    return String(p).replace(/\/+$/, '').split('/').pop() || p;
+  }
+
+  // Register (add or replace) a folder tree object in state.openFolders.
+  // [YOU expose] as TV.registerFolder — called by Native's openFolder flow
+  // after Native.readDirTree resolves.
+  function registerFolder(tree) {
+    if (!tree || !tree.path) return;
+    // Remove any existing entry for this path (de-dup), then append (MRU last).
+    state.openFolders = state.openFolders.filter(function (f) { return f.path !== tree.path; });
+    state.openFolders.push(tree);
+    render();
+  }
+
+  // Close a folder by path.
+  function closeFolder(path) {
+    state.openFolders = state.openFolders.filter(function (f) { return f.path !== path; });
+    // Clean up collapse keys for this folder
+    var newCollapsed = {};
+    Object.keys(state.folderCollapsed).forEach(function (k) {
+      if (k !== path && k.indexOf(path + '/') !== 0) {
+        newCollapsed[k] = state.folderCollapsed[k];
+      }
+    });
+    state.folderCollapsed = newCollapsed;
+    state.folderCtx = null;
+    render();
+  }
+
+  // Toggle the collapse state for a key (folder path, subfolder key, or deep-bucket key)
+  function toggleFolderCollapse(key) {
+    state.folderCollapsed[key] = !state.folderCollapsed[key];
+    render();
+  }
+
+  /* ── F-19: build one folder's tree section ─────────────────── */
+  function buildFolderSection(tree) {
+    var icons = window.TV_ICONS || {};
+    var path = tree.path;
+    var folded = !!state.folderCollapsed[path];
+    var news = []; // new files on disk (not yet implemented in this pass — placeholder)
+
+    // DR-41: count rows to decide if capped
+    var rowCount = (tree.files ? tree.files.length : 0)
+      + (tree.subfolders ? tree.subfolders.reduce(function (a, s) { return a + 1 + (s.files ? s.files.length : 0); }, 0) : 0)
+      + (tree.deep && tree.deep.length ? 1 + tree.deep.length : 0);
+    var capped = rowCount > 50;
+
+    var html = '';
+
+    // Folder head
+    html += (
+      '<div class="tv-folder-head"' +
+        ' data-folder-toggle="' + esc(path) + '"' +
+        ' data-folder-ctx-target="' + esc(path) + '">' +
+        '<span class="tv-chev' + (folded ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
+        '<span class="ic">' + (icons.folder || '') + '</span>' +
+        '<span class="fname" title="' + esc(path) + '">' + esc(pathBasename(path)) + '</span>' +
+        '<span class="fh-spacer"></span>' +
+        (news.length > 0 ? '<span class="folder-badge" title="' + news.length + ' new files">' + news.length + '</span>' : '') +
+        '<button class="folder-x" data-folder-close="' + esc(path) + '" title="Close folder" type="button">' +
+          (icons.close || '') +
+        '</button>' +
+      '</div>'
+    );
+
+    if (!folded) {
+      html += '<div class="tv-folder-body' + (capped ? ' capped' : '') + '">';
+
+      // Top-level files
+      if (tree.files) {
+        tree.files.forEach(function (f) {
+          html += buildTreeFileRow(f, { isNew: false });
+        });
+      }
+
+      // Subfolders (one level)
+      if (tree.subfolders) {
+        tree.subfolders.forEach(function (s) {
+          var skey = path + '/' + s.name;
+          var sfolded = !!state.folderCollapsed[skey];
+          html += (
+            '<div class="tv-tree-row subfolder" data-folder-toggle="' + esc(skey) + '">' +
+              '<span class="tv-chev' + (sfolded ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
+              '<span class="ic">' + (icons.folder || '') + '</span>' +
+              '<span>' + esc(s.name) + '</span>' +
+            '</div>'
+          );
+          if (!sfolded && s.files) {
+            s.files.forEach(function (f) {
+              html += buildTreeFileRow(f, { nested: true });
+            });
+          }
+        });
+      }
+
+      // Deep-files bucket
+      if (tree.deep && tree.deep.length > 0) {
+        var dkey = path + '/__deep';
+        var dfolded = !!state.folderCollapsed[dkey];
+        html += (
+          '<div class="tv-tree-row subfolder deep-bucket" data-folder-toggle="' + esc(dkey) + '"' +
+            ' title="Files nested more than one level deep, grouped here">' +
+            '<span class="tv-chev' + (dfolded ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
+            '<span class="ic ic-ell">' + (icons.ellipsis || '') + '</span>' +
+            '<span class="db-label">More files</span>' +
+            '<span class="db-count">' + tree.deep.length + '</span>' +
+          '</div>'
+        );
+        if (!dfolded) {
+          tree.deep.forEach(function (d) {
+            html += buildTreeFileRow(d, { nested: true, trail: d.from });
+          });
+        }
+      }
+
+      html += '</div>';
+    }
+
+    return html;
+  }
+
+  // Build a single file row for the folder tree.
+  // f = { name, path } (or just { name } for deep files)
+  // opts = { isNew, nested, trail }
+  function buildTreeFileRow(f, opts) {
+    var icons = window.TV_ICONS || {};
+    opts = opts || {};
+    var filePath = f.path || '';
+    var fileName = f.name || (filePath ? filePath.split('/').pop() : '');
+
+    // DR-34: open-as-tab distinction
+    var openTab = null;
+    for (var i = 0; i < state.tabs.length; i++) {
+      if (state.tabs[i].nativePath === filePath) { openTab = state.tabs[i]; break; }
+    }
+    var isActive = openTab && openTab.id === state.activeId;
+    var isOpen = !!openTab && !isActive;
+    var isLive = openTab && openTab.live;
+
+    var cls = 'tv-tree-row file';
+    if (opts.nested) cls += ' nested';
+    if (opts.trail) cls += ' deep-file';
+    if (isActive) cls += ' active';
+    else if (isOpen) cls += ' is-open';
+
+    var titleAttr = opts.trail
+      ? ('title="' + esc('…/' + opts.trail + fileName) + '"')
+      : (isOpen ? 'title="' + esc(fileName + ' · open') + '"' : '');
+
+    return (
+      '<div class="' + cls + '"' +
+        (filePath ? ' data-tree-file-path="' + esc(filePath) + '"' : '') +
+        (openTab ? ' data-tree-tab-id="' + esc(openTab.id) + '"' : '') +
+        (titleAttr ? ' ' + titleAttr : '') + '>' +
+        '<span class="ic">' + (icons.doc || '') + '</span>' +
+        '<span class="tname">' + esc(fileName) + '</span>' +
+        (isLive ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
+        (opts.isNew ? '<span class="tree-new" title="New on disk"></span>' : '') +
+      '</div>'
+    );
+  }
+
+  /* ── F-22 / U-06: shortcut overlay ─────────────────────────── */
+  // Canonical 17-entry list from the design's SHORTCUTS array (DR-23).
+  var SHORTCUTS = [
+    { keys: ['⌘K'], action: 'Command palette' },
+    { keys: ['⌘O'], action: 'Open file' },
+    { keys: ['⌘⇧O'], action: 'Open folder' },
+    { keys: ['⌘T'], action: 'New tab' },
+    { keys: ['⌘W'], action: 'Close tab' },
+    { keys: ['⌘1–9'], action: 'Jump to tab' },
+    { keys: ['⌘[', '⌘]'], action: 'Previous / next tab' },
+    { keys: ['⌘⇧F'], action: 'Search all tabs' },
+    { keys: ['⌘F'], action: 'Find in file' },
+    { keys: ['⌘⌥O'], action: 'Outline' },
+    { keys: ['⌘E'], action: 'Toggle edit' },
+    { keys: ['⌘S'], action: 'Save' },
+    { keys: ['⌘=', '⌘−'], action: 'Larger / smaller text' },
+    { keys: ['⌘0'], action: 'Reset text size' },
+    { keys: ['⌘B'], action: 'Toggle sidebar' },
+    { keys: ['Esc'], action: 'Exit / close' },
+    { keys: ['?'], action: 'This shortcuts overlay' },
+  ];
+
+  function buildShortcutOverlay() {
+    var icons = window.TV_ICONS || {};
+    var mid = Math.ceil(SHORTCUTS.length / 2);
+    var cols = [SHORTCUTS.slice(0, mid), SHORTCUTS.slice(mid)];
+
+    var colsHtml = cols.map(function (col) {
+      var rows = col.map(function (s) {
+        var keysHtml = s.keys.map(function (k, j) {
+          return (j > 0 ? '<span class="tv-sc-or">/</span>' : '') +
+            '<kbd class="tv-sc-key">' + esc(k) + '</kbd>';
+        }).join('');
+        return (
+          '<div class="tv-sc-row">' +
+            '<span class="tv-sc-keys">' + keysHtml + '</span>' +
+            '<span class="tv-sc-action">' + esc(s.action) + '</span>' +
+          '</div>'
+        );
+      }).join('');
+      return '<div class="tv-sc-col">' + rows + '</div>';
+    }).join('');
+
+    return (
+      '<div class="tv-sc-scrim" data-sc-scrim>' +
+        '<div class="tv-sc" role="dialog" aria-label="Keyboard shortcuts" aria-modal="true">' +
+          '<div class="tv-sc-head">' +
+            '<span class="tv-sc-ic">' + (icons.kbd || '') + '</span>' +
+            '<span class="tv-sc-title">Keyboard Shortcuts</span>' +
+            '<span class="tv-sc-dismiss">press any key to close</span>' +
+          '</div>' +
+          '<div class="tv-sc-cols">' + colsHtml + '</div>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  var _scEl = null; // the .tv-sc-scrim DOM element
+
+  function openShortcuts() {
+    if (state.shortcutsOpen) return;
+    var tvEl = document.querySelector('.tv');
+    if (!tvEl) return;
+    state.shortcutsOpen = true;
+    var wrapper = document.createElement('div');
+    wrapper.innerHTML = buildShortcutOverlay();
+    _scEl = wrapper.firstChild;
+    tvEl.appendChild(_scEl);
+
+    // Click on scrim (outside .tv-sc) closes it
+    _scEl.addEventListener('mousedown', function (e) {
+      if (!e.target.closest('.tv-sc')) {
+        closeShortcuts();
+      }
+    });
+
+    // Any keydown closes it (DR-18)
+    document.addEventListener('keydown', _scKeyHandler, true);
+  }
+
+  function closeShortcuts() {
+    if (!state.shortcutsOpen) return;
+    state.shortcutsOpen = false;
+    document.removeEventListener('keydown', _scKeyHandler, true);
+    if (_scEl && _scEl.parentNode) {
+      _scEl.parentNode.removeChild(_scEl);
+    }
+    _scEl = null;
+  }
+
+  function _scKeyHandler(e) {
+    e.preventDefault();
+    closeShortcuts();
+  }
+
+  /* ── F-19 TASK 3: folder context menu ──────────────────────── */
+  var _ctxEl = null;
+
+  function openFolderCtx(x, y, path) {
+    closeFolderCtx();
+    var icons = window.TV_ICONS || {};
+    var tvRoot = document.querySelector('.tv');
+    if (!tvRoot) return;
+    state.folderCtx = { x: x, y: y, path: path };
+
+    var html = (
+      '<div class="tv-ctx-scrim" data-ctx-scrim>' +
+        '<div class="tv-ctx" style="left:' + x + 'px;top:' + y + 'px" data-ctx-menu>' +
+          '<div class="tv-ctx-item" data-ctx-action="reveal">' +
+            '<span class="ic">' + (icons.reveal || '') + '</span> Reveal in Finder' +
+          '</div>' +
+          '<div class="tv-ctx-item" data-ctx-action="refresh">' +
+            '<span class="ic">' + (icons.refresh || '') + '</span> Refresh' +
+          '</div>' +
+          '<div class="tv-ctx-sep"></div>' +
+          '<div class="tv-ctx-item danger" data-ctx-action="close">' +
+            '<span class="ic">' + (icons.close || '') + '</span> Close Folder' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+
+    var wrapper = document.createElement('div');
+    wrapper.innerHTML = html;
+    _ctxEl = wrapper.firstChild;
+    tvRoot.appendChild(_ctxEl);
+
+    // Scrim mousedown dismisses
+    _ctxEl.addEventListener('mousedown', function (e) {
+      if (!e.target.closest('[data-ctx-menu]')) {
+        closeFolderCtx();
+      }
+    });
+
+    // Context menu on scrim closes (prevent native context menu over our menu)
+    _ctxEl.addEventListener('contextmenu', function (e) {
+      e.preventDefault();
+      closeFolderCtx();
+    });
+
+    // Escape closes
+    _ctxEl.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape') { e.preventDefault(); closeFolderCtx(); }
+    });
+
+    // Action clicks
+    _ctxEl.addEventListener('click', function (e) {
+      var item = e.target.closest('[data-ctx-action]');
+      if (!item) return;
+      var action = item.getAttribute('data-ctx-action');
+      var ctxPath = state.folderCtx && state.folderCtx.path;
+      closeFolderCtx();
+      if (!ctxPath) return;
+      if (action === 'reveal') {
+        if (window.TVNative && typeof TVNative.revealInFinder === 'function') {
+          TVNative.revealInFinder(ctxPath);
+        }
+      } else if (action === 'refresh') {
+        if (window.TVNative && typeof TVNative.readDirTree === 'function') {
+          TVNative.readDirTree(ctxPath).then(function (tree) {
+            if (tree) registerFolder(tree);
+          }).catch(function () {});
+        }
+      } else if (action === 'close') {
+        closeFolder(ctxPath);
+      }
+    });
+  }
+
+  function closeFolderCtx() {
+    if (_ctxEl && _ctxEl.parentNode) {
+      _ctxEl.parentNode.removeChild(_ctxEl);
+    }
+    _ctxEl = null;
+    state.folderCtx = null;
+  }
+
   // D-05 + E-12: Group sidebar by real path; null-path files under "Open"
   // F-02: Also show a "Recent" section with closed files from localStorage
   function buildSidebar() {
     var icons = window.TV_ICONS || {};
     var collapsed = !state.sidebarOpen;
 
-    // Group tabs by path (real directory) vs. ungrouped (no path)
+    // ── F-19: Folder tree sections (most-recently-opened first = reversed) ──
+    var folderSections = '';
+    var reversedFolders = state.openFolders.slice().reverse();
+    reversedFolders.forEach(function (tree) {
+      folderSections += buildFolderSection(tree);
+    });
+
+    // ── Legacy open-tab list (tabs NOT associated with any open folder) ──
+    // These are tabs opened via ⌘O without a folder context.
+    var folderPaths = {};
+    state.openFolders.forEach(function (f) { folderPaths[f.path] = true; });
+
+    // Group tabs that have a .path (folder association) vs ungrouped
     var groups = {};
     var ungrouped = [];
     state.tabs.forEach(function (t) {
-      if (t.path) {
+      // Skip tabs whose nativePath is covered by an open folder tree — they
+      // show up inside the folder section already (DR-34 is-open highlight).
+      if (t.path && !folderPaths[t.path]) {
         (groups[t.path] = groups[t.path] || []).push(t);
-      } else {
+      } else if (!t.path) {
         ungrouped.push(t);
       }
     });
 
     // F-02: Recent section — closed files from localStorage not currently open
     var recentPaths = loadRecentPaths();
-    // Build a set of open nativePaths for dedup
     var openNativePaths = {};
     state.tabs.forEach(function (t) {
       if (t.nativePath) openNativePaths[t.nativePath] = true;
@@ -517,22 +899,12 @@
     }).slice(0, 10);
 
     // UX-10: Build rows with ARIA listbox/option roles.
-    // File rows (open tabs) get role="option" with a stable id="sbopt-<tabId>".
-    // No per-row roving tabindex — navigation is driven by the JS keyboard cursor
-    // (sbKbd) + aria-activedescendant, independent of DOM focus (WebKit-safe).
     var rows = '';
 
-    // Sanitize a tab id for use in an HTML id attribute (ids must not contain spaces
-    // or characters invalid in selectors; TV ids are "tv-N-timestamp" which are safe,
-    // but we replace any non-word chars defensively).
     function sbOptId(tabId) {
       return 'sbopt-' + String(tabId).replace(/[^\w-]/g, '_');
     }
 
-    // UX-SB5: close × button HTML shared by grouped and ungrouped file rows.
-    // Hidden at rest via CSS (.tv-sb-close opacity:0); revealed on row hover.
-    // data-sb-close-tab carries the tab id so the click handler can call closeTab()
-    // without activating the row first (works for non-active rows too).
     function sbCloseBtn(tabId, tabName) {
       return (
         '<button class="tv-sb-close"' +
@@ -547,22 +919,13 @@
     }
 
     Object.keys(groups).forEach(function (path) {
-      // UX-SB2: show basename of the path (last segment), not the full path.
-      // Full path is kept in aria-label for a11y; visible label is the folder name only.
       var folderBasename = path.split('/').filter(Boolean).pop() || path;
-      // UX-SB6: compute a display-friendly parent path for the muted suffix.
-      // We show everything except the last segment (the basename we already show).
-      // Replace the user's home dir prefix with ~ for brevity.
       var folderParent = (function () {
         var segs = path.split('/').filter(Boolean);
-        if (segs.length <= 1) return '';          // top-level: no parent to show
-        segs.pop();                               // remove the basename segment
+        if (segs.length <= 1) return '';
+        segs.pop();
         var parent = '/' + segs.join('/');
-        // Swap /Users/<name> or /home/<name> prefix with ~
         parent = parent.replace(/^\/(Users|home)\/[^/]+/, '~');
-        // Start-truncate so the rightmost (most specific) segments stay
-        // visible. Done here rather than CSS direction:rtl, which reorders
-        // bidi-neutral chars (~, trailing /) and garbles the path.
         var MAX = 30;
         if (parent.length > MAX) parent = '…' + parent.slice(parent.length - (MAX - 1));
         return parent;
@@ -594,7 +957,7 @@
     });
 
     if (ungrouped.length) {
-      if (Object.keys(groups).length) {
+      if (Object.keys(groups).length || folderSections) {
         rows += '<div class="tv-side-divider"></div>';
       }
       rows += '<div class="tv-side-label">Open</div>';
@@ -634,8 +997,7 @@
     var sidebarCls = 'tv-sidebar' + (collapsed ? ' collapsed' : '');
     return (
       '<aside class="' + sidebarCls + '">' +
-        // UX-SB3: sidebar header — "Files" label + ⌘B collapse button.
-        // Surfaces the sidebar toggle affordance that was previously undiscoverable.
+        // UX-SB3: sidebar header
         '<div class="tv-side-header">' +
           '<span class="tv-side-header-label">Files</span>' +
           '<button class="tv-side-collapse" data-sidebar-toggle' +
@@ -648,9 +1010,13 @@
           ' role="listbox"' +
           ' aria-label="Open files"' +
           ' aria-orientation="vertical"' +
-          ' tabindex="-1">' + rows + '</div>' +
+          ' tabindex="-1">' +
+          // F-19: folder trees at the top
+          folderSections +
+          // Legacy open-tabs / recent rows below
+          rows +
+        '</div>' +
         '<div class="tv-search">' +
-          // UX-SB4: add title + aria-label so purpose is discoverable on hover/AT.
           '<div class="tv-search-box" data-open-find' +
             ' title="Find in document (⌘F)" aria-label="Find in document (⌘F)" role="button" tabindex="0">' +
             ic('search') +
@@ -659,8 +1025,6 @@
           '</div>' +
         '</div>' +
         // BUG-4: drag handle on the sidebar's right edge.
-        // dev2 styles this as a ~5px col-resize-cursor strip.
-        // Pointer drag logic is wired in wireSidebarResize().
       '</aside>'
     );
   }
@@ -2334,6 +2698,68 @@
         }
         return;
       }
+
+      // F-19 TASK 2: folder head toggle (collapse/expand) — DR-36
+      var folderToggle = e.target.closest('[data-folder-toggle]');
+      if (folderToggle && !e.target.closest('[data-folder-close]')) {
+        var ftKey = folderToggle.getAttribute('data-folder-toggle');
+        if (ftKey) {
+          toggleFolderCollapse(ftKey);
+        }
+        return;
+      }
+
+      // F-19 TASK 3: folder close (×) button
+      var folderCloseBtn = e.target.closest('[data-folder-close]');
+      if (folderCloseBtn) {
+        e.stopPropagation();
+        var fcPath = folderCloseBtn.getAttribute('data-folder-close');
+        if (fcPath) closeFolder(fcPath);
+        return;
+      }
+
+      // F-19 TASK 2: folder tree file row click — open or activate
+      var treeFileRow = e.target.closest('[data-tree-file-path]');
+      if (treeFileRow) {
+        var tfPath = treeFileRow.getAttribute('data-tree-file-path');
+        // If already a tab, just activate it (DR-34)
+        var existingTabId = treeFileRow.getAttribute('data-tree-tab-id');
+        if (existingTabId) {
+          activateTab(existingTabId);
+        } else if (tfPath && window.TVNative && TVNative.available) {
+          window.__TAURI__.core.invoke('read_md_file', { path: tfPath })
+            .then(function (doc) {
+              if (window.TVNative && typeof TVNative.openInto === 'function') {
+                TVNative.openInto(doc);
+              } else if (doc && doc.name) {
+                var pdir = tfPath.replace(/\/[^/]+$/, '') || '/';
+                var tid = openDoc({ name: doc.name, source: doc.content, path: pdir });
+                if (tid) {
+                  var t = state.tabs.find(function (x) { return x.id === tid; });
+                  if (t) t.nativePath = doc.path || tfPath;
+                }
+              }
+            })
+            .catch(function (err) {
+              console.warn('[TV] tree file open failed', tfPath, err);
+              var kind = (window.TVNative && typeof TVNative.classifyReadError === 'function')
+                ? TVNative.classifyReadError(err) : 'not-found';
+              openErrorTab(tfPath.split('/').pop() || tfPath, tfPath, kind);
+            });
+        }
+        return;
+      }
+    });
+
+    // F-19 TASK 3: right-click folder head → context menu
+    tvEl.addEventListener('contextmenu', function (e) {
+      var fh = e.target.closest('[data-folder-ctx-target]');
+      if (fh) {
+        e.preventDefault();
+        var ctxPath = fh.getAttribute('data-folder-ctx-target');
+        if (ctxPath) openFolderCtx(e.clientX, e.clientY, ctxPath);
+        return;
+      }
     });
 
     // Double-click rendered content → enter edit mode (DR-08)
@@ -3064,6 +3490,9 @@
       if (window.TVSearch && TVSearch.isOpen && TVSearch.isOpen()) {
         TVSearch.close(); e.preventDefault(); return;
       }
+      if (state.shortcutsOpen) {
+        closeShortcuts(); e.preventDefault(); return;
+      }
       if (state.mode === 'edit') {
         setMode('reading'); e.preventDefault(); return;
       }
@@ -3076,6 +3505,22 @@
         closeTab(escTab.id); e.preventDefault(); return;
       }
       return;
+    }
+
+    // F-22/U-06: '?' — open shortcuts overlay (reading mode only, no overlay/input focused).
+    // Note: '?' is Shift+/ on US layouts, so e.shiftKey is expected true — do NOT guard on it.
+    if (k === '?' && !meta) {
+      // Guard: skip if focus is in a text input/textarea/contenteditable
+      var focused = document.activeElement;
+      var inInput = focused && (
+        focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA' ||
+        focused.isContentEditable
+      );
+      if (!inInput && state.mode === 'reading' && !state.shortcutsOpen) {
+        e.preventDefault();
+        openShortcuts();
+        return;
+      }
     }
 
     if (!meta) return;
@@ -3377,6 +3822,11 @@
     listen('menu:zoom-in', function () { setFontSize(state.fontSize + 2); }).catch(function () {});
     listen('menu:zoom-out', function () { setFontSize(state.fontSize - 2); }).catch(function () {});
     listen('menu:zoom-reset', function () { setFontSize(16); }).catch(function () {});
+
+    // F-22: Help menu → Keyboard Shortcuts overlay
+    listen('menu:shortcuts', function () {
+      openShortcuts();
+    }).catch(function () {});
   }
 
   /* ────────────────────────────────────────────────────────────
@@ -3672,6 +4122,12 @@
     toggleMermaid: toggleMermaid,
     // DR-56: session restore queue (Native engineer's open-files handler calls this)
     enqueueExternalOpen: enqueueExternalOpen,
+    // F-19: folder tree management — called by Native after readDirTree resolves
+    registerFolder: registerFolder,
+    closeFolder: closeFolder,
+    // F-22/U-06: shortcut overlay — called by Native Help menu + palette
+    openShortcuts: openShortcuts,
+    closeShortcuts: closeShortcuts,
   };
 
   /* ── Boot when DOM is ready ───────────────────────────────── */

@@ -112,6 +112,8 @@
       // DR-27: font size commands
       { ic: 'circle', main: 'Increase text size',    action: 'fontSizeUp',     value: '' },
       { ic: 'circle', main: 'Decrease text size',    action: 'fontSizeDown',   value: '' },
+      // DR-30: F-22 shortcuts overlay
+      { ic: 'kbd',    main: 'Preferences & Shortcuts…', action: 'shortcuts',   value: '' },
     ];
     return commands.filter(function (c) { return _matches(c.main, query); });
   }
@@ -443,6 +445,15 @@
       TVPalette.close();
       if (window.TV && typeof window.TV.setFontSize === 'function') {
         window.TV.setFontSize((window.TV.state && window.TV.state.fontSize ? window.TV.state.fontSize : 16) - 2);
+      }
+      return;
+    }
+
+    // DR-30 / F-22: Preferences & Shortcuts overlay
+    if (action === 'shortcuts') {
+      TVPalette.close();
+      if (window.TV && typeof window.TV.openShortcuts === 'function') {
+        window.TV.openShortcuts();
       }
       return;
     }

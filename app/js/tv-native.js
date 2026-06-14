@@ -269,13 +269,41 @@
       });
   }
 
+  /* ── public: readDirTree (F-19) ─────────────────────────── */
+  // Wraps the read_dir_tree Rust command.
+  // Returns Promise<DirTree> where DirTree = {
+  //   path: string,
+  //   files: [{name, path}],
+  //   subfolders: [{name, files:[{name, path}]}],
+  //   deep: [{name, path, from}]
+  // }
+  function readDirTree(absFolderPath) {
+    if (!available) return Promise.resolve(null);
+    return invoke('read_dir_tree', { path: absFolderPath });
+  }
+
   /* ── public: openFolder (F-03) ──────────────────────────── */
-  // Invokes pick_folder Rust command (dev-rust implements Vec<FileDoc>)
+  // Invokes pick_folder Rust command → opens all docs, then derives the folder
+  // path and calls window.TV.registerFolder(tree) so the sidebar tree appears (F-19).
   function openFolder() {
     if (!available) return Promise.resolve();
     return invoke('pick_folder')
       .then(function (docs) {
-        (docs || []).forEach(function (doc) { openInto(doc); });
+        if (!docs || !docs.length) return; // user cancelled or empty folder
+        docs.forEach(function (doc) { openInto(doc); });
+
+        // F-19: derive folder path from the first doc's parent dir and register
+        // the tree with the frontend so the sidebar section appears.
+        var folderPath = parentDir(docs[0].path);
+        if (!folderPath) return;
+
+        readDirTree(folderPath).then(function (tree) {
+          if (tree && window.TV && typeof window.TV.registerFolder === 'function') {
+            window.TV.registerFolder(tree);
+          }
+        }).catch(function (err) {
+          console.warn('[TVNative] readDirTree failed after openFolder', folderPath, err);
+        });
       })
       .catch(function (err) {
         if (err) console.warn('[TVNative] openFolder cancelled or failed', err);
@@ -489,6 +517,17 @@
       });
     });
 
+    // F-22 / DR-20: Help > Keyboard Shortcuts → window.TV.openShortcuts().
+    // Rust emits "menu:keyboard-shortcuts" from on_menu_event.
+    listen('menu:keyboard-shortcuts', function () {
+      var tvKs = getTV();
+      if (tvKs && typeof tvKs.openShortcuts === 'function') {
+        tvKs.openShortcuts();
+      }
+    }).catch(function (err) {
+      console.error('[TVNative] failed to register menu:keyboard-shortcuts listener', err);
+    });
+
     // Wire titlebar drag region (waits for TV to be ready)
     wireTitlebarDragRegion();
   }
@@ -524,13 +563,14 @@
     init: init,
     openPicker: openPicker,
     openFolder: openFolder,
-    openInto: openInto,    // exposed for tv-app.js recent-file reopen
+    openInto: openInto,        // exposed for tv-app.js recent-file reopen
     saveTab: saveTab,
     startWatch: startWatch,
     stopWatch: stopWatch,
     revealInFinder: revealInFinder,    // F-10/F-16
     classifyReadError: classifyReadError,
-    showToast: showToast,  // exposed so tv-app.js handleSave can surface errors
+    showToast: showToast,      // exposed so tv-app.js handleSave can surface errors
+    readDirTree: readDirTree,  // F-19: directory tree for sidebar folder section
   };
 
   /* ── wire boot on DOM ready ──────────────────────────────── */

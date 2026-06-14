@@ -33,6 +33,51 @@ pub struct FileDoc {
     pub content: String,
 }
 
+/// A single file entry in the directory tree (name + absolute path, no content).
+/// Used by DirTree so the JS layer can open files on demand via read_md_file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirEntry {
+    pub name: String,
+    pub path: String,
+}
+
+/// A single immediate subdirectory that contains matching files.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubfolderEntry {
+    pub name: String,
+    pub files: Vec<DirEntry>,
+}
+
+/// Return shape for read_dir_tree (F-19, DR-33–DR-41).
+///
+/// - `path`       — the absolute folder path that was scanned.
+/// - `files`      — .md/.markdown/.txt files directly in the folder (depth 0).
+/// - `subfolders` — immediate subdirectories (depth 1) that contain matching files,
+///                  each with their direct matching children.
+/// - `deep`       — matching files nested MORE than one level below (depth 2+),
+///                  flattened; `from` is the relative sub-path prefix (e.g. "sub/deeper/")
+///                  for tooltip display.
+///
+/// Caps: maximum 200 total entries visited, maximum 50 direct `files`, maximum
+/// 10 subfolders (each capped at 50 files), maximum 50 deep entries.
+/// Unreadable directory entries are skipped with an eprintln, matching pick_folder behaviour.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DirTree {
+    pub path: String,
+    pub files: Vec<DirEntry>,
+    pub subfolders: Vec<SubfolderEntry>,
+    pub deep: Vec<DeepEntry>,
+}
+
+/// A file nested more than one level below the scanned root.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeepEntry {
+    pub name: String,
+    pub path: String,
+    /// Relative sub-path prefix from the scanned root, e.g. "sub/deeper/" — for tooltip.
+    pub from: String,
+}
+
 /// Payload emitted on every file-changed event.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileChanged {
@@ -374,6 +419,209 @@ fn unwatch_file(
     Ok(())
 }
 
+/// Scan a directory and return a DirTree describing its .md/.markdown/.txt contents
+/// at three depth tiers (F-19, DR-33–DR-41).
+///
+/// Depth 0  → `files`      (direct children of `path`)
+/// Depth 1  → `subfolders` (immediate subdirectories with matching files)
+/// Depth 2+ → `deep`       (matching files nested deeper, flattened with `from` prefix)
+///
+/// Caps (all entry-counts, not file-counts only):
+///   - Total entries visited across all depths: 200 (prevents runaway scans).
+///   - `files`: 50 direct entries.
+///   - `subfolders`: 10 subdirectories, each capped at 50 matching files.
+///   - `deep`: 50 flattened entries.
+///
+/// Unreadable entries are skipped with eprintln, matching pick_folder behaviour.
+/// Non-directory, non-matching-extension entries are silently skipped.
+#[tauri::command]
+fn read_dir_tree(path: String) -> Result<DirTree, String> {
+    const MAX_TOTAL: usize = 200;
+    const MAX_DIRECT: usize = 50;
+    const MAX_SUBFOLDERS: usize = 10;
+    const MAX_SUB_FILES: usize = 50;
+    const MAX_DEEP: usize = 50;
+
+    let root = PathBuf::from(&path);
+
+    // Helper: is this path a matching extension?
+    fn is_matching(p: &std::path::Path) -> bool {
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+        ext == "md" || ext == "markdown" || ext == "txt"
+    }
+
+    // Helper: build a DirEntry from a PathBuf.
+    fn make_entry(p: &std::path::Path) -> DirEntry {
+        DirEntry {
+            name: p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default(),
+            path: p.to_string_lossy().to_string(),
+        }
+    }
+
+    let mut files: Vec<DirEntry> = Vec::new();
+    let mut subfolders: Vec<SubfolderEntry> = Vec::new();
+    let mut deep: Vec<DeepEntry> = Vec::new();
+    let mut total_visited: usize = 0;
+
+    // Read the root directory entries.
+    let root_entries = std::fs::read_dir(&root)
+        .map_err(|e| format!("read_dir_tree: cannot read '{}': {}", path, e))?;
+
+    for entry_result in root_entries {
+        if total_visited >= MAX_TOTAL {
+            eprintln!(
+                "read_dir_tree: hit entry cap ({}) scanning '{}'",
+                MAX_TOTAL, path
+            );
+            break;
+        }
+        let entry = match entry_result {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("read_dir_tree: skipping unreadable entry in '{}': {}", path, e);
+                continue;
+            }
+        };
+        total_visited += 1;
+
+        let entry_path = entry.path();
+
+        if entry_path.is_file() {
+            // Depth-0 matching file.
+            if is_matching(&entry_path) && files.len() < MAX_DIRECT {
+                files.push(make_entry(&entry_path));
+            }
+        } else if entry_path.is_dir() {
+            // Depth-1 subdirectory: collect its matching files and recurse deeper.
+            if subfolders.len() >= MAX_SUBFOLDERS {
+                eprintln!(
+                    "read_dir_tree: subfolder cap ({}) reached in '{}'",
+                    MAX_SUBFOLDERS, path
+                );
+                continue;
+            }
+
+            let sub_name = entry_path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            let mut sub_files: Vec<DirEntry> = Vec::new();
+
+            // Read depth-1 subdirectory.
+            let sub_entries = match std::fs::read_dir(&entry_path) {
+                Ok(iter) => iter,
+                Err(e) => {
+                    eprintln!(
+                        "read_dir_tree: skipping unreadable subdir '{}': {}",
+                        entry_path.display(),
+                        e
+                    );
+                    continue;
+                }
+            };
+
+            for sub_result in sub_entries {
+                if total_visited >= MAX_TOTAL {
+                    break;
+                }
+                let sub_entry = match sub_result {
+                    Ok(e) => e,
+                    Err(e) => {
+                        eprintln!(
+                            "read_dir_tree: skipping unreadable entry in '{}': {}",
+                            entry_path.display(),
+                            e
+                        );
+                        continue;
+                    }
+                };
+                total_visited += 1;
+
+                let sub_path = sub_entry.path();
+
+                if sub_path.is_file() {
+                    // Depth-1 matching file → belongs to this subfolder.
+                    if is_matching(&sub_path) && sub_files.len() < MAX_SUB_FILES {
+                        sub_files.push(make_entry(&sub_path));
+                    }
+                } else if sub_path.is_dir() {
+                    // Depth-2+ — recurse to collect deep entries (flat list).
+                    let deep_prefix = format!("{}/", sub_name);
+                    let deeper_name = sub_path
+                        .file_name()
+                        .map(|n| n.to_string_lossy().to_string())
+                        .unwrap_or_default();
+
+                    let deeper_entries = match std::fs::read_dir(&sub_path) {
+                        Ok(iter) => iter,
+                        Err(e) => {
+                            eprintln!(
+                                "read_dir_tree: skipping unreadable deep dir '{}': {}",
+                                sub_path.display(),
+                                e
+                            );
+                            continue;
+                        }
+                    };
+
+                    for deeper_result in deeper_entries {
+                        if total_visited >= MAX_TOTAL || deep.len() >= MAX_DEEP {
+                            break;
+                        }
+                        let deeper_entry = match deeper_result {
+                            Ok(e) => e,
+                            Err(e) => {
+                                eprintln!(
+                                    "read_dir_tree: skipping unreadable deep entry: {}",
+                                    e
+                                );
+                                continue;
+                            }
+                        };
+                        total_visited += 1;
+
+                        let deeper_path = deeper_entry.path();
+                        if deeper_path.is_file() && is_matching(&deeper_path) {
+                            let from = format!("{}{}/", deep_prefix, deeper_name);
+                            deep.push(DeepEntry {
+                                name: deeper_path
+                                    .file_name()
+                                    .map(|n| n.to_string_lossy().to_string())
+                                    .unwrap_or_default(),
+                                path: deeper_path.to_string_lossy().to_string(),
+                                from,
+                            });
+                        }
+                    }
+                }
+            }
+
+            // Only include this subfolder entry if it has matching direct files.
+            if !sub_files.is_empty() {
+                subfolders.push(SubfolderEntry {
+                    name: sub_name,
+                    files: sub_files,
+                });
+            }
+        }
+    }
+
+    Ok(DirTree {
+        path,
+        files,
+        subfolders,
+        deep,
+    })
+}
+
 // ── Menu builder ─────────────────────────────────────────────────────────────
 
 /// Build the native macOS menu bar (U-01 / F-08).
@@ -581,6 +829,20 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Appear
         Some("CmdOrCtrl+]"),
     )?)?;
 
+    // ── Help menu (F-22, DR-20) ──────────────────────────────────────────
+    // DR-20: "Help > Keyboard Shortcuts" opens the identical overlay as `?`.
+    // Emits "menu:keyboard-shortcuts"; tv-native.js listens and calls
+    // window.TV.openShortcuts(). The HIG-mandated Help menu also provides
+    // an anchor for future help content at zero incremental chrome cost.
+    let help_menu = Submenu::with_id(app, "help", "Help", true)?;
+    help_menu.append(&MenuItem::with_id(
+        app,
+        "menu:keyboard-shortcuts",
+        "Keyboard Shortcuts",
+        true,
+        None::<&str>,
+    )?)?;
+
     // ── Assemble the menu bar ────────────────────────────────────────────
     let menu = Menu::new(app)?;
     menu.append(&app_menu)?;
@@ -588,6 +850,7 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Appear
     menu.append(&edit_menu)?;
     menu.append(&view_menu)?;
     menu.append(&go_menu)?;
+    menu.append(&help_menu)?;
 
     let appearance_state = AppearanceMenuState {
         light: appear_light,
@@ -610,6 +873,7 @@ pub fn run() {
             pick_md_files,
             pick_folder,
             read_md_file,
+            read_dir_tree,
             save_md_file,
             save_md_file_as,
             reveal_in_finder,
@@ -649,7 +913,9 @@ pub fn run() {
                 | "menu:zoom-reset"
                 // Go menu
                 | "menu:prev-tab"
-                | "menu:next-tab" => {
+                | "menu:next-tab"
+                // Help menu (F-22, DR-20)
+                | "menu:keyboard-shortcuts" => {
                     // Emit the id as the event name so the frontend can listen
                     // with: window.__TAURI__.event.listen("menu:open-file", ...)
                     if let Err(e) = app.emit(id, ()) {
