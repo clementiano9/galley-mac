@@ -4,15 +4,24 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::menu::{
-    Menu, MenuItem, PredefinedMenuItem, Submenu,
+    CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu,
 };
 use tauri::Emitter;
+use tauri::Manager;
 use tauri_plugin_dialog::DialogExt;
 
 // ── Shared state ────────────────────────────────────────────────────────────
 
 /// Holds one watcher per watched path.
 pub struct WatcherState(pub Mutex<HashMap<String, RecommendedWatcher>>);
+
+/// Holds the three Appearance CheckMenuItems so on_menu_event can update
+/// the checkmarks without a second menu lookup (U-02 / DR-14).
+pub struct AppearanceMenuState {
+    pub light: CheckMenuItem<tauri::Wry>,
+    pub dark: CheckMenuItem<tauri::Wry>,
+    pub system: CheckMenuItem<tauri::Wry>,
+}
 
 // ── Data shapes ─────────────────────────────────────────────────────────────
 
@@ -377,8 +386,9 @@ fn unwatch_file(
 ///   Edit               — Undo, Redo, separator, Cut, Copy, Paste, Select All,
 ///                        separator, Find ⌘F, Find in Files ⌘⇧F
 ///   View               — Command Palette ⌘K, Toggle Sidebar ⌘B, separator,
-///                        Toggle Dark Mode, separator,
-///                        Zoom In ⌘+, Zoom Out ⌘-, Actual Size ⌘0
+///                        Appearance ▶ Light / Dark / System (U-02, DR-11–14),
+///                        separator, Toggle Dark Mode (legacy toggle kept for now),
+///                        separator, Zoom In ⌘+, Zoom Out ⌘-, Actual Size ⌘0
 ///   Go                 — Previous Tab ⌘[, Next Tab ⌘]
 ///
 /// Custom items emit Tauri app-level events that the frontend listens for.
@@ -390,7 +400,10 @@ fn unwatch_file(
 /// tauri-plugin-opener in the frontend (tv-app.js), not by WebView navigation.
 /// The CSP in tauri.conf.json uses default-src 'self' which prevents the
 /// WebView frame from navigating to file: or external origins.
-fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+///
+/// Returns the Menu AND the AppearanceMenuState so the caller can manage the
+/// CheckMenuItem handles for checkmark toggling (DR-14).
+fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, AppearanceMenuState)> {
     // ── App menu (macOS: first submenu is the app menu) ──────────────────
     let app_menu = Submenu::with_id(app, "app", "tiny-viewer", true)?;
     app_menu.append(&PredefinedMenuItem::about(app, None, None)?)?;
@@ -480,6 +493,44 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
         Some("CmdOrCtrl+B"),
     )?)?;
     view_menu.append(&PredefinedMenuItem::separator(app)?)?;
+
+    // ── Appearance submenu (U-02, DR-11–DR-14) ───────────────────────────
+    // Three CheckMenuItems: Light, Dark, System. Default on launch: System (checked).
+    // DR-14 (menu-driven checkmark): on_menu_event reads AppearanceMenuState to
+    // uncheck the previous item and check the newly selected one.
+    // Note: bidirectional sync (palette/titlebar toggle → native checkmark) is
+    // NOT implemented to avoid over-engineering (DR-14 "Should/best-effort").
+    let appear_light = CheckMenuItem::with_id(
+        app,
+        "menu:appearance-light",
+        "Light",
+        true,
+        false, // not checked at launch
+        None::<&str>,
+    )?;
+    let appear_dark = CheckMenuItem::with_id(
+        app,
+        "menu:appearance-dark",
+        "Dark",
+        true,
+        false, // not checked at launch
+        None::<&str>,
+    )?;
+    let appear_system = CheckMenuItem::with_id(
+        app,
+        "menu:appearance-system",
+        "System",
+        true,
+        true, // checked by default (DR-14: default is System)
+        None::<&str>,
+    )?;
+    let appearance_submenu = Submenu::with_id(app, "view:appearance", "Appearance", true)?;
+    appearance_submenu.append(&appear_light)?;
+    appearance_submenu.append(&appear_dark)?;
+    appearance_submenu.append(&appear_system)?;
+    view_menu.append(&appearance_submenu)?;
+
+    view_menu.append(&PredefinedMenuItem::separator(app)?)?;
     // BUG-3 FIX: Replace two separate Light/Dark items with a single toggle.
     // Emits "menu:theme-toggle"; the JS listener in wireNativeMenuEvents flips
     // state.theme between 'light' and 'dark' via setTheme().
@@ -538,7 +589,13 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     menu.append(&view_menu)?;
     menu.append(&go_menu)?;
 
-    Ok(menu)
+    let appearance_state = AppearanceMenuState {
+        light: appear_light,
+        dark: appear_dark,
+        system: appear_system,
+    };
+
+    Ok((menu, appearance_state))
 }
 
 // ── App entry point ───────────────────────────────────────────────────────────
@@ -561,8 +618,11 @@ pub fn run() {
         ])
         .setup(|app| {
             // Build and register the native macOS menu bar (U-01 / F-08).
-            let menu = build_menu(app.handle())?;
+            // build_menu returns (Menu, AppearanceMenuState) so we can manage
+            // the CheckMenuItem handles for DR-14 checkmark toggling.
+            let (menu, appearance_state) = build_menu(app.handle())?;
             app.set_menu(menu)?;
+            app.manage(appearance_state);
             Ok(())
         })
         // Handle menu item events: emit app-level Tauri events so the frontend
@@ -596,9 +656,74 @@ pub fn run() {
                         eprintln!("menu event emit error for {}: {}", id, e);
                     }
                 }
+
+                // Appearance submenu (U-02, DR-11–DR-14) ─────────────────────
+                // Emit the item id as the event name so tv-native.js can listen
+                // with: listen("menu:appearance-light", ...) etc.
+                // Then update the three CheckMenuItems: check the selected one,
+                // uncheck the other two (DR-14 menu-driven checkmark).
+                "menu:appearance-light"
+                | "menu:appearance-dark"
+                | "menu:appearance-system" => {
+                    if let Err(e) = app.emit(id, ()) {
+                        eprintln!("menu event emit error for {}: {}", id, e);
+                    }
+                    // DR-14: update checkmarks on the Appearance submenu items.
+                    if let Some(state) = app.try_state::<AppearanceMenuState>() {
+                        let light_checked = id == "menu:appearance-light";
+                        let dark_checked = id == "menu:appearance-dark";
+                        let system_checked = id == "menu:appearance-system";
+                        if let Err(e) = state.light.set_checked(light_checked) {
+                            eprintln!("appearance checkmark update failed (light): {}", e);
+                        }
+                        if let Err(e) = state.dark.set_checked(dark_checked) {
+                            eprintln!("appearance checkmark update failed (dark): {}", e);
+                        }
+                        if let Err(e) = state.system.set_checked(system_checked) {
+                            eprintln!("appearance checkmark update failed (system): {}", e);
+                        }
+                    }
+                }
+
                 _ => {} // predefined items handled by OS
             }
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        // U-18: App::run() (on the App struct, not Builder) is the only place
+        // that exposes a RunEvent callback. Builder::run() takes a Context and
+        // returns Result<()> with no callback surface; Builder::build() → App,
+        // then App::run(callback) handles RunEvent::Opened { urls } which macOS
+        // sends when files are opened via Finder "Open With" or double-click
+        // (both cold-start and already-running cases). We convert each file://
+        // URL to an absolute path, filter to markdown extensions, and emit
+        // "open-files" so tv-native.js can mirror the drag-drop open flow.
+        .run(|app_handle, event| {
+            if let tauri::RunEvent::Opened { urls } = event {
+                let paths: Vec<String> = urls
+                    .iter()
+                    .filter_map(|url| {
+                        // Accept file:// URLs only; convert to a filesystem path.
+                        if url.scheme() == "file" {
+                            url.to_file_path().ok().map(|p| p.to_string_lossy().to_string())
+                        } else {
+                            None
+                        }
+                    })
+                    .filter(|path| {
+                        // Only forward extensions the app understands.
+                        let lower = path.to_lowercase();
+                        lower.ends_with(".md")
+                            || lower.ends_with(".markdown")
+                            || lower.ends_with(".txt")
+                    })
+                    .collect();
+
+                if !paths.is_empty() {
+                    if let Err(e) = app_handle.emit("open-files", &paths) {
+                        eprintln!("RunEvent::Opened emit error: {}", e);
+                    }
+                }
+            }
+        });
 }

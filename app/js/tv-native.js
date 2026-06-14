@@ -427,6 +427,68 @@
       console.error('[TVNative] failed to register drag-drop listener', err);
     });
 
+    // U-18 / DR-56: handle files opened via Finder "Open With" / double-click.
+    // Rust emits "open-files" with a string[] of absolute filesystem paths from
+    // RunEvent::Opened { urls }. DR-56: call enqueueExternalOpen() so App-core
+    // buffers paths during session restore and drains after; fall back to the
+    // previous direct-open behavior if enqueueExternalOpen is absent (older build).
+    listen('open-files', function (e) {
+      var paths = e.payload;
+      if (!Array.isArray(paths) || !paths.length) return;
+
+      // DR-56: filter to markdown extensions first (same guard as before).
+      var mdPaths = paths.filter(function (path) { return hasMdExt(path); });
+      if (!mdPaths.length) return;
+
+      var tv = getTV();
+
+      // DR-56 primary path: delegate to App-core session-restore queue.
+      if (tv && typeof tv.enqueueExternalOpen === 'function') {
+        tv.enqueueExternalOpen(mdPaths);
+        return;
+      }
+
+      // DR-56 fallback: enqueueExternalOpen absent (older build) — open directly.
+      mdPaths.forEach(function (path) {
+        invoke('read_md_file', { path: path })
+          .then(function (doc) { openInto(doc); })
+          .catch(function (err) {
+            var fileName = path.split('/').pop() || path;
+            var tvFb = getTV();
+            if (tvFb && typeof tvFb.openErrorTab === 'function') {
+              tvFb.openErrorTab(fileName, path, classifyReadError(err));
+            } else {
+              showToast('Cannot open "' + fileName + '": ' + (err || 'read failed'));
+            }
+            console.error('[TVNative] open-files read_md_file failed', path, err);
+          });
+      });
+    }).catch(function (err) {
+      console.error('[TVNative] failed to register open-files listener', err);
+    });
+
+    // U-02: wire View > Appearance submenu events (DR-11–DR-14).
+    // Rust emits event names matching the menu item ids:
+    //   "menu:appearance-light" | "menu:appearance-dark" | "menu:appearance-system"
+    // We call window.TV.setTheme() with the matching string ('light'|'dark'|'system').
+    // Guard: only act if window.TV && window.TV.setTheme is a function.
+    var appearanceMap = {
+      'menu:appearance-light':  'light',
+      'menu:appearance-dark':   'dark',
+      'menu:appearance-system': 'system'
+    };
+    Object.keys(appearanceMap).forEach(function (eventName) {
+      var theme = appearanceMap[eventName];
+      listen(eventName, function () {
+        var tvAp = getTV();
+        if (tvAp && typeof tvAp.setTheme === 'function') {
+          tvAp.setTheme(theme);
+        }
+      }).catch(function (err) {
+        console.error('[TVNative] failed to register ' + eventName + ' listener', err);
+      });
+    });
+
     // Wire titlebar drag region (waits for TV to be ready)
     wireTitlebarDragRegion();
   }
