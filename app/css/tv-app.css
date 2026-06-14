@@ -1220,47 +1220,41 @@ html, body, #tv-root {
 
 /* ── Highlight token classes ─────────────────────────────── */
 
-/* Heading text — weight+color only, NO font-size (metric safety) */
-.ehl-h1 { font-weight: 700; color: var(--tv-text-primary); }
-.ehl-h2 { font-weight: 700; color: var(--tv-text-primary); }
-.ehl-h3 { font-weight: 600; color: var(--tv-text-secondary); }
-.ehl-h4 { font-weight: 600; color: var(--tv-text-secondary); }
-.ehl-h5 { font-weight: 600; color: var(--tv-text-muted); }
-.ehl-h6 { font-weight: 600; color: var(--tv-text-muted); }
+/* ── edit-mode source highlighting — design "srchl" inkcolor variant ──
+   Mirror element carries: tv-edit-mirror srchl srchl-inkcolor in-editor.
+   Tokens (sm-*) are emitted by highlightSource() in tv-edit.js.
+   Ink restraint: headings/body stay ink; colour is reserved for code,
+   inline code, links, and completed checks; the heading # mark takes a
+   light accent tint as a scan cue. (Ported from design tv-srchl.css.)
+   `.in-editor` keeps every span zero-layout so the mirror stays 1:1 with
+   the textarea glyph grid (no caret desync). */
+.srchl .sm-marker   { color: var(--tv-text-muted) !important; }
+.srchl .sm-url      { color: var(--tv-text-muted) !important; }
+.srchl .sm-pipe     { color: var(--tv-text-muted) !important; }
+.srchl .sm-fence    { color: var(--tv-text-muted) !important; }
+.srchl .sm-task     { color: var(--tv-text-muted) !important; }
+.srchl .sm-quote    { color: var(--tv-text-secondary) !important; }
+.srchl .sm-codeline { color: var(--tv-text-secondary) !important; }
+.srchl .sm-bold     { font-weight: 700; }
+.srchl .sm-em       { font-style: italic; }
+.srchl .sm-code     { background: var(--tv-code-bg) !important; border-radius: 4px; }
+/* live editor: a padded chip would shift glyphs off the textarea grid —
+   fake the chip with a zero-layout box-shadow instead */
+.srchl.in-editor .sm-code { box-shadow: 0 0 0 2.5px var(--tv-code-bg); border-radius: 2px; }
 
-/* Bold span */
-.ehl-bold { font-weight: 700; }
-
-/* Italic span */
-.ehl-italic { font-style: italic; }
-
-/* Inline code */
-.ehl-code {
-  color: var(--tv-syn-fn);
-  /* subtle background not possible on a span in pre-wrap without layout cost;
-     color alone provides sufficient cue for source editing */
-}
-
-/* Fenced code block lines */
-.ehl-fence-line { color: var(--tv-syn-fn); }
-.ehl-fence-mark { color: var(--tv-text-muted); font-weight: 600; }
-
-/* Blockquote */
-.ehl-bq      { color: var(--tv-text-secondary); font-style: italic; }
-.ehl-bq-mark { color: var(--tv-accent); font-weight: 700; }
-
-/* List markers */
-.ehl-list-mark { color: var(--tv-accent); font-weight: 700; }
-
-/* Link text and URL */
-.ehl-link     { color: var(--tv-accent-text); }
-.ehl-link-url { color: var(--tv-text-muted); }
-
-/* Punctuation / marker characters (##, **, *, _, `, [], ()) */
-.ehl-mark { color: var(--tv-text-muted); }
-
-/* HR line */
-.ehl-hr { color: var(--tv-text-muted); }
+/* inkcolor variant — ink restraint, colour where it means */
+.srchl-inkcolor .sm-h        { font-weight: 700; color: var(--tv-text-primary) !important; }
+.srchl-inkcolor .sm-hmark    { color: var(--tv-accent) !important; opacity: .72; }
+.srchl-inkcolor .sm-code     { color: var(--tv-syn-fn) !important; }
+.srchl-inkcolor .sm-link     { color: var(--tv-accent-text) !important; }
+.srchl-inkcolor .sm-quote    { color: var(--tv-text-secondary) !important; font-style: italic; }
+.srchl-inkcolor .sm-codeline { color: var(--tv-text-primary) !important; }
+.srchl-inkcolor .sm-str      { color: var(--tv-syn-str) !important; }
+.srchl-inkcolor .sm-num      { color: var(--tv-syn-num) !important; }
+.srchl-inkcolor .sm-key      { color: var(--tv-syn-key) !important; }
+.srchl-inkcolor .sm-com      { color: var(--tv-syn-comment) !important; font-style: italic; }
+.srchl-inkcolor .sm-task-done      { color: var(--tv-syn-str) !important; font-weight: 600; }
+.srchl-inkcolor .sm-task-done-text { color: var(--tv-text-muted) !important; }
 
 /* Sentinel — invisible trailing span that ensures mirror height matches textarea */
 .ehl-sentinel { visibility: hidden; white-space: pre; }
