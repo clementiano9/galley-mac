@@ -3,6 +3,8 @@
 **Date**: 2026-06-08
 **Scope**: Every feature/capability called for by the spec (step-3, step-5 IA, step-6 wireframes, Visual Spec, Mockups) vs. what exists in the current codebase. Only gaps grounded in project documents are listed. Bugs already tracked in QA-REPORT.md are excluded unless they cause a feature to be fully absent.
 
+> **WAAD-grounded requirements:** F-05/F-18, F-19, F-22 (and U-02, U-04, U-06, U-13, U-16 from `ux-gaps.md`) have crystal-clear, build-ready requirement definitions — traced through the URD/WAAD and critic-verified — in [`waad-grounded-requirements.md`](waad-grounded-requirements.md) (DR-11–DR-64).
+
 ---
 
 ## Summary counts

@@ -3,6 +3,8 @@
 **Date**: 2026-06-08  
 **Scope**: Discoverability deficits and table-stakes UX absent from native macOS markdown viewer class (Preview / Bear / Typora / iA Writer). Every status claim was verified against source before being written.
 
+> **WAAD-grounded requirements:** U-02, U-04, U-06, U-13, U-16 (and F-05/F-18, F-19, F-22 from `spec-gaps.md`) have crystal-clear, build-ready requirement definitions — traced through the URD/WAAD and critic-verified — in [`waad-grounded-requirements.md`](waad-grounded-requirements.md) (DR-11–DR-64).
+
 ---
 
 ## Methodology
