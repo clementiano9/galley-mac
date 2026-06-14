@@ -102,6 +102,83 @@
     lines.forEach(function (el) { el.parentNode.removeChild(el); });
   }
 
+  /* ── DR-66: humanized, bounded recency formatter ──────────── */
+  function formatRecency(deltaMs) {
+    if (deltaMs < 3000)    return 'updating…';
+    if (deltaMs < 60000)   return 'updated ' + Math.floor(deltaMs / 1000) + 's ago';
+    if (deltaMs < 3600000) return 'updated ' + Math.floor(deltaMs / 60000) + 'm ago';
+    return 'updated ' + Math.floor(deltaMs / 3600000) + 'h ago';
+  }
+
+  /* ── DR-68: idle threshold ─────────────────────────────────── */
+  var IDLE_THRESHOLD_MS = 90000; // 90 s
+
+  /* ── DR-68: apply / clear idle visual state ──────────────── */
+  function setIdleState(watchState, idle) {
+    if (!watchState.statusBarEl) return;
+    var pill = watchState.statusBarEl.querySelector('.live-pill');
+    if (!pill) return;
+    if (idle) {
+      pill.classList.add('idle');
+    } else {
+      pill.classList.remove('idle');
+    }
+  }
+
+  /* ── DR-67: shared on-change hook (poll + native) ─────────── */
+  // Called whenever a disk change is detected. Stamps lastModTime, resets
+  // the label to "updating…", clears idle state, and re-pulses the blip.
+  function onFileChange(watchState) {
+    watchState.lastModTime = Date.now();
+    // Clear idle and force-restart blip pulse (DR-67 / DR-68)
+    setIdleState(watchState, false);
+    if (watchState.statusBarEl) {
+      var elapsed = watchState.statusBarEl.querySelector('[data-elapsed]');
+      if (elapsed) elapsed.textContent = 'updating…';
+      // Re-trigger CSS pulse animation by toggling the blip class
+      var blip = watchState.statusBarEl.querySelector('.blip');
+      if (blip) {
+        blip.classList.remove('is-updating');
+        // Force reflow so the animation restarts cleanly
+        void blip.offsetWidth; // eslint-disable-line no-void
+        blip.classList.add('is-updating');
+      }
+    }
+  }
+
+  /* ── DR-69: adaptive tick — self-rescheduling setTimeout ─── */
+  // Replaces fixed 900ms setInterval. Cadence:
+  //   delta < 60s  → reschedule in 1 s
+  //   delta < 1h   → reschedule in 60 s
+  //   delta >= 1h  → render once, stop ticking (clear elapsedInterval)
+  function scheduleElapsedTick(watchState) {
+    watchState.elapsedInterval = setTimeout(function () {
+      watchState.elapsedInterval = null; // cleared before any early return
+      if (!watchState.statusBarEl) return;
+      var elapsed = watchState.statusBarEl.querySelector('[data-elapsed]');
+      if (!elapsed) return;
+
+      var delta = Date.now() - watchState.lastModTime;
+      elapsed.textContent = formatRecency(delta);
+
+      // DR-68: toggle idle visual after 90 s
+      setIdleState(watchState, delta >= IDLE_THRESHOLD_MS);
+
+      // DR-69: schedule next tick based on current delta
+      if (delta < 60000) {
+        // Still in sub-minute range — tick every 1 s
+        scheduleElapsedTick(watchState);
+      } else if (delta < 3600000) {
+        // In minutes range — tick every 60 s
+        watchState.elapsedInterval = setTimeout(function () {
+          watchState.elapsedInterval = null;
+          scheduleElapsedTick(watchState);
+        }, 60000);
+      }
+      // else: >= 1h — render once, stop ticking (elapsedInterval stays null)
+    }, 1000);
+  }
+
   /* ── elapsed timer ─────────────────────────────────────────── */
   function startElapsedTimer(watchState) {
     // Only reset lastModTime on the very first start (when it has not been
@@ -112,16 +189,11 @@
     }
     // Guard against double-start (tabchange + render racing each other).
     if (watchState.elapsedInterval) {
-      clearInterval(watchState.elapsedInterval);
+      clearTimeout(watchState.elapsedInterval);
       watchState.elapsedInterval = null;
     }
-    watchState.elapsedInterval = setInterval(function () {
-      if (!watchState.statusBarEl) return;
-      var elapsed = watchState.statusBarEl.querySelector('[data-elapsed]');
-      if (!elapsed) return;
-      var secs = ((Date.now() - watchState.lastModTime) / 1000).toFixed(1);
-      elapsed.textContent = 'updated ' + secs + 's ago';
-    }, 900);
+    // DR-69: kick off adaptive tick
+    scheduleElapsedTick(watchState);
   }
 
   /* ── inject status bar only (poll mode + native mode) ──── */
@@ -134,13 +206,17 @@
     existing.forEach(function (el) { el.parentNode.removeChild(el); });
 
     var bar = buildStatusBar();
-    if (prefersReducedMotion()) {
-      var blip = bar.querySelector('.blip');
-      if (blip) blip.style.animation = 'none';
-    }
+    // Reduced-motion: animation suppression is handled via CSS @media block;
+    // no inline style override needed here (DR-68 idle opacity also CSS-driven).
     viewer.appendChild(bar);
     watchState.statusBarEl = bar;
     watchState.pinEl = bar.querySelector('[data-tv-pin]');
+
+    // DR-68: restore idle visual state on the fresh DOM if already past threshold
+    if (watchState.lastModTime &&
+        (Date.now() - watchState.lastModTime) >= IDLE_THRESHOLD_MS) {
+      setIdleState(watchState, true);
+    }
   }
 
   /* ── file handle polling mode (DR-05: real file watch) ───── */
@@ -179,10 +255,10 @@
 
           tab.source = newText;
 
-          // Update status bar timestamp unconditionally — even when the tab is
-          // not active (no statusBarEl yet), so the elapsed display is correct
-          // when the user later switches to this tab.
-          watchState.lastModTime = Date.now();
+          // DR-67: stamp change time and reset label/pulse unconditionally —
+          // even when tab is not active (no statusBarEl yet), lastModTime is
+          // preserved so the elapsed display is correct on next tab-switch.
+          onFileChange(watchState);
 
           // Only re-render if this is the active tab in reading mode
           var tv = getTV();
@@ -349,7 +425,8 @@
     if (!watchState) return;
 
     clearInterval(watchState.pollInterval);
-    clearInterval(watchState.elapsedInterval);
+    // elapsedInterval is now a setTimeout handle (DR-69 adaptive cadence)
+    clearTimeout(watchState.elapsedInterval);
 
     // For native FSEvents mode: tell the Rust watcher to stop
     if (watchState.mode === 'native') {
@@ -390,9 +467,11 @@
     if (!tab || !tab.live) return;
 
     if (watchState.mode === 'poll' || watchState.mode === 'native') {
-      // Record when the change was detected so elapsed counts from now.
-      watchState.lastModTime = Date.now();
+      // DR-67: stamp change, reset label + blip pulse, clear idle (native mode).
+      // injectStatusBarOnly runs after so statusBarEl is fresh and onFileChange
+      // can find [data-elapsed] and .blip in the new DOM.
       injectStatusBarOnly(watchState);
+      onFileChange(watchState);
     }
   }
 

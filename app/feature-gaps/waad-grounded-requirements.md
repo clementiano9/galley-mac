@@ -274,4 +274,45 @@ Extend the `[data-copy]` handler (tv-app.js ~2215) to: add `.tv-copy--copied` + 
 
 ---
 
-*Prepared via UxPipeline Step 3 (3 analyst passes + adversarial critique). All 7 gaps certified crystal-clear and build-ready. DR-11–DR-64 are available as Step-4 (ideation) / engineering inputs.*
+---
+
+# Part 4 — Live-Watch Recency Label
+*Added after the initial 7. Scopes the existing `[data-elapsed]` "updated Xs ago" status-bar label (tv-live.js). It is a **trust signal**, not the update mechanism.*
+
+## 8. Live-update recency label
+
+**URD tie-back:** **URD-10 — Real-Time File Watch** *(primary)*: "when AI tools stream output to a .md file, users need the viewer to update in real-time… watching the document grow live… a zero-to-one capability gap" (WANs 037/049/072; WAAD **Cluster F2** "Live streaming file-watch missing"; Work Role 1 **AI Content Reviewer**). Secondary: **URD-06** (AI-output review loop) for the confidence it provides; **URD-02** (low overhead) bounds its tick cost. The watch satisfies URD-10's *function*; this label satisfies URD-10's *trust* sub-need — "is it actually live, and how fresh is what I'm reading?" without a manual refresh.
+
+**Problem statement:** The AI Content Reviewer needs an ambient signal of how recently the on-screen file changed on disk, because while reviewing AI output streamed to a file they must trust the view is current without re-opening it (URD-10, URD-06).
+
+**HMW:** How might we make the recency of the last disk change legible at a glance — confirming active streaming and signalling when a file has settled — without a noisy, unbounded counter?
+
+**Decision & scope:** Keep the label; make it **humanized, bounded, and self-settling**. It reports time since the last *detected disk change* only; it is not the content-update path, not a progress bar, and is decoupled from Pin scroll.
+
+| DR | Requirement | URD | MoSCoW |
+|----|-------------|-----|--------|
+| DR-65 | While the active tab is live-watched, the status bar shows a recency label = time since that file's last detected on-disk change. | URD-10 | Must |
+| DR-66 | Humanized, bounded format: `<3s` → "updating…"; `3–59s` → "updated Ns ago"; `1–59m` → "updated Nm ago"; `≥1h` → "updated Nh ago". No unbounded decimal seconds. | URD-10, URD-06 | Must |
+| DR-67 | Each detected change resets the label to "updating…" and re-pulses the blip — sub-second confirmation the stream is live. | URD-10 | Must |
+| DR-68 | **Visual timeout:** after 90s with no change, the blip stops pulsing and dims to a steady dot (watch still active, file idle); pill text stays "Live"; the counter keeps running. | URD-10, URD-08 | Should |
+| DR-69 | Tick cadence scales with recency — every 1s while `<60s`, every 60s thereafter, static past 1h — to avoid idle CPU churn. | URD-02 | Should |
+| DR-70 | The clock measures time since `lastModTime` (last disk change), NOT since tab-open or launch; on tab switch it preserves elapsed (no reset). | URD-10, URD-04 | Must |
+| DR-71 | The label reflects only a live watch; when the watch stops (file removed/closed), the status bar and label are removed — never a stale time on a dead watch. | URD-10 | Must |
+
+**Success metric:** In a 5-person session reviewing a file streamed then stopped, users distinguish "actively updating" from "settled/idle" 5/5 without touching the file; each disk write flips the label to "updating…" within 1s; the indicator settles within 90s of the last change.
+
+**Acceptance criteria**
+- Label never exceeds the bounded format (no `Xs ago` past 60s; switches to `Nm`/`Nh`).
+- A disk write resets the label to "updating…" and re-pulses the blip within 1s.
+- 90s idle → blip stops pulsing, dims to a steady dot; pill text still "Live"; counter keeps advancing.
+- Switching away from and back to a live tab preserves the elapsed reading (no reset to 0).
+- Closing or on-disk-removing the file removes the status bar entirely — no stale time shown.
+- Under `prefers-reduced-motion: reduce`, the blip does not pulse; the idle/active distinction is conveyed by the dot's opacity/state, not animation.
+
+**Scope boundary (out):** absolute timestamps (relative only), per-section/per-line recency, progress-bar semantics, coupling to Pin scroll, localisation (English only).
+
+**Current → target gap:** today's `updated 3847.2s ago` (unbounded, tenths, fixed 900ms tick, no idle state) fails DR-66/DR-68/DR-69 — those drive the change.
+
+---
+
+*Prepared via UxPipeline Step 3 (3 analyst passes + adversarial critique). The initial 7 gaps (DR-11–DR-64) plus the live-watch recency label (DR-65–DR-71) are certified crystal-clear and build-ready as Step-4 (ideation) / engineering inputs.*

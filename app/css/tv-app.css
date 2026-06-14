@@ -798,7 +798,15 @@ html, body, #tv-root {
   width: 8px; height: 8px; border-radius: 50%; background: var(--tv-live-dot) !important;
   box-shadow: 0 0 0 0 var(--tv-live-glow); animation: tv-blip 1.6s ease-out infinite;
 }
+/* DR-67: .is-updating added/removed on change to force-restart the pulse animation */
+.tv-status .live-pill .blip.is-updating { animation: tv-blip 1.6s ease-out infinite; }
 @keyframes tv-blip { 0%{box-shadow:0 0 0 0 var(--tv-live-glow)} 70%{box-shadow:0 0 0 7px transparent} 100%{box-shadow:0 0 0 0 transparent} }
+/* DR-68: .idle on .live-pill — blip stops pulsing and dims to a steady dot */
+.tv-status .live-pill.idle .blip {
+  animation: none !important;
+  box-shadow: none !important;
+  opacity: 0.35;
+}
 .tv-status .sep { color: var(--tv-text-muted) !important; }
 .tv-status .spacer { flex: 1; }
 .tv-pin {
@@ -1733,10 +1741,16 @@ input:focus-visible,
     animation: none !important;
     opacity: 1 !important;
   }
-  /* blip ripple */
-  .tv-status .live-pill .blip {
+  /* blip ripple — no animation; active vs idle conveyed via opacity (DR-68) */
+  .tv-status .live-pill .blip,
+  .tv-status .live-pill .blip.is-updating {
     animation: none !important;
     box-shadow: 0 0 0 0 transparent !important;
+    opacity: 1;
+  }
+  /* DR-68 idle in reduced-motion: dim dot instead of stopping animation */
+  .tv-status .live-pill.idle .blip {
+    opacity: 0.35;
   }
   /* shimmer */
   .tv-diagram .dg-shimmer::after {
