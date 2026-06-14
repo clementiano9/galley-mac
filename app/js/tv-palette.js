@@ -86,19 +86,32 @@
     return tab.path || tab.name || '';
   }
 
-  /* ── D-02 + F-04 + U-05: command rows ─────────────────── */
+  /* ── D-02 + F-04 + U-05 + F-05 + DR-27: command rows ───── */
   // Returns an array of command row objects matching query.
   function _buildCommandRows(query) {
+    // F-05 / DR-24-DR-25: Mermaid toggle label reflects current state
+    var mermaidEnabled = (window.TV && typeof window.TV.isMermaidEnabled === 'function')
+      ? window.TV.isMermaidEnabled()
+      : true;
+    var mermaidLabel = mermaidEnabled ? 'Disable Mermaid diagrams' : 'Enable Mermaid diagrams';
+
     var commands = [
-      { ic: 'sun',    main: 'Theme: Light',       action: 'theme',  value: 'light' },
-      { ic: 'moon',   main: 'Theme: Dark',        action: 'theme',  value: 'dark' },
-      { ic: 'circle', main: 'Theme: System',      action: 'theme',  value: 'system' },
-      { ic: 'circle', main: 'Accent: Blue',       action: 'accent', value: 'blue' },
-      { ic: 'circle', main: 'Accent: Graphite',   action: 'accent', value: 'graphite' },
-      { ic: 'circle', main: 'Accent: Warm',       action: 'accent', value: 'warm' },
+      { ic: 'sun',    main: 'Theme: Light',          action: 'theme',          value: 'light' },
+      { ic: 'moon',   main: 'Theme: Dark',           action: 'theme',          value: 'dark' },
+      { ic: 'circle', main: 'Theme: System',         action: 'theme',          value: 'system' },
+      { ic: 'circle', main: 'Accent: Blue',          action: 'accent',         value: 'blue' },
+      { ic: 'circle', main: 'Accent: Graphite',      action: 'accent',         value: 'graphite' },
+      { ic: 'circle', main: 'Accent: Warm',          action: 'accent',         value: 'warm' },
       // F-04: file/folder open commands
-      { ic: 'doc',    main: 'Open File…',         action: 'openFile',   value: '' },
-      { ic: 'folder', main: 'Open Folder…',       action: 'openFolder', value: '' },
+      { ic: 'doc',    main: 'Open File…',            action: 'openFile',       value: '' },
+      { ic: 'folder', main: 'Open Folder…',          action: 'openFolder',     value: '' },
+      // U-12: reload current file from disk
+      { ic: 'doc',    main: 'Reload from Disk',      action: 'reloadFile',     value: '' },
+      // F-05 / DR-24-DR-25: Mermaid toggle
+      { ic: 'circle', main: mermaidLabel,            action: 'toggleMermaid',  value: '' },
+      // DR-27: font size commands
+      { ic: 'circle', main: 'Increase text size',    action: 'fontSizeUp',     value: '' },
+      { ic: 'circle', main: 'Decrease text size',    action: 'fontSizeDown',   value: '' },
     ];
     return commands.filter(function (c) { return _matches(c.main, query); });
   }
@@ -260,6 +273,64 @@
     '</div>';
   }
 
+  /* ── U-16: headings-only list (for openOutline mode) ─────*/
+  // Returns HTML showing headings of the active document only (DR-42–DR-45).
+  // No file rows, no command rows. H1–H6 with inline padding-left indent (DR-43).
+  function _buildOutlineList(query) {
+    var tabs = (window.TV && window.TV.state && window.TV.state.tabs) ? window.TV.state.tabs : [];
+    var activeId = (window.TV && window.TV.state) ? window.TV.state.activeId : null;
+    var I = window.TV_ICONS || {};
+
+    // Find the active tab's source
+    var activeTab = null;
+    for (var ti = 0; ti < tabs.length; ti++) {
+      if (tabs[ti].id === activeId) { activeTab = tabs[ti]; break; }
+    }
+
+    var headings = activeTab ? _parseHeadings(activeTab.source) : [];
+
+    if (!headings.length) {
+      return '<div class="tv-pal-empty">No headings in this document</div>';
+    }
+
+    var html = '';
+    var rowIndex = 0;
+    var groupHeaderAdded = false;
+
+    for (var hi = 0; hi < headings.length; hi++) {
+      var h = headings[hi];
+      if (query && !_matches(h.text, query)) continue;
+      if (!groupHeaderAdded) {
+        html += '<div class="tv-pal-group">Jump to Heading</div>';
+        groupHeaderAdded = true;
+      }
+      // DR-43: 2px indent per heading level (H1=0, H2=2, … H6=10)
+      var indent = (h.level - 1) * 2;
+      var isSel = (rowIndex === 0);
+      html += '<div class="tv-pal-row' + (isSel ? ' sel' : '') + '"' +
+        ' role="option"' +
+        ' aria-selected="' + (isSel ? 'true' : 'false') + '"' +
+        ' data-action="heading"' +
+        (activeTab ? ' data-tab-id="' + _esc(activeTab.id) + '"' : '') +
+        ' data-heading="' + _esc(h.text) + '"' +
+        ' style="padding-left:' + (8 + indent) + 'px"' +
+        '>' +
+        '<span class="ic">' + (I.hash || '') + '</span>' +
+        '<span>' + _highlight(h.text, query) + '</span>' +
+        '</div>';
+      rowIndex++;
+    }
+
+    if (!rowIndex) {
+      return '<div class="tv-pal-empty">No headings in this document</div>';
+    }
+
+    return html;
+  }
+
+  // Flag: when true, the palette shows headings-only (openOutline mode)
+  var _outlineMode = false;
+
   /* ── update just the list (on input) ─────────────────────*/
   function _refreshList(query) {
     if (!_overlayEl) return;
@@ -267,7 +338,11 @@
     if (!listEl) return;
     var tabs = (window.TV && window.TV.state && window.TV.state.tabs) ? window.TV.state.tabs : [];
     var activeId = window.TV && window.TV.state ? window.TV.state.activeId : null;
-    listEl.innerHTML = _buildList(query, tabs, activeId);
+    if (_outlineMode) {
+      listEl.innerHTML = _buildOutlineList(query);
+    } else {
+      listEl.innerHTML = _buildList(query, tabs, activeId);
+    }
     _selIndex = 0;
   }
 
@@ -334,6 +409,40 @@
         TVNative.openFolder();
       } else if (window.TV && typeof window.TV.openFolder === 'function') {
         window.TV.openFolder();
+      }
+      return;
+    }
+
+    // U-12: Reload from Disk action
+    if (action === 'reloadFile') {
+      TVPalette.close();
+      if (window.TV && typeof window.TV.reloadActiveTab === 'function') {
+        window.TV.reloadActiveTab();
+      }
+      return;
+    }
+
+    // F-05 / DR-24-DR-25: Mermaid toggle
+    if (action === 'toggleMermaid') {
+      TVPalette.close();
+      if (window.TV && typeof window.TV.toggleMermaid === 'function') {
+        window.TV.toggleMermaid();
+      }
+      return;
+    }
+
+    // DR-27: font size up/down
+    if (action === 'fontSizeUp') {
+      TVPalette.close();
+      if (window.TV && typeof window.TV.setFontSize === 'function') {
+        window.TV.setFontSize((window.TV.state && window.TV.state.fontSize ? window.TV.state.fontSize : 16) + 2);
+      }
+      return;
+    }
+    if (action === 'fontSizeDown') {
+      TVPalette.close();
+      if (window.TV && typeof window.TV.setFontSize === 'function') {
+        window.TV.setFontSize((window.TV.state && window.TV.state.fontSize ? window.TV.state.fontSize : 16) - 2);
       }
       return;
     }
@@ -462,6 +571,7 @@
     close: function () {
       if (!_open) return;
       _open = false;
+      _outlineMode = false; // U-16: reset outline mode on every close
       document.removeEventListener('keydown', _onKeyDown, true);
       if (_overlayEl && _overlayEl.parentNode) {
         _overlayEl.parentNode.removeChild(_overlayEl);
@@ -477,6 +587,38 @@
 
     isOpen: function () {
       return _open;
+    },
+
+    // U-16 / DR-42: open the palette pre-filtered to the active document's headings only.
+    // No file rows, no command rows. App-core binds ⌘⌥O to this entry point.
+    openOutline: function () {
+      // If already open in outline mode, just re-focus the input
+      if (_open && _outlineMode) {
+        var inp = document.getElementById('tv-pal-input-field') ||
+                  (_overlayEl && _overlayEl.querySelector('.tv-pal-input-field'));
+        if (inp) inp.focus();
+        return;
+      }
+      // If open in normal mode, close first then reopen in outline mode
+      if (_open) {
+        TVPalette.close();
+      }
+
+      _outlineMode = true;
+      TVPalette.open();
+
+      // After open() builds the overlay with mixed content, immediately
+      // replace the list with the headings-only view (DR-42).
+      var listEl = _overlayEl && _overlayEl.querySelector('#tv-pal-list');
+      if (listEl) {
+        listEl.innerHTML = _buildOutlineList('');
+        _selIndex = 0;
+      }
+      // Update placeholder to reflect headings context
+      var inputEl = _overlayEl && _overlayEl.querySelector('.tv-pal-input-field');
+      if (inputEl) {
+        inputEl.placeholder = 'Jump to heading…';
+      }
     },
   };
 

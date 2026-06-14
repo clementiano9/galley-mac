@@ -193,7 +193,68 @@
       var stored = parseInt(localStorage.getItem('tv-sidebar-w'), 10);
       return (stored >= 160 && stored <= 480) ? stored : 224;
     }()),
+    // DR-56: true while session restore is in progress; external file-open events
+    // are buffered via enqueueExternalOpen() and drained once restore completes.
+    sessionRestoring: false,
   };
+
+  // DR-56: external file-open queue (Finder "Open With" / double-click during restore)
+  var _externalOpenQueue = [];
+
+  // DR-56: Native's open-files handler calls this instead of opening directly.
+  // If sessionRestoring is true, buffer the paths; else open immediately.
+  function enqueueExternalOpen(paths) {
+    if (!paths || !paths.length) return;
+    if (state.sessionRestoring) {
+      for (var qi = 0; qi < paths.length; qi++) {
+        _externalOpenQueue.push(paths[qi]);
+      }
+    } else {
+      // Open immediately through the normal native path
+      for (var oi = 0; oi < paths.length; oi++) {
+        var p = paths[oi];
+        if (window.__TAURI__) {
+          window.__TAURI__.core.invoke('read_md_file', { path: p })
+            .then(function (doc) {
+              if (!doc || !doc.name) return;
+              if (window.TVNative && typeof TVNative.openInto === 'function') {
+                TVNative.openInto(doc);
+              } else {
+                openDoc({ name: doc.name, source: doc.content, path: p.replace(/\/[^/]+$/, '') || '/' });
+              }
+            })
+            .catch(function () {});
+        }
+      }
+    }
+  }
+
+  // Drain the external open queue after session restore completes (DR-56)
+  function _drainExternalOpenQueue() {
+    if (!_externalOpenQueue.length) return;
+    var queued = _externalOpenQueue.slice();
+    _externalOpenQueue.length = 0;
+    enqueueExternalOpen(queued);
+  }
+
+  // F-05 / DR-24–DR-26: Mermaid on/off toggle.
+  // Persisted via localStorage key 'tv-mermaid'; value '0' = disabled.
+  // isMermaidEnabled() is called by the Renderer engineer's diagram pass.
+  // toggleMermaid() flips, persists, re-renders all open tabs.
+  function isMermaidEnabled() {
+    return localStorage.getItem('tv-mermaid') !== '0';
+  }
+  function toggleMermaid() {
+    var next = !isMermaidEnabled();
+    if (next) {
+      localStorage.removeItem('tv-mermaid');
+    } else {
+      localStorage.setItem('tv-mermaid', '0');
+    }
+    // Re-render all open tabs by doing a full render (rebuilds .md and
+    // re-invokes tvResolveDiagrams which will respect isMermaidEnabled())
+    render();
+  }
 
   // UX-10: JS keyboard cursor for sidebar navigation.
   // Tracks which sidebar option is highlighted via keyboard.
@@ -252,9 +313,10 @@
      keeps working unchanged.
    ──────────────────────────────────────────────────────────── */
   var RECENT_KEY = 'tv-recent-files';
-  var RECENT_MAX = 10;
+  var RECENT_MAX = 20; // DR-52: MRU capped at 20
 
-  // Returns [{ path, ts }] with legacy string entries migrated in place.
+  // Returns [{ path, ts, scrollTop? }] with legacy string entries migrated in place.
+  // F-17: entries now optionally carry scrollTop (number) for scroll persistence.
   function loadRecentEntries() {
     try {
       var raw = localStorage.getItem(RECENT_KEY);
@@ -265,10 +327,15 @@
       for (var i = 0; i < parsed.length; i++) {
         var e = parsed[i];
         if (typeof e === 'string') {
-          // legacy string[] format — no timestamp recorded
-          if (e) out.push({ path: e, ts: 0 });
+          // legacy string[] format — no timestamp or scroll recorded
+          if (e) out.push({ path: e, ts: 0, scrollTop: 0 });
         } else if (e && typeof e === 'object' && e.path) {
-          out.push({ path: e.path, ts: (typeof e.ts === 'number' ? e.ts : 0) });
+          out.push({
+            path: e.path,
+            ts: (typeof e.ts === 'number' ? e.ts : 0),
+            // F-17: pass through scrollTop if present; default to 0
+            scrollTop: (typeof e.scrollTop === 'number' ? e.scrollTop : 0),
+          });
         }
       }
       return out;
@@ -287,10 +354,18 @@
   function saveRecentPath(absolutePath) {
     if (!absolutePath) return;
     var list = loadRecentEntries();
+    // F-17: capture the live scrollTop for the tab being saved (if open)
+    var savedScrollTop = 0;
+    for (var i = 0; i < state.tabs.length; i++) {
+      if (state.tabs[i].nativePath === absolutePath) {
+        savedScrollTop = state.tabs[i].scrollTop || 0;
+        break;
+      }
+    }
     // Dedupe: drop any existing entry for this path (keeps move-to-front)
     list = list.filter(function (e) { return e.path !== absolutePath; });
-    // Prepend with a fresh timestamp and cap
-    list.unshift({ path: absolutePath, ts: Date.now() });
+    // Prepend with a fresh timestamp, scroll offset, and cap
+    list.unshift({ path: absolutePath, ts: Date.now(), scrollTop: savedScrollTop });
     if (list.length > RECENT_MAX) list.length = RECENT_MAX;
     try {
       localStorage.setItem(RECENT_KEY, JSON.stringify(list));
@@ -342,14 +417,19 @@
     var themeSvg = state.theme === 'dark' ? sunSvg : moonSvg;
     var themeLabel = state.theme === 'dark' ? 'Switch to light' : 'Switch to dark';
 
+    // Bug A: data-tauri-drag-region on both .tv-titlebar and .tv-wintitle so
+    // dragging anywhere on the bar (except traffic lights + theme button) moves
+    // the window. .tv-traffic and .tv-titlebtn intentionally OMIT the attribute
+    // so their clicks remain interactive. .tv-doc-ic gets pointer-events:none
+    // via CSS (it's a decorative icon inside .tv-wintitle which already drags).
     return (
-      '<div class="tv-titlebar">' +
+      '<div class="tv-titlebar" data-tauri-drag-region>' +
         '<div class="tv-traffic">' +
           '<span class="tv-light c"></span>' +
           '<span class="tv-light m"></span>' +
           '<span class="tv-light x"></span>' +
         '</div>' +
-        '<div class="tv-wintitle">' +
+        '<div class="tv-wintitle" data-tauri-drag-region>' +
           '<span class="tv-doc-ic">' + (icons.doc || '') + '</span>' +
           esc(title) +
         '</div>' +
@@ -958,14 +1038,15 @@
 
   function buildEmpty() {
     var icons = window.TV_ICONS || {};
+    // Bug A: same drag-region treatment as buildTitlebar()
     return (
-      '<div class="tv-titlebar">' +
+      '<div class="tv-titlebar" data-tauri-drag-region>' +
         '<div class="tv-traffic">' +
           '<span class="tv-light c"></span>' +
           '<span class="tv-light m"></span>' +
           '<span class="tv-light x"></span>' +
         '</div>' +
-        '<div class="tv-wintitle">' +
+        '<div class="tv-wintitle" data-tauri-drag-region>' +
           '<span class="tv-doc-ic">' + (icons.doc || '') + '</span>' +
           'tiny-viewer' +
         '</div>' +
@@ -1057,11 +1138,12 @@
       newScroll.scrollTop = activeTab.scrollTop || 0;
     }
 
-    // Wire live scroll listener for continuous preservation
+    // Wire live scroll listener for continuous preservation + debounced session save
     if (newScroll && activeTab) {
       (function (scrollEl, tab) {
         scrollEl.addEventListener('scroll', function () {
           tab.scrollTop = scrollEl.scrollTop;
+          _saveSessionDebounced();
         }, { passive: true });
       })(newScroll, activeTab);
     }
@@ -2197,7 +2279,7 @@
         return;
       }
 
-      // U-04: copy code block button
+      // U-04: copy code block button — DR-60: .tv-copy--copied class + aria-label
       var copyBtn = e.target.closest('[data-copy]');
       if (copyBtn) {
         var pre = copyBtn.closest('pre');
@@ -2206,10 +2288,16 @@
           var text = code ? code.textContent : pre.textContent;
           if (navigator.clipboard && navigator.clipboard.writeText) {
             navigator.clipboard.writeText(text).then(function () {
-              var orig = copyBtn.textContent;
-              copyBtn.textContent = 'Copied';
-              setTimeout(function () { copyBtn.textContent = orig; }, 1500);
-            }).catch(function () {});
+              copyBtn.classList.add('tv-copy--copied');
+              copyBtn.setAttribute('aria-label', 'Copied');
+              setTimeout(function () {
+                copyBtn.classList.remove('tv-copy--copied');
+                copyBtn.setAttribute('aria-label', 'Copy code');
+              }, 1500);
+            }).catch(function (err) {
+              // DR-64: silent failure — console.warn only, no UI change
+              console.warn('[TV] clipboard write failed', err);
+            });
           }
         }
         return;
@@ -2521,8 +2609,19 @@
     // F6: scroll restore is handled inside render() via the [data-scroll] restore block
     // (covers all render paths); duplicate restore here has been removed.
 
+    // Bug B: after render(), scroll the newly-active tab pill into view so it is
+    // never hidden behind the strip's overflow. block:'nearest' prevents vertical
+    // scroll of the document; inline:'nearest' handles horizontal strip scroll.
+    var activeTabEl = document.querySelector('[data-tab-id="' + id + '"]');
+    if (activeTabEl) {
+      activeTabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+
     // E-06: include prevId so tv-live.js can remove the outgoing tab's live UI
     tvEmit('tabchange', { id: id, prevId: prevId || null, tab: getActiveTab() });
+
+    // DR-47: persist session after every tab switch (covers ⌘Q paths on WKWebView)
+    saveSession();
   }
 
   // S-03: closeTab guard — confirm before closing dirty tabs
@@ -2576,6 +2675,8 @@
 
     state.mode = 'reading';
     render();
+    // DR-47: persist session after close so quit-after-close captures the right state
+    saveSession();
   }
 
   function setMode(m) {
@@ -2594,10 +2695,25 @@
   function setTheme(t) {
     if (t !== 'light' && t !== 'dark' && t !== 'system') return;
     if (t === 'system') {
-      // F-05 / U-05: System theme — follow prefers-color-scheme
+      // DR-13: delete the override key and re-attach the matchMedia listener so
+      // OS changes auto-apply. localStorage.removeItem is idempotent — safe even
+      // if the key was never set (first launch) or already absent.
+      localStorage.removeItem('tv-theme');
       var prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
       state.theme = prefersDark ? 'dark' : 'light';
-      localStorage.setItem('tv-theme', 'system');
+      // Re-attach the listener so future OS changes trigger a re-render.
+      // Only add if not already listening (we rely on init() having set one;
+      // but on a mid-session "System" select the old listener may have an
+      // stale guard — adding a second one is harmless: both check the key
+      // which is now absent, so both will fire correctly).
+      if (window.matchMedia) {
+        window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function (ev) {
+          if (!localStorage.getItem('tv-theme')) {
+            state.theme = ev.matches ? 'dark' : 'light';
+            render();
+          }
+        });
+      }
     } else {
       state.theme = t;
       localStorage.setItem('tv-theme', t);
@@ -2620,9 +2736,9 @@
     render();
   }
 
-  // F-05/U-07: Font size control
+  // F-05/U-07: Font size control — DR-27: floor 13px, cap 22px (DR-29: persisted)
   function setFontSize(px) {
-    var clamped = Math.max(12, Math.min(24, px));
+    var clamped = Math.max(13, Math.min(22, px));
     state.fontSize = clamped;
     localStorage.setItem('tv-font-size', String(clamped));
     // Apply without full render — just update the CSS variable on the .tv root
@@ -3017,6 +3133,18 @@
       return;
     }
 
+    // U-16 / DR-42: ⌘⌥O — open palette pre-filtered to outline/headings.
+    // On macOS with Option held, e.key is a composed glyph (e.g. 'ø'); match
+    // on e.code instead. Must check altKey BEFORE the bare ⌘O / ⌘⇧O guards.
+    if (e.code === 'KeyO' && e.metaKey && e.altKey && !e.shiftKey) {
+      e.preventDefault();
+      if (typeof window.TVPalette !== 'undefined' &&
+          typeof window.TVPalette.openOutline === 'function') {
+        window.TVPalette.openOutline();
+      }
+      return;
+    }
+
     // ⌘⇧O — open folder (F-03)
     if ((k === 'o' || k === 'O') && e.shiftKey) {
       e.preventDefault();
@@ -3119,13 +3247,62 @@
   });
 
   /* ────────────────────────────────────────────────────────────
-     beforeunload — warn if any tab is dirty
+     DR-47: saveSession() — incremental tv-session persistence.
+     Called after every tab open, close, switch, and (debounced)
+     on scroll, so Tauri ⌘Q / Dock-Quit never silently drops the
+     session (WKWebView does not fire beforeunload on those paths).
+     GUARD: no-op while sessionRestoring to avoid clobbering the
+     persisted state we are currently reading from.
+   ──────────────────────────────────────────────────────────── */
+  function saveSession() {
+    if (state.sessionRestoring) return;
+
+    // Capture live scrollTop for the active tab from the DOM (may be mid-scroll)
+    var scrollEl = document.querySelector('[data-scroll]');
+    var activeTab = getActiveTab();
+    if (scrollEl && activeTab) {
+      activeTab.scrollTop = scrollEl.scrollTop;
+    }
+
+    var sessionTabs = [];
+    for (var si = 0; si < state.tabs.length; si++) {
+      var st = state.tabs[si];
+      if (st.untitled || st.error || !st.nativePath) continue;
+      sessionTabs.push({ nativePath: st.nativePath, scrollTop: st.scrollTop || 0 });
+    }
+
+    try {
+      if (sessionTabs.length) {
+        localStorage.setItem('tv-session', JSON.stringify({
+          tabs: sessionTabs,
+          activeNativePath: activeTab ? (activeTab.nativePath || null) : null,
+        }));
+      } else {
+        // DR-49: no real-doc tabs → empty state on next launch
+        localStorage.removeItem('tv-session');
+      }
+    } catch (ex) { /* storage full — ignore */ }
+  }
+
+  // Debounced scroll wrapper: fires saveSession() ~500ms after the last scroll
+  // event so we don't thrash localStorage on every pixel of scroll.
+  var _saveSessionTimer = null;
+  function _saveSessionDebounced() {
+    if (_saveSessionTimer) clearTimeout(_saveSessionTimer);
+    _saveSessionTimer = setTimeout(saveSession, 500);
+  }
+
+  /* ────────────────────────────────────────────────────────────
+     beforeunload — warn if dirty + belt-and-suspenders session save
    ──────────────────────────────────────────────────────────── */
   window.addEventListener('beforeunload', function (e) {
     if (state.tabs.some(function (t) { return t.dirty; })) {
       e.preventDefault();
       e.returnValue = '';
     }
+    // Belt-and-suspenders: saveSession() is also called incrementally so
+    // WKWebView ⌘Q / Dock-Quit paths (which skip beforeunload) are covered.
+    saveSession();
   });
 
   /* ────────────────────────────────────────────────────────────
@@ -3309,78 +3486,159 @@
       return;
     }
 
-    // Production path: restore from recent files
-    var recentPaths = loadRecentPaths();
+    // U-13 / DR-47–DR-56: Two-key model.
+    //   tv-session  — last session (tabs + scrollTop + activeNativePath); restore on launch.
+    //   tv-recent-files — MRU display only; NEVER auto-opened on launch.
+    // DR-49: empty/absent tv-session → show empty state (do NOT open from tv-recent-files).
+    var sessionRaw = null;
+    try { sessionRaw = localStorage.getItem('tv-session'); } catch (ex) {}
+    var session = null;
+    if (sessionRaw) {
+      try { session = JSON.parse(sessionRaw); } catch (ex) {}
+    }
 
-    if (recentPaths.length && window.TVNative && TVNative.available) {
-      // Tauri: try to read each recent file; skip missing ones
-      // S-05 fix: batch-open all tabs without activating, then activate MRU (index 0) at end
-      var pending = recentPaths.slice(); // copy — recents[0] is MOST RECENT
-      var firstOpenedId = null;  // S-05: will hold the id for recents[0]
-      var openedCount = 0;
+    if (session && session.tabs && session.tabs.length && window.TVNative && TVNative.available) {
+      // DR-48 / DR-54: restore session tabs sequentially; no "Restoring…" chrome.
+      // DR-56: set sessionRestoring flag so Finder open-events queue until done.
+      state.sessionRestoring = true;
 
-      function readNext() {
-        if (!pending.length) {
-          // S-05: after all tabs are loaded, activate the MOST RECENTLY USED (recents[0])
-          if (firstOpenedId) {
-            // Directly set activeId and render once — no further activateTab calls
-            state.activeId = firstOpenedId;
+      var sessionPending = session.tabs.slice(); // ordered array of {nativePath, scrollTop}
+      var sessionActiveNativePath = session.activeNativePath || null;
+      var sessionActiveId = null;  // resolved tab id for the formerly-active tab
+      var sessionMissed = 0;       // DR-50: count files that couldn't be restored
+
+      function readSessionNext() {
+        if (!sessionPending.length) {
+          // All session tabs processed — activate the formerly-active tab (DR-51)
+          if (sessionActiveId) {
+            state.activeId = sessionActiveId;
+          } else if (state.tabs.length) {
+            state.activeId = state.tabs[0].id;
           }
-          if (openedCount) {
-            render(); // single render after all tabs are open
-          } else {
-            render(); // show empty dropzone
+          render();
+
+          // DR-50: single consolidated toast for missing files
+          if (sessionMissed > 0 && window.TVNative && typeof TVNative.showToast === 'function') {
+            var noun = sessionMissed === 1 ? 'file' : 'files';
+            TVNative.showToast(sessionMissed + ' ' + noun + ' from last session were not found');
           }
+
+          // DR-56: restore complete — clear flag and drain queued external opens
+          state.sessionRestoring = false;
+          _drainExternalOpenQueue();
           return;
         }
-        var path = pending.shift();
-        window.__TAURI__.core.invoke('read_md_file', { path: path })
+
+        var entry = sessionPending.shift();
+        var ePath = entry.nativePath;
+        var eScroll = entry.scrollTop || 0;
+
+        window.__TAURI__.core.invoke('read_md_file', { path: ePath })
           .then(function (doc) {
-            if (!doc || !doc.name) { readNext(); return; }
-            // Extract parent directory for sidebar grouping (E-12)
-            var parentDir = path.replace(/\/[^/]+$/, '') || '/';
+            if (!doc || !doc.name) { sessionMissed++; readSessionNext(); return; }
+            var parentDir = ePath.replace(/\/[^/]+$/, '') || '/';
 
-            // S-05: Add tab to state WITHOUT calling activateTab (which would render)
-            var key = 'native:' + (doc.path || path);
-            var existingTab = null;
-            for (var i = 0; i < state.tabs.length; i++) {
-              if (state.tabs[i].nativePath === (doc.path || path)) {
-                existingTab = state.tabs[i]; break;
-              }
+            // Add tab to state WITHOUT calling activateTab (to avoid intermediate renders)
+            var newTab = makeTab({
+              name: doc.name,
+              source: doc.content,
+              path: parentDir,
+            });
+            newTab.nativePath = doc.path || ePath;
+            // DR-48 / DR-53: apply saved scroll; render() will pick it up via [data-scroll]
+            newTab.scrollTop = eScroll;
+            state.tabs.push(newTab);
+
+            // DR-55: update tv-recent-files entry with the saved scrollTop
+            // saveRecentPath reads the tab's live scrollTop — pre-set it now so
+            // the MRU entry carries the correct position even before the tab is rendered.
+            saveRecentPath(newTab.nativePath);
+            // Patch the just-saved entry's scrollTop to the session value
+            (function (np, st) {
+              try {
+                var entries = loadRecentEntries();
+                for (var ri = 0; ri < entries.length; ri++) {
+                  if (entries[ri].path === np) { entries[ri].scrollTop = st; break; }
+                }
+                localStorage.setItem(RECENT_KEY, JSON.stringify(entries));
+              } catch (ex2) {}
+            }(newTab.nativePath, eScroll));
+
+            // DR-51: track which restored tab should become active
+            if (sessionActiveNativePath && newTab.nativePath === sessionActiveNativePath) {
+              sessionActiveId = newTab.id;
             }
 
-            var tabId;
-            if (existingTab) {
-              tabId = existingTab.id;
-            } else {
-              var newTab = makeTab({
-                name: doc.name,
-                source: doc.content,
-                path: parentDir,
-              });
-              newTab.nativePath = doc.path || path;
-              state.tabs.push(newTab);
-              tabId = newTab.id;
-            }
-
-            // S-05: the FIRST path processed (recentPaths[0]) is the MRU
-            if (openedCount === 0) {
-              firstOpenedId = tabId;
-            }
-            openedCount++;
-            readNext();
+            readSessionNext();
           })
           .catch(function () {
-            // File gone or unreadable — skip silently
-            readNext();
+            // DR-50: file missing or unreadable — skip silently, count it
+            sessionMissed++;
+            readSessionNext();
           });
       }
 
-      readNext();
+      readSessionNext();
+
     } else {
-      // Plain browser (no Tauri) or no recents: just show empty dropzone
+      // DR-49: no session (first launch, all tabs closed last session, or browser mode)
+      // → show empty state. Do NOT auto-open from tv-recent-files.
       render();
     }
+  }
+
+  /* ────────────────────────────────────────────────────────────
+     U-12: Reload active tab from disk
+     Re-reads the file via the Tauri bridge and overwrites the in-memory
+     content. No-op in plain-browser mode (no nativePath). Mirrors the
+     existing recent-row reopen pattern (wireEvents click handler).
+   ──────────────────────────────────────────────────────────── */
+  function reloadActiveTab() {
+    var tab = getActiveTab();
+    if (!tab) return;
+
+    // No native path → nothing to reload (browser mode or untitled tab)
+    if (!tab.nativePath) {
+      // Optionally surface a toast — but keep it silent since no native dialog
+      // available in browser context for the "no path" case.
+      return;
+    }
+
+    var path = tab.nativePath;
+    var name = tab.name;
+
+    function _doReload() {
+      // U-12: invoke the same Tauri command used by the recent-row reopen handler
+      window.__TAURI__.core.invoke('read_md_file', { path: path })
+        .then(function (doc) {
+          if (!doc) return;
+          // Overwrite in-memory content; mark clean
+          tab.source = doc.content || '';
+          tab.dirty = false;
+          render();
+        })
+        .catch(function (err) {
+          console.warn('[TV] reloadActiveTab failed', path, err);
+          var kind = (window.TVNative && typeof TVNative.classifyReadError === 'function')
+            ? TVNative.classifyReadError(err) : 'not-found';
+          openErrorTab(name, path, kind);
+        });
+    }
+
+    // U-12: dirty-guard — follow the exact S-03 closeTab() pattern
+    if (tab.dirty) {
+      var msg = 'Reload "' + name + '" from disk and discard unsaved changes?';
+      if (window.__TAURI__ && window.__TAURI__.dialog) {
+        window.__TAURI__.dialog.ask(msg, { title: 'Reload from Disk', kind: 'warning' })
+          .then(function (confirmed) { if (confirmed) _doReload(); })
+          .catch(function () { if (window.confirm(msg)) _doReload(); });
+      } else {
+        if (window.confirm(msg)) _doReload();
+      }
+      return;
+    }
+
+    _doReload();
   }
 
   /* ────────────────────────────────────────────────────────────
@@ -3402,12 +3660,18 @@
     toggleSidebar: toggleSidebar,
     scrollToHeading: scrollToHeading,
     markDirty: markDirty,
+    reloadActiveTab: reloadActiveTab, // U-12: reload active tab from disk
     saveRecentPath: saveRecentPath,  // exposed so tv-native.js can call it on open
     loadRecentPaths: loadRecentPaths,
     openFolder: openFolder,
     on: tvOn,
     emit: tvEmit,
     el: tvEl,
+    // F-05 / DR-24–DR-26: Mermaid toggle contract (Renderer engineer reads isMermaidEnabled)
+    isMermaidEnabled: isMermaidEnabled,
+    toggleMermaid: toggleMermaid,
+    // DR-56: session restore queue (Native engineer's open-files handler calls this)
+    enqueueExternalOpen: enqueueExternalOpen,
   };
 
   /* ── Boot when DOM is ready ───────────────────────────────── */

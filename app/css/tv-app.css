@@ -44,7 +44,8 @@ html, body, #tv-root {
   display: flex; align-items: center; justify-content: center; gap: 7px;
   margin-right: 52px; /* counterweight the traffic lights */
 }
-.tv-wintitle .tv-doc-ic { opacity: .6; }
+/* Bug A: doc icon is decorative; pointer-events:none lets drag pass through to .tv-wintitle */
+.tv-wintitle .tv-doc-ic { opacity: .6; pointer-events: none; }
 
 /* tab bar ---------------------------------------------------- */
 /* D-01 / E-09: scrollable tab strip — tabs keep legible width.
