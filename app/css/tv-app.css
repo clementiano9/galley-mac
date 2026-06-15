@@ -1997,6 +1997,8 @@ input:focus-visible,
 .tv-ctx-item.danger:hover { background: rgba(192,69,58,.14) !important; color: #c0453a !important; }
 .tv-ctx-item.danger:hover .ic { color: #c0453a !important; }
 .tv-ctx-sep { height: 1px; background: var(--tv-border) !important; margin: 5px 6px; }
+.tv-ctx-item.disabled { opacity: .38; pointer-events: none; }
+.tv-ctx-hint { margin-left: auto; font-size: 11px; opacity: .55; letter-spacing: .01em; }
 @media (prefers-reduced-motion: reduce) {
   .tv-ctx { animation: none !important; }
 }

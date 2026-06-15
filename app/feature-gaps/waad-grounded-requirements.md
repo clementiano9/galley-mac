@@ -13,6 +13,8 @@
 | DR-11 – DR-32 | Chrome & Config — U-02 (11–15), F-22/U-06 (16–23), F-05/F-18 (24–32) |
 | DR-33 – DR-56 | Navigation & State — F-19 (33–41), U-16 (42–46), U-13 (47–56) |
 | DR-57 – DR-64 | AI-Output Workflow — U-04 (57–64) |
+| DR-65 – DR-71 | Live-Watch Recency Label |
+| DR-72 – DR-80 | Tab Context Menu — U-10, U-08, U-12, U-11 (this iteration) |
 
 ### Open dependencies (out of scope here, must be resolved before related implementation)
 - **U-01 / F-08 (native menu bar)** — U-02 and F-22 hang `View > Appearance` and `Help > Keyboard Shortcuts` off it. The full View/Help menu architecture must be specified there before menu-bar build.
@@ -316,3 +318,21 @@ Extend the `[data-copy]` handler (tv-app.js ~2215) to: add `.tv-copy--copied` + 
 ---
 
 *Prepared via UxPipeline Step 3 (3 analyst passes + adversarial critique). The initial 7 gaps (DR-11–DR-64) plus the live-watch recency label (DR-65–DR-71) are certified crystal-clear and build-ready as Step-4 (ideation) / engineering inputs.*
+
+---
+
+# Part 5 — Tab Context Menu (U-10, U-08, U-12, U-11)
+
+*Gaps U-10 (tab context menu), U-08 (Reveal in Finder / copy path), U-12 (reload from disk), U-11 (middle-click close). Source URDs: URD-04 (multi-file nav), URD-07 (file trust/reveal), URD-08 (invoke-on-demand chrome).*
+
+| DR | MoSCoW | URD | Requirement | Acceptance Criteria |
+|----|--------|-----|-------------|---------------------|
+| DR-72 | Must | URD-08 | Right-clicking any `.tv-tab[data-tab-id]` element opens a positioned `openTabCtx` menu and suppresses the WebView default context menu (`preventDefault`). | `contextmenu` on a tab element → menu appears, no browser native menu; `contextmenu` on non-tab area → folder menu path unchanged. |
+| DR-73 | Must | URD-07 | "Reveal in Finder" menu item calls `TVNative.revealInFinder(tab.nativePath)` for tabs that have a `nativePath`. | Clicking "Reveal in Finder" on a native-path tab invokes `revealInFinder`; `console` shows no error. |
+| DR-74 | Must | URD-07 | "Copy Path" menu item writes `tab.nativePath` to the clipboard via `navigator.clipboard.writeText`; failures are silent `console.warn` only. | After click, `clipboard.readText()` equals the tab's absolute path exactly; no toast/modal on failure. |
+| DR-75 | Must | URD-08 | "Reveal in Finder" and "Copy Path" are visually muted (`.disabled` class, `opacity:.38`, `pointer-events:none`) and non-actionable for tabs where `nativePath` is absent (untitled, error tabs). | Disabled items cannot be clicked and produce no action; no JS error thrown. |
+| DR-76 | Should | URD-06 | "Reload from Disk" calls `invoke('read_md_file', {path})`, overwrites `tab.source` and `tab.dirty=false`, then re-renders if that tab is active. | After editing a tab, choosing Reload restores the on-disk content; dirty indicator clears; re-render fires only for the active tab. |
+| DR-77 | Must | URD-04 | "Close Tab" action in the tab context menu calls `closeTab(tabId)` (same guard logic as the X button, including dirty-confirm dialog). | Closing a dirty tab via the menu shows the "Discard unsaved changes?" dialog; clean tabs close immediately. |
+| DR-78 | Should | URD-04 | "Close Others" closes every tab whose `id !== tabId` by iterating a snapshot of `state.tabs` ids before any mutation, so concurrent closes don't skip tabs. | With 4 tabs, choosing "Close Others" on tab 2 leaves only tab 2 open; no tabs are skipped. |
+| DR-79 | Should | URD-04 | "Close All" (`.danger` class) closes every tab. | All tabs closed; empty state rendered. |
+| DR-80 | Should | URD-04 | Middle-click (`mousedown` with `e.button===1`) on a `.tv-tab` element calls `closeTab` and calls `preventDefault` to suppress autoscroll. | Middle-clicking a tab closes it without any scroll jump; works on both active and inactive tabs. |

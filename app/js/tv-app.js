@@ -777,9 +777,25 @@
 
   /* ── F-19 TASK 3: folder context menu ──────────────────────── */
   var _ctxEl = null;
+  // WKWebView reports clientX/clientY = 0 on `contextmenu`; track the live
+  // pointer (with a timestamp) so menus can anchor to the real cursor — but
+  // only when the tracked position is fresh enough to belong to this click.
+  var _ctxPtr = { x: 0, y: 0, t: 0 };
+  var _CTX_PTR_FRESH_MS = 1200;
+
+  // Esc closes the context menus. The menu element isn't focused, so a keydown
+  // listener on it never fires — listen on the document (capture) instead, and
+  // detach on close. Mirrors the shortcut-overlay pattern.
+  function _folderCtxEsc(e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeFolderCtx(); }
+  }
+  function _tabCtxEsc(e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeTabCtx(); }
+  }
 
   function openFolderCtx(x, y, path) {
     closeFolderCtx();
+    closeTabCtx();
     var icons = window.TV_ICONS || {};
     var tvRoot = document.querySelector('.tv');
     if (!tvRoot) return;
@@ -807,6 +823,18 @@
     _ctxEl = wrapper.firstChild;
     tvRoot.appendChild(_ctxEl);
 
+    // WKWebView ignores the style="" left/top (CSP); position via CSSOM + clamp.
+    var fMenu = _ctxEl.querySelector('[data-ctx-menu]');
+    if (fMenu) {
+      var fmw = fMenu.offsetWidth || 200;
+      var fmh = fMenu.offsetHeight || 200;
+      var fcx = x, fcy = y;
+      if (fcx + fmw > window.innerWidth)  { fcx = Math.max(0, window.innerWidth - fmw - 4); }
+      if (fcy + fmh > window.innerHeight) { fcy = Math.max(0, window.innerHeight - fmh - 4); }
+      fMenu.style.left = fcx + 'px';
+      fMenu.style.top  = fcy + 'px';
+    }
+
     // Scrim mousedown dismisses
     _ctxEl.addEventListener('mousedown', function (e) {
       if (!e.target.closest('[data-ctx-menu]')) {
@@ -820,10 +848,8 @@
       closeFolderCtx();
     });
 
-    // Escape closes
-    _ctxEl.addEventListener('keydown', function (e) {
-      if (e.key === 'Escape') { e.preventDefault(); closeFolderCtx(); }
-    });
+    // Escape closes (document-level — the menu div isn't focused)
+    document.addEventListener('keydown', _folderCtxEsc, true);
 
     // Action clicks
     _ctxEl.addEventListener('click', function (e) {
@@ -850,11 +876,317 @@
   }
 
   function closeFolderCtx() {
+    document.removeEventListener('keydown', _folderCtxEsc, true);
     if (_ctxEl && _ctxEl.parentNode) {
       _ctxEl.parentNode.removeChild(_ctxEl);
     }
     _ctxEl = null;
     state.folderCtx = null;
+  }
+
+  /* ── U-10 / U-12: tab right-click context menu ─────────────── */
+  var _tabCtxEl = null;
+
+  function openTabCtx(x, y, tabId) {
+    closeTabCtx();
+    closeFolderCtx();
+    var icons = window.TV_ICONS || {};
+    var tvRoot = document.querySelector('.tv');
+    if (!tvRoot) return;
+    var tab = null;
+    for (var i = 0; i < state.tabs.length; i++) {
+      if (state.tabs[i].id === tabId) { tab = state.tabs[i]; break; }
+    }
+    if (!tab) return;
+    state.tabCtx = { tabId: tabId };
+
+    var hasPath = !!(tab.nativePath && !tab.untitled);
+    var disAttr = hasPath ? '' : ' data-ctx-disabled="1"';
+    var disCls  = hasPath ? '' : ' disabled';
+
+    var html = (
+      '<div class="tv-ctx-scrim" data-ctx-scrim>' +
+        '<div class="tv-ctx" style="left:' + x + 'px;top:' + y + 'px" data-ctx-menu>' +
+          '<div class="tv-ctx-item' + disCls + '"' + disAttr + ' data-ctx-action="reveal">' +
+            '<span class="ic">' + (icons.reveal || '') + '</span> Reveal in Finder' +
+          '</div>' +
+          '<div class="tv-ctx-item' + disCls + '"' + disAttr + ' data-ctx-action="copy-path">' +
+            '<span class="ic">' + (icons.copy || '') + '</span> Copy Path' +
+          '</div>' +
+          '<div class="tv-ctx-sep"></div>' +
+          '<div class="tv-ctx-item' + disCls + '"' + disAttr + ' data-ctx-action="reload">' +
+            '<span class="ic">' + (icons.refresh || '') + '</span> Reload from Disk' +
+          '</div>' +
+          '<div class="tv-ctx-sep"></div>' +
+          '<div class="tv-ctx-item" data-ctx-action="close">' +
+            '<span class="ic">' + (icons.close || '') + '</span> Close Tab' +
+            '<span class="tv-ctx-hint">⌘W</span>' +
+          '</div>' +
+          '<div class="tv-ctx-item" data-ctx-action="close-others">' +
+            '<span class="ic"></span> Close Others' +
+          '</div>' +
+          '<div class="tv-ctx-item danger" data-ctx-action="close-all">' +
+            '<span class="ic"></span> Close All' +
+          '</div>' +
+        '</div>' +
+      '</div>'
+    );
+
+    var wrapper = document.createElement('div');
+    wrapper.innerHTML = html;
+    _tabCtxEl = wrapper.firstChild;
+    tvRoot.appendChild(_tabCtxEl);
+
+    // Clamp position so the menu doesn't overflow viewport
+    var menuEl = _tabCtxEl.querySelector('[data-ctx-menu]');
+    if (menuEl) {
+      var mw = menuEl.offsetWidth || 200;
+      var mh = menuEl.offsetHeight || 220;
+      var cx = x;
+      var cy = y;
+      if (cx + mw > window.innerWidth)  { cx = Math.max(0, window.innerWidth - mw - 4); }
+      if (cy + mh > window.innerHeight) { cy = Math.max(0, window.innerHeight - mh - 4); }
+      // WKWebView ignores the style="" attribute's left/top here (CSP honors
+      // 'unsafe-inline' for <style> but not for the style attribute), so the
+      // inline coords compute to 0,0. Set position via CSSOM, which is honored.
+      menuEl.style.left = cx + 'px';
+      menuEl.style.top  = cy + 'px';
+    }
+
+    // Scrim mousedown dismisses
+    _tabCtxEl.addEventListener('mousedown', function (e) {
+      if (!e.target.closest('[data-ctx-menu]')) {
+        closeTabCtx();
+      }
+    });
+
+    // Context menu on scrim closes (prevent native context menu over our menu)
+    _tabCtxEl.addEventListener('contextmenu', function (e) {
+      e.preventDefault();
+      closeTabCtx();
+    });
+
+    // Escape closes
+    document.addEventListener('keydown', _tabCtxEsc, true);
+
+    // Action clicks
+    _tabCtxEl.addEventListener('click', function (e) {
+      var item = e.target.closest('[data-ctx-action]');
+      if (!item) return;
+      // Disabled items are non-actionable
+      if (item.getAttribute('data-ctx-disabled')) return;
+      var action = item.getAttribute('data-ctx-action');
+      var ctx = state.tabCtx;
+      closeTabCtx();
+      if (!ctx) return;
+      var ctxTab = null;
+      for (var i = 0; i < state.tabs.length; i++) {
+        if (state.tabs[i].id === ctx.tabId) { ctxTab = state.tabs[i]; break; }
+      }
+      if (action === 'reveal') {
+        if (ctxTab && ctxTab.nativePath && window.TVNative && typeof TVNative.revealInFinder === 'function') {
+          TVNative.revealInFinder(ctxTab.nativePath);
+        }
+      } else if (action === 'copy-path') {
+        if (ctxTab && ctxTab.nativePath) {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(ctxTab.nativePath).catch(function (err) {
+              console.warn('[TV] clipboard write failed', err);
+            });
+          }
+        }
+      } else if (action === 'reload') {
+        if (ctxTab && ctxTab.nativePath && window.__TAURI__) {
+          var reloadPath = ctxTab.nativePath;
+          var reloadId   = ctxTab.id;
+          window.__TAURI__.core.invoke('read_md_file', { path: reloadPath })
+            .then(function (doc) {
+              var t = null;
+              for (var i = 0; i < state.tabs.length; i++) {
+                if (state.tabs[i].id === reloadId) { t = state.tabs[i]; break; }
+              }
+              if (t && doc) {
+                t.source = doc.content || doc.source || '';
+                t.dirty  = false;
+                if (t.id === state.activeId) { render(); }
+              }
+            })
+            .catch(function (err) {
+              console.warn('[TV] reload from disk failed', reloadPath, err);
+            });
+        }
+      } else if (action === 'close') {
+        closeTab(ctx.tabId);
+      } else if (action === 'close-others') {
+        // Snapshot ids before mutation
+        var otherIds = state.tabs
+          .filter(function (t) { return t.id !== ctx.tabId; })
+          .map(function (t) { return t.id; });
+        otherIds.forEach(function (id) { closeTab(id); });
+      } else if (action === 'close-all') {
+        var allIds = state.tabs.map(function (t) { return t.id; });
+        allIds.forEach(function (id) { closeTab(id); });
+      }
+    });
+  }
+
+  function closeTabCtx() {
+    document.removeEventListener('keydown', _tabCtxEsc, true);
+    if (_tabCtxEl && _tabCtxEl.parentNode) {
+      _tabCtxEl.parentNode.removeChild(_tabCtxEl);
+    }
+    _tabCtxEl = null;
+    state.tabCtx = null;
+  }
+
+  // Open a file path from the sidebar tree / recents (read → openInto → tab).
+  function _openTreeFilePath(tfPath) {
+    if (!tfPath || !window.TVNative || !TVNative.available) return;
+    window.__TAURI__.core.invoke('read_md_file', { path: tfPath })
+      .then(function (doc) {
+        if (window.TVNative && typeof TVNative.openInto === 'function') {
+          TVNative.openInto(doc);
+        } else if (doc && doc.name) {
+          var pdir = tfPath.replace(/\/[^/]+$/, '') || '/';
+          var tid = openDoc({ name: doc.name, source: doc.content, path: pdir });
+          if (tid) {
+            var t = state.tabs.find(function (x) { return x.id === tid; });
+            if (t) t.nativePath = doc.path || tfPath;
+          }
+        }
+      })
+      .catch(function (err) {
+        console.warn('[TV] tree file open failed', tfPath, err);
+        var kind = (window.TVNative && typeof TVNative.classifyReadError === 'function')
+          ? TVNative.classifyReadError(err) : 'not-found';
+        openErrorTab(tfPath.split('/').pop() || tfPath, tfPath, kind);
+      });
+  }
+
+  // Reload an open tab's content from disk by id (shared by tab + file menus).
+  function _reloadTabFromDisk(tabId) {
+    var t0 = null;
+    for (var i = 0; i < state.tabs.length; i++) {
+      if (state.tabs[i].id === tabId) { t0 = state.tabs[i]; break; }
+    }
+    if (!t0 || !t0.nativePath || !window.__TAURI__) return;
+    var reloadPath = t0.nativePath;
+    window.__TAURI__.core.invoke('read_md_file', { path: reloadPath })
+      .then(function (doc) {
+        var t = null;
+        for (var j = 0; j < state.tabs.length; j++) {
+          if (state.tabs[j].id === tabId) { t = state.tabs[j]; break; }
+        }
+        if (t && doc) {
+          t.source = doc.content || doc.source || '';
+          t.dirty  = false;
+          if (t.id === state.activeId) { render(); }
+        }
+      })
+      .catch(function (err) {
+        console.warn('[TV] reload from disk failed', reloadPath, err);
+      });
+  }
+
+  /* ── U-08/U-10: sidebar file-row context menu ──────────────── */
+  function openFileCtx(x, y, filePath, tabId) {
+    closeTabCtx();
+    closeFolderCtx();
+    if (!filePath) return;
+    var icons = window.TV_ICONS || {};
+    var tvRoot = document.querySelector('.tv');
+    if (!tvRoot) return;
+    var isOpen = !!tabId;
+    state.tabCtx = { path: filePath, tabId: tabId || null, file: true };
+
+    var items =
+      '<div class="tv-ctx-item" data-ctx-action="reveal">' +
+        '<span class="ic">' + (icons.reveal || '') + '</span> Reveal in Finder' +
+      '</div>' +
+      '<div class="tv-ctx-item" data-ctx-action="copy-path">' +
+        '<span class="ic">' + (icons.copy || '') + '</span> Copy Path' +
+      '</div>' +
+      '<div class="tv-ctx-sep"></div>';
+    if (isOpen) {
+      items +=
+        '<div class="tv-ctx-item" data-ctx-action="activate">' +
+          '<span class="ic">' + (icons.doc || '') + '</span> Switch to Tab' +
+        '</div>' +
+        '<div class="tv-ctx-item" data-ctx-action="reload">' +
+          '<span class="ic">' + (icons.refresh || '') + '</span> Reload from Disk' +
+        '</div>' +
+        '<div class="tv-ctx-sep"></div>' +
+        '<div class="tv-ctx-item danger" data-ctx-action="close">' +
+          '<span class="ic">' + (icons.close || '') + '</span> Close Tab' +
+        '</div>';
+    } else {
+      items +=
+        '<div class="tv-ctx-item" data-ctx-action="open">' +
+          '<span class="ic">' + (icons.doc || '') + '</span> Open' +
+        '</div>';
+    }
+
+    var html =
+      '<div class="tv-ctx-scrim" data-ctx-scrim>' +
+        '<div class="tv-ctx" style="left:' + x + 'px;top:' + y + 'px" data-ctx-menu>' +
+          items +
+        '</div>' +
+      '</div>';
+
+    var wrapper = document.createElement('div');
+    wrapper.innerHTML = html;
+    _tabCtxEl = wrapper.firstChild;
+    tvRoot.appendChild(_tabCtxEl);
+
+    // Clamp position so the menu doesn't overflow viewport
+    var menuEl = _tabCtxEl.querySelector('[data-ctx-menu]');
+    if (menuEl) {
+      var mw = menuEl.offsetWidth || 200;
+      var mh = menuEl.offsetHeight || 180;
+      var cx = x, cy = y;
+      if (cx + mw > window.innerWidth)  { cx = Math.max(0, window.innerWidth - mw - 4); }
+      if (cy + mh > window.innerHeight) { cy = Math.max(0, window.innerHeight - mh - 4); }
+      // WKWebView ignores the style="" attribute's left/top here (CSP honors
+      // 'unsafe-inline' for <style> but not for the style attribute), so the
+      // inline coords compute to 0,0. Set position via CSSOM, which is honored.
+      menuEl.style.left = cx + 'px';
+      menuEl.style.top  = cy + 'px';
+    }
+
+    _tabCtxEl.addEventListener('mousedown', function (e) {
+      if (!e.target.closest('[data-ctx-menu]')) { closeTabCtx(); }
+    });
+    _tabCtxEl.addEventListener('contextmenu', function (e) {
+      e.preventDefault(); closeTabCtx();
+    });
+    document.addEventListener('keydown', _tabCtxEsc, true);
+    _tabCtxEl.addEventListener('click', function (e) {
+      var item = e.target.closest('[data-ctx-action]');
+      if (!item) return;
+      var action = item.getAttribute('data-ctx-action');
+      var ctx = state.tabCtx;
+      closeTabCtx();
+      if (!ctx) return;
+      if (action === 'reveal') {
+        if (ctx.path && window.TVNative && typeof TVNative.revealInFinder === 'function') {
+          TVNative.revealInFinder(ctx.path);
+        }
+      } else if (action === 'copy-path') {
+        if (ctx.path && navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(ctx.path).catch(function (err) {
+            console.warn('[TV] clipboard write failed', err);
+          });
+        }
+      } else if (action === 'activate') {
+        if (ctx.tabId) activateTab(ctx.tabId);
+      } else if (action === 'reload') {
+        if (ctx.tabId) _reloadTabFromDisk(ctx.tabId);
+      } else if (action === 'close') {
+        if (ctx.tabId) closeTab(ctx.tabId);
+      } else if (action === 'open') {
+        _openTreeFilePath(ctx.path);
+      }
+    });
   }
 
   // D-05 + E-12: Group sidebar by real path; null-path files under "Open"
@@ -2726,39 +3058,107 @@
         var existingTabId = treeFileRow.getAttribute('data-tree-tab-id');
         if (existingTabId) {
           activateTab(existingTabId);
-        } else if (tfPath && window.TVNative && TVNative.available) {
-          window.__TAURI__.core.invoke('read_md_file', { path: tfPath })
-            .then(function (doc) {
-              if (window.TVNative && typeof TVNative.openInto === 'function') {
-                TVNative.openInto(doc);
-              } else if (doc && doc.name) {
-                var pdir = tfPath.replace(/\/[^/]+$/, '') || '/';
-                var tid = openDoc({ name: doc.name, source: doc.content, path: pdir });
-                if (tid) {
-                  var t = state.tabs.find(function (x) { return x.id === tid; });
-                  if (t) t.nativePath = doc.path || tfPath;
-                }
-              }
-            })
-            .catch(function (err) {
-              console.warn('[TV] tree file open failed', tfPath, err);
-              var kind = (window.TVNative && typeof TVNative.classifyReadError === 'function')
-                ? TVNative.classifyReadError(err) : 'not-found';
-              openErrorTab(tfPath.split('/').pop() || tfPath, tfPath, kind);
-            });
+        } else {
+          _openTreeFilePath(tfPath);
         }
         return;
       }
     });
 
     // F-19 TASK 3: right-click folder head → context menu
+    // U-10: right-click tab → tab context menu
+    // U-08/U-10: right-click sidebar file/recent row → file context menu
+    // Track the live pointer. WKWebView reports clientX/clientY = 0 on the
+    // `contextmenu` event (and sometimes on mousemove), so capture coords from
+    // every pointer/mouse event we can — pointerdown/mousedown fire right
+    // before contextmenu and usually still carry the real cursor position.
+    function _trackPtr(e) {
+      if (e.clientX || e.clientY) { _ctxPtr.x = e.clientX; _ctxPtr.y = e.clientY; _ctxPtr.t = Date.now(); }
+    }
+    tvEl.addEventListener('pointermove', _trackPtr, true);
+    tvEl.addEventListener('pointerdown', _trackPtr, true);
+    tvEl.addEventListener('mousemove', _trackPtr, true);
+    tvEl.addEventListener('mousedown', _trackPtr, true);
+
+    // Resolve where to pop a context menu. Priority:
+    //   1) the event's own cursor coords (normal browsers),
+    //   2) the last tracked pointer IF it is fresh — i.e. from the real
+    //      pointerdown/mousedown that immediately preceded this right-click
+    //      (covers WKWebView, which zeroes the contextmenu event's coords),
+    //   3) the bounding box of the clicked element — layout-based and always
+    //      accurate in WKWebView, so the menu lands on what was clicked even
+    //      when every pointer coordinate is unavailable. Never the corner.
+    function _ctxAnchor(e, anchor) {
+      if (e.clientX || e.clientY) { return { x: e.clientX, y: e.clientY }; }
+      if ((_ctxPtr.x || _ctxPtr.y) && (Date.now() - _ctxPtr.t) < _CTX_PTR_FRESH_MS) {
+        return { x: _ctxPtr.x, y: _ctxPtr.y };
+      }
+      var el = anchor || e.target;
+      while (el && el.getBoundingClientRect) {
+        var r = el.getBoundingClientRect();
+        if (r.width || r.height) { return { x: Math.round(r.left + 6), y: Math.round(r.bottom) }; }
+        el = el.parentElement;
+      }
+      return { x: 8, y: 8 };
+    }
+
     tvEl.addEventListener('contextmenu', function (e) {
+      // Allow the native menu inside editable text (paste/copy in the editor)
+      if (e.target.closest('textarea, input, [contenteditable="true"]')) return;
+
+      var pt;
+      // U-10: tab right-click takes priority
+      var tabEl = e.target.closest('[data-tab-id]');
+      if (tabEl) {
+        e.preventDefault();
+        pt = _ctxAnchor(e, tabEl);
+        openTabCtx(pt.x, pt.y, tabEl.getAttribute('data-tab-id'));
+        return;
+      }
+      // Sidebar open-tab row (grouped / "Open" list) → full tab menu
+      var sbTab = e.target.closest('[data-sidebar-tab]');
+      if (sbTab) {
+        e.preventDefault();
+        pt = _ctxAnchor(e, sbTab);
+        openTabCtx(pt.x, pt.y, sbTab.getAttribute('data-sidebar-tab'));
+        return;
+      }
+      var fileRow = e.target.closest('[data-tree-file-path]');
+      if (fileRow) {
+        e.preventDefault();
+        pt = _ctxAnchor(e, fileRow);
+        openFileCtx(pt.x, pt.y,
+          fileRow.getAttribute('data-tree-file-path'),
+          fileRow.getAttribute('data-tree-tab-id') || null);
+        return;
+      }
+      var recentRow = e.target.closest('[data-recent-path]');
+      if (recentRow) {
+        e.preventDefault();
+        pt = _ctxAnchor(e, recentRow);
+        openFileCtx(pt.x, pt.y, recentRow.getAttribute('data-recent-path'), null);
+        return;
+      }
       var fh = e.target.closest('[data-folder-ctx-target]');
       if (fh) {
         e.preventDefault();
+        pt = _ctxAnchor(e, fh);
         var ctxPath = fh.getAttribute('data-folder-ctx-target');
-        if (ctxPath) openFolderCtx(e.clientX, e.clientY, ctxPath);
+        if (ctxPath) openFolderCtx(pt.x, pt.y, ctxPath);
         return;
+      }
+      // Suppress the leaky native WebKit context menu everywhere else in the
+      // app chrome (the "Reload" default menu). Editable fields handled above.
+      e.preventDefault();
+    });
+
+    // U-11: middle-click on tab → close tab
+    tvEl.addEventListener('mousedown', function (e) {
+      if (e.button !== 1) return;
+      var tabEl = e.target.closest('[data-tab-id]');
+      if (tabEl) {
+        e.preventDefault();
+        closeTab(tabEl.getAttribute('data-tab-id'));
       }
     });
 
