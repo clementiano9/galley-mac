@@ -59,8 +59,13 @@
   --tv-border:       rgba(0,0,0,.09);
   --tv-border-strong:rgba(0,0,0,.14);
 
-  --tv-code-bg:      #f4f4f1;   /* inline + block code surface         */
+  --tv-code-bg:      #f4f4f1;   /* fenced <pre> block well             */
   --tv-code-border:  rgba(0,0,0,.07);
+  /* inline `code` chip — own tokens, separate from the fenced <pre> well.
+     Light: subtle darker-than-paper chip (no regression from old shared value). */
+  --tv-inline-code-bg:     #f4f4f1;
+  --tv-inline-code-border: rgba(0,0,0,.07);
+  --tv-inline-code-text:   #1d1d1f;
   --tv-table-head:   #f4f4f1;
   --tv-table-stripe: #faf9f7;
 
@@ -111,8 +116,18 @@
   --tv-border:       rgba(255,255,255,.09);
   --tv-border-strong:rgba(255,255,255,.16);
 
-  --tv-code-bg:      #141416;
+  --tv-code-bg:      #141416;   /* fenced <pre> block well — keeps the darker sink */
   --tv-code-border:  rgba(255,255,255,.07);
+  /* inline `code` chip — own tokens, separate from the fenced <pre> well.
+     Old dark inline chips reused --tv-code-bg #141416, DARKER than the page
+     (#1c1c1e), so each chip sank into a near-black hole and merged with the
+     surrounding text (chip-vs-page contrast was only 1.14:1). Dark now uses an
+     ELEVATED, lighter surface: rgba(255,255,255,.11) ≈ #353537 over the page
+     reads as a raised chip (chip-vs-page ≈ 1.39:1), with a brighter border and
+     near-white text (#f1eff6 on the chip ≈ 10.7:1) so chips clearly stand out. */
+  --tv-inline-code-bg:     rgba(255,255,255,.11);
+  --tv-inline-code-border: rgba(255,255,255,.18);
+  --tv-inline-code-text:   #f1eff6;
   --tv-table-head:   #2a2a2d;
   --tv-table-stripe: #202022;
 

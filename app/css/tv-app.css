@@ -417,10 +417,12 @@ html, body, #tv-root {
   border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg);
 }
 
-/* inline + block code */
+/* inline `code` chip — own tokens (elevated, lighter surface in dark mode).
+   font bumped to .88em/weight 500 so raised chips read crisply against body text.
+   Fenced <pre> code is reset back to the darker well + normal weight below. */
 .md code {
-  font-family: var(--tv-font-mono); font-size: .86em;
-  background: var(--tv-code-bg) !important; border: 1px solid var(--tv-code-border);
+  font-family: var(--tv-font-mono); font-size: .88em; font-weight: 500;
+  background: var(--tv-inline-code-bg) !important; border: 1px solid var(--tv-inline-code-border);
   border-radius: 5px; padding: .1em .4em;
 }
 /* L-01: changed overflow:hidden → overflow-x:auto so long code lines scroll
@@ -444,7 +446,7 @@ html, body, #tv-root {
   background: var(--tv-scrollthumb) !important;
   border-radius: 4px;
 }
-.md pre code { background: none !important; border: 0; padding: 0; font-size: 13px; line-height: 1.6; display: block; }
+.md pre code { background: none !important; border: 0; padding: 0; font-size: 13px; font-weight: normal; line-height: 1.6; display: block; }
 .md .c-com { color: var(--tv-syn-comment) !important; font-style: italic; }
 .md .c-key { color: var(--tv-syn-key) !important; }
 .md .c-str { color: var(--tv-syn-str) !important; }
@@ -1101,7 +1103,8 @@ html, body, #tv-root {
 .md td, .md blockquote, .md blockquote p { color: var(--tv-text-primary) !important; }
 .md h4, .md th, .md td.num { color: var(--tv-text-secondary) !important; }
 .md a { color: var(--tv-accent-text) !important; }
-.md code { color: var(--tv-text-primary) !important; }
+.md code { color: var(--tv-inline-code-text) !important; }
+.md pre code { color: var(--tv-text-primary) !important; }  /* fenced blocks keep body-text colour */
 .md li::marker { color: var(--tv-text-muted) !important; }
 .tv-tab .name { color: inherit !important; }
 .tv-tree-row > span:not([class]) { color: inherit !important; }
