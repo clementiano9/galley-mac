@@ -389,6 +389,74 @@ console.log('\n#7 UF-08: palette parser includes h4-h6 headings\n');
 })();
 
 /* ═══════════════════════════════════════════════════════════
+   TEST #8 — DR-65–71: live-watch recency label fixes
+   ═══════════════════════════════════════════════════════════ */
+console.log('\n#8 DR-65–71: live-watch recency label\n');
+
+(function () {
+  var fs = require('fs');
+  var live = fs.readFileSync(__dirname + '/tv-live.js', 'utf8');
+  var css = fs.readFileSync(__dirname + '/../css/tv-app.css', 'utf8');
+  var native = fs.readFileSync(__dirname + '/tv-native.js', 'utf8');
+
+  // DR-66/D3: the legacy unbounded literal must be gone.
+  assert(
+    'DR-66: legacy "updated 0.0s ago" literal removed from tv-live.js',
+    live.indexOf('updated 0.0s ago') === -1,
+    'hardcoded "updated 0.0s ago" still present'
+  );
+
+  // D1/D3/D4: text is derived from lastModTime via paintRecency on every inject.
+  assert(
+    'paintRecency() helper exists',
+    live.indexOf('function paintRecency(') !== -1
+  );
+  assert(
+    'D1/D4: injectStatusBarOnly repaints via paintRecency (no clobber/flash)',
+    /injectStatusBarOnly[\s\S]*paintRecency\(watchState\)/.test(live),
+    'injectStatusBarOnly does not call paintRecency'
+  );
+
+  // D2/DR-67: pulse lives only on .is-updating — base .blip must NOT animate.
+  var baseBlip = css.match(/\.tv-status \.live-pill \.blip \{[\s\S]*?\}/);
+  assert(
+    'DR-67: base .blip rule no longer carries `animation` (pulse only on .is-updating)',
+    !!baseBlip && baseBlip[0].indexOf('animation') === -1,
+    'base .blip still has an animation declaration'
+  );
+  assert(
+    'DR-67: .blip.is-updating carries the tv-blip animation',
+    /\.blip\.is-updating \{ animation: tv-blip/.test(css)
+  );
+
+  // D5/DR-69: a change restarts the tick if it had stopped (>=1h idle).
+  assert(
+    'D5: onFileChange restarts the tick when elapsedInterval is null',
+    /if \(!watchState\.elapsedInterval\)\s*\{\s*scheduleElapsedTick\(watchState\);/.test(live),
+    'tick-restart guard not found in onFileChange'
+  );
+
+  // DR-71: file removal tears the watch down via TVLive.stop (no stale label).
+  assert(
+    'DR-71: handleFileRemoved calls TVLive.stop(tab.id)',
+    /handleFileRemoved[\s\S]*TVLive\.stop\(tab\.id\)/.test(native),
+    'TVLive.stop not called from handleFileRemoved'
+  );
+
+  // DR-70: native background-tab changes stamp lastModTime via notifyChange.
+  assert(
+    'DR-70: TVLive.notifyChange is exported',
+    /notifyChange:\s*notifyChange/.test(live),
+    'notifyChange not on the public API'
+  );
+  assert(
+    'DR-70: handleFileChanged stamps background tabs via TVLive.notifyChange',
+    /TVLive\.notifyChange\(tab\.id\)/.test(native),
+    'notifyChange not called for background native tabs'
+  );
+})();
+
+/* ═══════════════════════════════════════════════════════════
    REPORT
    ═══════════════════════════════════════════════════════════ */
 console.log('\n' + (fail === 0 ? 'ALL PASSED' : 'FAILURES: ' + fail) +

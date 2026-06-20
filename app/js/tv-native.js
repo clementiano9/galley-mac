@@ -223,6 +223,16 @@
       if (window.TVLive && typeof TVLive.refresh === 'function') {
         TVLive.refresh();
       }
+    } else {
+      // DR-70: background (non-active) or non-reading native tab changed on disk.
+      // refresh() above only stamps lastModTime for the ACTIVE tab, so without
+      // this a background tab's recency would show stale "Xm ago" on next switch
+      // even though content just changed. Stamp the change time now (mirrors poll
+      // mode, which calls onFileChange unconditionally) — the visible label is
+      // derived from lastModTime by paintRecency() when the tab is next shown.
+      if (window.TVLive && typeof TVLive.notifyChange === 'function') {
+        TVLive.notifyChange(tab.id);
+      }
     }
   }
 
@@ -246,7 +256,15 @@
     if (!tab) return;
 
     tab.live = false;            // file is gone — drop the ⚡ live state
-    stopWatch(tab);              // nothing left to watch
+    // DR-71: tear the watch down through TVLive.stop so the status bar + recency
+    // label are removed (never a stale time on a dead watch) and the elapsed
+    // timer + _watching entry are cleared. TVLive.stop calls TVNative.stopWatch
+    // internally for native mode, so we don't call stopWatch(tab) again here.
+    if (window.TVLive && typeof TVLive.stop === 'function') {
+      TVLive.stop(tab.id);
+    } else {
+      stopWatch(tab);            // fallback (older build): at least stop the Rust watcher
+    }
     // S-10 fix: set dirty directly (no render), then call render once below
     tab.dirty = true;
 

@@ -798,9 +798,13 @@ html, body, #tv-root {
 .tv-status .live-pill { display: inline-flex; align-items: center; gap: 6px; color: var(--tv-live) !important; font-weight: 600; }
 .tv-status .live-pill .blip {
   width: 8px; height: 8px; border-radius: 50%; background: var(--tv-live-dot) !important;
-  box-shadow: 0 0 0 0 var(--tv-live-glow); animation: tv-blip 1.6s ease-out infinite;
+  box-shadow: 0 0 0 0 var(--tv-live-glow);
 }
-/* DR-67: .is-updating added/removed on change to force-restart the pulse animation */
+/* DR-65/DR-67: the pulse lives ONLY on .is-updating (present whenever the watch
+   is active/non-idle — see setIdleState in tv-live.js). Keeping it off the base
+   .blip is what makes the remove→reflow→add restart in onFileChange actually
+   re-pulse on each change, and lets idle (DR-68) revert to a static dot simply by
+   removing the class. */
 .tv-status .live-pill .blip.is-updating { animation: tv-blip 1.6s ease-out infinite; }
 @keyframes tv-blip { 0%{box-shadow:0 0 0 0 var(--tv-live-glow)} 70%{box-shadow:0 0 0 7px transparent} 100%{box-shadow:0 0 0 0 transparent} }
 /* DR-68: .idle on .live-pill — blip stops pulsing and dims to a steady dot */

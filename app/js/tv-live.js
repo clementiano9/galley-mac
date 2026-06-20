@@ -57,9 +57,12 @@
     bar.className = 'tv-status tv-live-status';
 
     bar.innerHTML =
-      '<span class="live-pill"><span class="blip"></span> Live</span>' +
+      // DR-66: neutral initial text; injectStatusBarOnly() immediately repaints
+      // the real recency from lastModTime via paintRecency(). Never the legacy
+      // unbounded tenths-of-a-second literal, which the bounded format can't produce.
+      '<span class="live-pill"><span class="blip is-updating"></span> Live</span>' +
       '<span class="sep">—</span>' +
-      '<span data-elapsed>updated 0.0s ago</span>' +
+      '<span data-elapsed>updating…</span>' +
       '<span class="spacer"></span>' +
       '<span class="tv-pin" data-tv-pin>' +
         '<span class="ic">' + pinSvg + '</span> Pin scroll' +
@@ -113,16 +116,38 @@
   /* ── DR-68: idle threshold ─────────────────────────────────── */
   var IDLE_THRESHOLD_MS = 90000; // 90 s
 
-  /* ── DR-68: apply / clear idle visual state ──────────────── */
+  /* ── DR-67/DR-68: single authority for blip pulse + idle state ──
+     The pulse animation lives ONLY on `.blip.is-updating` (see tv-app.css).
+     `.is-updating` is present whenever the watch is active (not idle) so the
+     dot pulses continuously to confirm streaming (DR-65); removing it on idle
+     yields a steady, dimmed dot (DR-68). Centralising the add/remove here means
+     no inject path can leave the blip dark or out of sync. */
   function setIdleState(watchState, idle) {
     if (!watchState.statusBarEl) return;
     var pill = watchState.statusBarEl.querySelector('.live-pill');
     if (!pill) return;
+    var blip = pill.querySelector('.blip');
     if (idle) {
       pill.classList.add('idle');
+      if (blip) blip.classList.remove('is-updating'); // DR-68: stop pulsing
     } else {
       pill.classList.remove('idle');
+      if (blip) blip.classList.add('is-updating');     // DR-65: active pulse
     }
+  }
+
+  /* ── DR-66/DR-70: paint recency text + blip state from lastModTime ──
+     The displayed text is ALWAYS derived from lastModTime — never a hardcoded
+     literal — so every (possibly redundant) re-inject path converges to the
+     correct value instead of clobbering a just-set "updating…" back to a stale
+     string. This is what fixes the change-flash race and the tab-switch flash. */
+  function paintRecency(watchState) {
+    if (!watchState.statusBarEl || !watchState.lastModTime) return;
+    var elapsed = watchState.statusBarEl.querySelector('[data-elapsed]');
+    if (!elapsed) return;
+    var delta = Date.now() - watchState.lastModTime;
+    elapsed.textContent = formatRecency(delta);
+    setIdleState(watchState, delta >= IDLE_THRESHOLD_MS);
   }
 
   /* ── DR-67: shared on-change hook (poll + native) ─────────── */
@@ -139,10 +164,18 @@
       var blip = watchState.statusBarEl.querySelector('.blip');
       if (blip) {
         blip.classList.remove('is-updating');
-        // Force reflow so the animation restarts cleanly
+        // Force reflow so the animation restarts cleanly. Works now because the
+        // pulse lives ONLY on .is-updating (base .blip has no animation).
         void blip.offsetWidth; // eslint-disable-line no-void
         blip.classList.add('is-updating');
       }
+    }
+    // DR-67/DR-69: if the adaptive tick had stopped (>=1h idle, elapsedInterval
+    // null), restart it so the counter resumes after this change. The null guard
+    // prevents double-scheduling — JS run-to-completion means a tick callback
+    // cannot interleave with this call, so a non-null handle is always live.
+    if (!watchState.elapsedInterval) {
+      scheduleElapsedTick(watchState);
     }
   }
 
@@ -212,11 +245,11 @@
     watchState.statusBarEl = bar;
     watchState.pinEl = bar.querySelector('[data-tv-pin]');
 
-    // DR-68: restore idle visual state on the fresh DOM if already past threshold
-    if (watchState.lastModTime &&
-        (Date.now() - watchState.lastModTime) >= IDLE_THRESHOLD_MS) {
-      setIdleState(watchState, true);
-    }
+    // DR-66/DR-68/DR-70: paint the correct recency text + blip/idle state on the
+    // fresh DOM immediately from lastModTime. This removes the tab-switch "0.0s"
+    // flash and makes every redundant re-inject converge to the right value
+    // instead of clobbering a just-set "updating…".
+    paintRecency(watchState);
   }
 
   /* ── file handle polling mode (DR-05: real file watch) ───── */
@@ -427,6 +460,10 @@
     clearInterval(watchState.pollInterval);
     // elapsedInterval is now a setTimeout handle (DR-69 adaptive cadence)
     clearTimeout(watchState.elapsedInterval);
+    watchState.elapsedInterval = null;
+    // Hygiene: null the bar ref so any in-flight tick closure that still holds
+    // this watchState early-returns instead of touching a detached node.
+    watchState.statusBarEl = null;
 
     // For native FSEvents mode: tell the Rust watcher to stop
     if (watchState.mode === 'native') {
@@ -475,11 +512,29 @@
     }
   }
 
+  /* ── public: notifyChange(tabId) — stamp a disk change for ANY tab ─
+     DR-70: called from tv-native.js handleFileChanged when a watched file
+     changes but its tab is NOT the active/reading tab (so refresh() didn't run
+     for it). For the active+live tab we do the full visual reset; otherwise we
+     just record lastModTime so the elapsed display is correct on the next
+     tab-switch (paintRecency derives the label from it). Mirrors poll mode,
+     which stamps lastModTime unconditionally. */
+  function notifyChange(tabId) {
+    var watchState = _watching[tabId];
+    if (!watchState) return;
+    if (isActiveTab(tabId) && watchState.statusBarEl) {
+      onFileChange(watchState);          // active: full label/blip/tick reset
+    } else {
+      watchState.lastModTime = Date.now(); // background: timestamp only
+    }
+  }
+
   /* ── public API ──────────────────────────────────────────── */
   window.TVLive = {
     start: start,
     stop: stop,
     stopAll: stopAll,
     refresh: refresh,
+    notifyChange: notifyChange,
   };
 })();
