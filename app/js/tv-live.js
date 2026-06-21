@@ -177,6 +177,8 @@
     if (!watchState.elapsedInterval) {
       scheduleElapsedTick(watchState);
     }
+    // Light the live bolt — the file is actively changing (mirrors the bar).
+    setBoltActive(watchState.tabId, true);
   }
 
   /* ── auto-hide threshold helper ──────────────────────────────
@@ -185,6 +187,22 @@
   function isRecent(watchState) {
     return !!watchState.lastModTime &&
       (Date.now() - watchState.lastModTime) < IDLE_THRESHOLD_MS;
+  }
+
+  /* ── live "bolt" icon (tab strip + sidebar) — mirror the bottom bar ──
+     tab.liveActive drives the bolt icon. We set it with the SAME recency rules
+     as the status bar: shown only while the file is recently active — so a static
+     file opens with NO bolt, a change re-shows it, and a settle (auto-hide) hides
+     it. updateTabIndicator does a lightweight tab-strip refresh; the sidebar/header
+     bolts pick the flag up on their next render. */
+  function setBoltActive(tabId, active) {
+    var tab = getTab(tabId);
+    if (!tab) return;
+    active = !!active;
+    if (tab.liveActive === active) return;
+    tab.liveActive = active;
+    var tv = getTV();
+    if (tv && typeof tv.updateTabIndicator === 'function') tv.updateTabIndicator(tabId);
   }
 
   /* ── auto-hide: remove the settled bar but keep the watch armed ──
@@ -202,6 +220,8 @@
     var bar = watchState.statusBarEl;
     watchState.statusBarEl = null;
     watchState.pinEl = null;
+    // Settled → hide the live bolt too (same rule as the bottom bar).
+    setBoltActive(watchState.tabId, false);
     if (!bar || !bar.parentNode) return;
     if (prefersReducedMotion()) {
       bar.parentNode.removeChild(bar);
@@ -387,6 +407,7 @@
           injectStatusBarOnly(watchState);
           startElapsedTimer(watchState);
         }
+        setBoltActive(tabId, isRecent(watchState)); // bolt mirrors recency on open
       }).catch(function () {
         // getFile() rejected — leave lastModTime as seeded by start() and do not
         // crash. A later detected change still reveals the bar via onFileChange.
@@ -460,6 +481,9 @@
               injectStatusBarOnly(watchState);
               startElapsedTimer(watchState);
             }
+            // Sync the bolt to this tab's recency (handles a tab that settled
+            // while backgrounded — its bolt clears on switch-back).
+            setBoltActive(newId, isRecent(watchState));
           }
         }, 0);
       }
@@ -510,6 +534,8 @@
         injectStatusBarOnly(_watching[tabId]);
         startElapsedTimer(_watching[tabId]);
       }
+      // Bolt mirrors recency for ANY tab (active or not): static file → no bolt.
+      setBoltActive(tabId, isRecent(_watching[tabId]));
       return;
     }
 
@@ -550,6 +576,8 @@
     // Hygiene: null the bar ref so any in-flight tick closure that still holds
     // this watchState early-returns instead of touching a detached node.
     watchState.statusBarEl = null;
+    // Watch stopped (file removed/closed) → clear the live bolt (DR-71).
+    setBoltActive(tabId, false);
 
     // For native FSEvents mode: tell the Rust watcher to stop
     if (watchState.mode === 'native') {
@@ -617,6 +645,7 @@
       onFileChange(watchState);
     } else {
       watchState.lastModTime = Date.now(); // background / non-reading: timestamp only
+      setBoltActive(tabId, true);          // the file changed → light the bolt
     }
   }
 

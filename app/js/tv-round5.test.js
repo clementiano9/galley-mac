@@ -399,6 +399,7 @@ console.log('\n#8 DR-65–71: live-watch recency label\n');
   var css = fs.readFileSync(__dirname + '/../css/tv-app.css', 'utf8');
   var native = fs.readFileSync(__dirname + '/tv-native.js', 'utf8');
   var rust = fs.readFileSync(__dirname + '/../../tauri-app/src-tauri/src/lib.rs', 'utf8');
+  var app = fs.readFileSync(__dirname + '/tv-app.js', 'utf8');
 
   // DR-66/D3: the legacy unbounded literal must be gone.
   assert(
@@ -517,6 +518,36 @@ console.log('\n#8 DR-65–71: live-watch recency label\n');
     'DR-65: Rust open struct exposes modified mtime field',
     /pub modified: Option<u64>/.test(rust),
     'pub modified: Option<u64> not found in lib.rs'
+  );
+
+  // DR-65 (bolt icon): the live "bolt" in the tab strip / sidebar is gated on the
+  // SAME recency rule as the bottom bar — it renders from tab.liveActive, NOT
+  // tab.live (which only means "watched"). So a static file opens with no bolt.
+  assert(
+    'DR-65: tab-strip bolt renders from t.liveActive (not t.live)',
+    /if \(t\.liveActive && t\.dirty\)[\s\S]*?else if \(t\.liveActive\)/.test(app) &&
+      !/else if \(t\.live\)\s*\{\s*lead =/.test(app),
+    'buildTabbar bolt still keys off t.live instead of t.liveActive'
+  );
+  assert(
+    'DR-65: _updateTabDot bolt renders from tab.liveActive',
+    /if \(tab\.liveActive && isDirty\)[\s\S]*?else if \(tab\.liveActive\)/.test(app),
+    '_updateTabDot bolt still keys off tab.live'
+  );
+  assert(
+    'DR-65: tv-live.js owns the bolt flag (setBoltActive sets tab.liveActive)',
+    /function setBoltActive[\s\S]*?tab\.liveActive = active/.test(live),
+    'setBoltActive does not set tab.liveActive'
+  );
+  assert(
+    'DR-65: settle clears the bolt (autoHideStatusBar → setBoltActive false)',
+    /autoHideStatusBar[\s\S]*?setBoltActive\(watchState\.tabId, false\)/.test(live),
+    'autoHideStatusBar does not clear the bolt'
+  );
+  assert(
+    'DR-65: tv-app exposes updateTabIndicator for the bolt refresh',
+    /updateTabIndicator: updateTabIndicator/.test(app),
+    'updateTabIndicator not exposed on window.TV'
   );
 })();
 

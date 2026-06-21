@@ -959,13 +959,55 @@ var DR68_LATENCY = { firstHideAtMs: null };
 })();
 
 /* ═══════════════════════════════════════════════════════════
+   DR-65-BOLT — the live "bolt" icon (tab.liveActive) follows the SAME
+   recency rules as the bottom bar: OFF on static open, ON on a change,
+   OFF on settle, cleared on stop. (tab.liveActive is the source of truth
+   the tab-strip/sidebar bolt renders read.)
+   ═══════════════════════════════════════════════════════════ */
+(function testBoltFlag() {
+  /* (a) static open → bolt OFF; a change lights it; stop clears it */
+  (function () {
+    var h = loadLive();
+    var now = h.clock.time;
+    var tab = makeLiveTab();
+    tab.lastModTime = now - 300000; // 5 min ago → static
+    h.TV.state.tabs = [tab]; h.TV.state.activeId = tab.id;
+    h.TVLive.start(tab.id);
+    check('DR-65-BOLT', 'static open: tab.liveActive === false (no bolt)',
+      tab.liveActive === false, tab.liveActive, false);
+    h.TVLive.refresh(); // simulate a disk change
+    check('DR-65-BOLT', 'static + change: tab.liveActive === true (bolt on)',
+      tab.liveActive === true, tab.liveActive, true);
+    h.TVLive.stop(tab.id);
+    check('DR-65-BOLT', 'after stop(): tab.liveActive === false (bolt cleared)',
+      tab.liveActive === false, tab.liveActive, false);
+  })();
+
+  /* (b) recent open → bolt ON; settle (>90s) → bolt OFF (mirrors auto-hide) */
+  (function () {
+    var h = loadLive();
+    var now = h.clock.time;
+    var tab = makeLiveTab();
+    tab.lastModTime = now - 30000; // 30s ago → recent
+    h.TV.state.tabs = [tab]; h.TV.state.activeId = tab.id;
+    h.TVLive.start(tab.id);
+    check('DR-65-BOLT', 'recent open: tab.liveActive === true (bolt on)',
+      tab.liveActive === true, tab.liveActive, true);
+    h.clock.advance(70000); h.clock.advance(300); // cross the 90s settle + fade
+    check('DR-65-BOLT', 'settle (>90s): tab.liveActive === false (bolt off)',
+      tab.liveActive === false, tab.liveActive, false);
+    h.TVLive.stop(tab.id);
+  })();
+})();
+
+/* ═══════════════════════════════════════════════════════════
    REPORT
    ═══════════════════════════════════════════════════════════ */
 console.log('\n══════════════════════════════════════════════════════');
 console.log(' tiny-viewer live-watch RUNTIME test harness (DR-65–71)');
 console.log('══════════════════════════════════════════════════════\n');
 
-var order = ['LOAD', 'DR-65-OPEN', 'DR-66', 'DR-67', 'DR-68', 'DR-70', 'DR-71', 'L-04'];
+var order = ['LOAD', 'DR-65-OPEN', 'DR-65-BOLT', 'DR-66', 'DR-67', 'DR-68', 'DR-70', 'DR-71', 'L-04'];
 var totalPass = 0, totalFail = 0;
 order.forEach(function (id) {
   var r = results[id];

@@ -298,6 +298,11 @@
       scrollTop: 0,
       dirty: false,
       live: !!opts.live,
+      // liveActive: drives the live "bolt" icon (tab strip + sidebar). Distinct
+      // from `live` (= file is watched): the bolt only shows while the file is
+      // recently active, mirroring the bottom status bar's recency rules — so a
+      // static file opens with NO bolt. tv-live.js owns this flag.
+      liveActive: false,
       // Browser-style new-tab page (⌘T) — no document, renders the NTP.
       untitled: !!opts.untitled,
       // F-06/F-16: error tab state. null = normal; 'not-found' = file moved/
@@ -471,11 +476,11 @@
     var icons = window.TV_ICONS || {};
     var tabs = state.tabs.map(function (t) {
       var lead = '';
-      if (t.live && t.dirty) {
-        // F-13: show both indicators when live+dirty
+      if (t.liveActive && t.dirty) {
+        // F-13: show both indicators when live+dirty (bolt gated on liveActive)
         lead = '<span class="tv-bolt">' + (icons.bolt || '') + '</span>' +
                '<span class="tv-dot"></span>';
-      } else if (t.live) {
+      } else if (t.liveActive) {
         lead = '<span class="tv-bolt">' + (icons.bolt || '') + '</span>';
       } else if (t.dirty) {
         lead = '<span class="tv-dot"></span>';
@@ -655,7 +660,7 @@
     }
     var isActive = openTab && openTab.id === state.activeId;
     var isOpen = !!openTab && !isActive;
-    var isLive = openTab && openTab.live;
+    var isLive = openTab && openTab.liveActive;
 
     var cls = 'tv-tree-row file';
     if (opts.nested) cls += ' nested';
@@ -1281,7 +1286,7 @@
             ' data-sidebar-tab="' + esc(t.id) + '">' +
             ic('doc') +
             '<span>' + esc(t.name) + '</span>' +
-            (t.live ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
+            (t.liveActive ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
             sbCloseBtn(t.id, t.name) +
           '</div>'
         );
@@ -1305,7 +1310,7 @@
             ' data-sidebar-tab="' + esc(t.id) + '">' +
             ic('doc') +
             '<span>' + esc(t.name) + '</span>' +
-            (t.live ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
+            (t.liveActive ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
             sbCloseBtn(t.id, t.name) +
           '</div>'
         );
@@ -3676,7 +3681,7 @@
     var nameEl = tabEl.querySelector('.name');
     if (!nameEl) return;
 
-    if (tab.live && isDirty) {
+    if (tab.liveActive && isDirty) {
       var boltSpan = document.createElement('span');
       boltSpan.className = 'tv-bolt';
       boltSpan.innerHTML = icons.bolt || '';
@@ -3684,7 +3689,7 @@
       dotSpan.className = 'tv-dot';
       tabEl.insertBefore(dotSpan, nameEl);
       tabEl.insertBefore(boltSpan, dotSpan);
-    } else if (tab.live) {
+    } else if (tab.liveActive) {
       var boltSpan2 = document.createElement('span');
       boltSpan2.className = 'tv-bolt';
       boltSpan2.innerHTML = icons.bolt || '';
@@ -3694,6 +3699,17 @@
       dotSpan2.className = 'tv-dot';
       tabEl.insertBefore(dotSpan2, nameEl);
     }
+  }
+
+  // Public: refresh a single tab's lead indicators (bolt/dot) in the tab strip
+  // without a full render. tv-live.js calls this when tab.liveActive flips so the
+  // live bolt appears/disappears in lockstep with the bottom status bar.
+  function updateTabIndicator(id) {
+    var tab = null;
+    for (var i = 0; i < state.tabs.length; i++) {
+      if (state.tabs[i].id === id) { tab = state.tabs[i]; break; }
+    }
+    _updateTabDot(id, !!(tab && tab.dirty));
   }
 
   function tvEl() {
@@ -4514,6 +4530,7 @@
     toggleSidebar: toggleSidebar,
     scrollToHeading: scrollToHeading,
     markDirty: markDirty,
+    updateTabIndicator: updateTabIndicator, // tv-live.js: live-bolt refresh on liveActive flip
     reloadActiveTab: reloadActiveTab, // U-12: reload active tab from disk
     saveRecentPath: saveRecentPath,  // exposed so tv-native.js can call it on open
     loadRecentPaths: loadRecentPaths,
