@@ -136,6 +136,10 @@
       tab.nativePath = doc.path;
       // UF-01/UF-14: mark as live so bolt icon renders in tab strip + sidebar
       tab.live = true;
+      // Seed the live-watch recency clock from the file's real mtime so a static
+      // file (old mtime) does NOT show the live indicator on open — only a recently
+      // written / streaming file does (tv-live.js gates the open display on isRecent).
+      if (typeof doc.modified === 'number') { tab.lastModTime = doc.modified; }
     }
 
     // Persist this path in recent files (E-02)

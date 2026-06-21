@@ -3307,6 +3307,10 @@
     untitled.scrollTop = 0;
     var scrollEl = document.querySelector('[data-scroll]');
     if (scrollEl) scrollEl.scrollTop = 0;
+    // Seed the live-watch recency clock from the file's real mtime so opening a
+    // static file (old mtime) does NOT show the live indicator — only a recently
+    // written / streaming file does (tv-live.js gates the open display on isRecent).
+    if (typeof doc.modified === 'number') { untitled.lastModTime = doc.modified; }
     if (window.TVLive && typeof TVLive.start === 'function') {
       TVLive.start(untitled.id);
     }

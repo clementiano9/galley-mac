@@ -371,11 +371,27 @@
       });
     }, 1000);
 
-    // Add status bar in poll mode (shows "Live" pill for real-file watch)
-    if (isActiveTab(tabId)) {
-      injectStatusBarOnly(watchState);
+    // Open-time display: read the file's REAL mtime up front and only show the
+    // bar if the file is recent. Doing this asynchronously (rather than the old
+    // synchronous inject) prevents a static file from flashing the indicator
+    // before any getFile() resolves — open-time should not show the indicator
+    // unless the file was written within the 90 s recency window.
+    var tab0 = getTab(tabId);
+    if (tab0 && tab0.fileHandle) {
+      tab0.fileHandle.getFile().then(function (file) {
+        // Seed both the recency clock and the poll-loop baseline from the real
+        // mtime so the first real change is detected against the true value.
+        watchState.lastModTime = file.lastModified;
+        if (lastModified === null) lastModified = file.lastModified;
+        if (isActiveTab(tabId) && isRecent(watchState)) {
+          injectStatusBarOnly(watchState);
+          startElapsedTimer(watchState);
+        }
+      }).catch(function () {
+        // getFile() rejected — leave lastModTime as seeded by start() and do not
+        // crash. A later detected change still reveals the bar via onFileChange.
+      });
     }
-    startElapsedTimer(watchState);
   }
 
   /* ── render event listener to re-attach live UI ─────────── */
@@ -477,13 +493,20 @@
         mode: 'native',
         pollInterval: null,
         elapsedInterval: null,
-        lastModTime: Date.now(),
+        // Seed from the file's real mtime when present (threaded onto the tab at
+        // open) so a static file (old mtime) does NOT show the indicator on open;
+        // genuinely-fresh files (Save-As/demo) have no tab.lastModTime and fall
+        // back to now, keeping the bar visible.
+        lastModTime: (typeof tab.lastModTime === 'number' ? tab.lastModTime : Date.now()),
         statusBarEl: null,
         pinEl: null,
       };
 
-      // Show status bar for native mode if this is the active tab
-      if (isActiveTab(tabId)) {
+      // Show status bar for native mode only if this is the active tab AND the
+      // file is recent (written within the 90 s window). The watch is already
+      // armed above via TVNative.startWatch, so a static file stays watched but
+      // hidden; a later disk change re-reveals it via onFileChange → inject.
+      if (isActiveTab(tabId) && isRecent(_watching[tabId])) {
         injectStatusBarOnly(_watching[tabId]);
         startElapsedTimer(_watching[tabId]);
       }
@@ -503,7 +526,10 @@
       mode: 'poll',
       pollInterval: null,
       elapsedInterval: null,
-      lastModTime: Date.now(),
+      // Seed from the tab's real mtime when present so opening a static file does
+      // not show the indicator; startPollingMode refines this from the live
+      // fileHandle mtime before deciding whether to show the bar.
+      lastModTime: (typeof tab.lastModTime === 'number' ? tab.lastModTime : Date.now()),
       statusBarEl: null,
       pinEl: null,
     };

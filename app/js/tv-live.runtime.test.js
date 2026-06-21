@@ -820,6 +820,117 @@ var DR68_LATENCY = { firstHideAtMs: null };
 })();
 
 /* ═══════════════════════════════════════════════════════════
+   DR-65-OPEN — open-time gate: the live bar must NOT appear on open
+   unless the file was written within the IDLE_THRESHOLD_MS (90 s)
+   recency window. start() seeds the recency clock from the tab's REAL
+   mtime (tab.lastModTime, threaded from doc.modified at open) instead
+   of open-time, then gates the open inject on isRecent(watchState).
+
+   Virtual-time base: the FAKE CLOCK starts at h.clock.time (its public
+   getter). We set tab.lastModTime in that SAME base so tv-live.js's
+   isRecent (Date.now() - lastModTime < 90000) compares correctly.
+   getTab() returns the very object we put in state.tabs (mirroring the
+   app), so setting tab.lastModTime BEFORE start() is what start() reads.
+   ═══════════════════════════════════════════════════════════ */
+(function testDR65Open() {
+  /* ── (a) STATIC OPEN: old mtime (5 min) → NO bar; a real change reveals it ── */
+  (function staticOpen() {
+    var h = loadLive();
+    var now = h.clock.time; // virtual-now in the same base isRecent() reads
+    var tab = makeLiveTab();
+    tab.lastModTime = now - 300000; // 5 min ago → well outside the 90s window
+    h.TV.state.tabs = [tab];
+    h.TV.state.activeId = tab.id;
+    h.TVLive.start(tab.id); // native mode: watch armed, but gated on isRecent
+
+    check('DR-65-OPEN', 'static open: NO bar shown (mtime 5 min in the past)',
+      h.getStatus() === null, h.getStatus() ? 'present' : 'null', 'null');
+
+    // Watch is still armed — a real disk change must reveal the bar pulsing.
+    h.TVLive.refresh();
+    check('DR-65-OPEN', 'static open + disk change: bar revealed',
+      h.getStatus() !== null, h.getStatus() ? 'present' : 'null', 'present');
+    check('DR-65-OPEN', 'static open + disk change: label "updating…"',
+      h.getElapsedText() === 'updating…', h.getElapsedText(), 'updating…');
+    h.TVLive.stop(tab.id);
+  })();
+
+  /* ── (b) RECENT OPEN: 30s-old mtime → bar present, "updated 30s ago" ── */
+  (function recentOpen() {
+    var h = loadLive();
+    var now = h.clock.time;
+    var tab = makeLiveTab();
+    tab.lastModTime = now - 30000; // 30 s ago → inside the 90 s recency window
+    h.TV.state.tabs = [tab];
+    h.TV.state.activeId = tab.id;
+    h.TVLive.start(tab.id);
+
+    check('DR-65-OPEN', 'recent open (30s): bar present',
+      h.getStatus() !== null, h.getStatus() ? 'present' : 'null', 'present');
+    check('DR-65-OPEN', 'recent open (30s): label "updated 30s ago"',
+      h.getElapsedText() === 'updated 30s ago', h.getElapsedText(), 'updated 30s ago');
+    h.TVLive.stop(tab.id);
+  })();
+
+  /* ── (c) JUST-WRITTEN OPEN: mtime ≈ now → bar present, "updating…" ── */
+  (function justWrittenOpen() {
+    var h = loadLive();
+    var now = h.clock.time;
+    var tab = makeLiveTab();
+    tab.lastModTime = now; // written ≈ now → delta < 3s → "updating…"
+    h.TV.state.tabs = [tab];
+    h.TV.state.activeId = tab.id;
+    h.TVLive.start(tab.id);
+
+    check('DR-65-OPEN', 'just-written open (now): bar present',
+      h.getStatus() !== null, h.getStatus() ? 'present' : 'null', 'present');
+    check('DR-65-OPEN', 'just-written open (now): label "updating…"',
+      h.getElapsedText() === 'updating…', h.getElapsedText(), 'updating…');
+    h.TVLive.stop(tab.id);
+  })();
+
+  /* ── (d) NO-SEED FALLBACK: tab has no lastModTime (Save-As/demo) →
+     start() falls back to Date.now() → recent → bar present, "updating…". ── */
+  (function noSeedFallback() {
+    var h = loadLive();
+    var tab = makeLiveTab();
+    // Deliberately do NOT set tab.lastModTime.
+    check('DR-65-OPEN', 'precondition: tab has no lastModTime seed',
+      typeof tab.lastModTime !== 'number', typeof tab.lastModTime, 'not a number');
+    h.TV.state.tabs = [tab];
+    h.TV.state.activeId = tab.id;
+    h.TVLive.start(tab.id);
+
+    check('DR-65-OPEN', 'no-seed open: bar present (falls back to now)',
+      h.getStatus() !== null, h.getStatus() ? 'present' : 'null', 'present');
+    check('DR-65-OPEN', 'no-seed open: label "updating…" (fresh fallback)',
+      h.getElapsedText() === 'updating…', h.getElapsedText(), 'updating…');
+    h.TVLive.stop(tab.id);
+  })();
+
+  /* ── (e) STATIC then settles further: never shows a phantom bar even as
+     virtual time advances well past the threshold. ── */
+  (function staticNeverPhantom() {
+    var h = loadLive();
+    var now = h.clock.time;
+    var tab = makeLiveTab();
+    tab.lastModTime = now - 300000; // 5 min ago
+    h.TV.state.tabs = [tab];
+    h.TV.state.activeId = tab.id;
+    h.TVLive.start(tab.id);
+
+    check('DR-65-OPEN', 'static settles: no bar on open',
+      h.getStatus() === null, h.getStatus() ? 'present' : 'null', 'null');
+    // Advance 200s — there is no tick scheduled (open was gated), so nothing can
+    // appear, and nothing should phantom-hide either.
+    h.clock.advance(200000);
+    check('DR-65-OPEN', 'static settles: still no bar after +200s (no phantom)',
+      h.getStatus() === null, h.getStatus() ? 'present' : 'null', 'null');
+    h.TVLive.stop(tab.id);
+  })();
+})();
+
+/* ═══════════════════════════════════════════════════════════
    BONUS — render-teardown re-injection (L-04): if render() rebuilds
    the viewer, the status bar should be re-injected via the 'render'
    listener. This exercises the real DOM-teardown path.
@@ -854,7 +965,7 @@ console.log('\n═════════════════════�
 console.log(' tiny-viewer live-watch RUNTIME test harness (DR-65–71)');
 console.log('══════════════════════════════════════════════════════\n');
 
-var order = ['LOAD', 'DR-66', 'DR-67', 'DR-68', 'DR-70', 'DR-71', 'L-04'];
+var order = ['LOAD', 'DR-65-OPEN', 'DR-66', 'DR-67', 'DR-68', 'DR-70', 'DR-71', 'L-04'];
 var totalPass = 0, totalFail = 0;
 order.forEach(function (id) {
   var r = results[id];

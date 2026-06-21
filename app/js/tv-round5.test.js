@@ -398,6 +398,7 @@ console.log('\n#8 DR-65–71: live-watch recency label\n');
   var live = fs.readFileSync(__dirname + '/tv-live.js', 'utf8');
   var css = fs.readFileSync(__dirname + '/../css/tv-app.css', 'utf8');
   var native = fs.readFileSync(__dirname + '/tv-native.js', 'utf8');
+  var rust = fs.readFileSync(__dirname + '/../../tauri-app/src-tauri/src/lib.rs', 'utf8');
 
   // DR-66/D3: the legacy unbounded literal must be gone.
   assert(
@@ -485,6 +486,37 @@ console.log('\n#8 DR-65–71: live-watch recency label\n');
     'DR-65/DR-70: native dirty-tab change stamps recency (notifyChange in dirty guard)',
     /if \(tab\.dirty\)\s*\{[\s\S]*?TVLive\.notifyChange\(tab\.id\)/.test(native),
     'native dirty branch does not stamp lastModTime via notifyChange'
+  );
+
+  // DR-65 (open gate): start() must NOT show the bar on open unless the file is
+  // recent — the native open-inject is gated on isActiveTab && isRecent.
+  assert(
+    'DR-65: start() gates open inject on isActiveTab && isRecent (no bar for static files)',
+    /isActiveTab\(tabId\) && isRecent\(_watching\[tabId\]\)/.test(live),
+    'native open inject not gated on isActiveTab && isRecent'
+  );
+
+  // DR-65: start() seeds the recency clock from the tab's REAL mtime
+  // (tab.lastModTime), falling back to Date.now() only when it is absent.
+  assert(
+    'DR-65: start() seeds lastModTime from tab.lastModTime (fallback Date.now())',
+    /typeof tab\.lastModTime === 'number' \? tab\.lastModTime : Date\.now\(\)/.test(live),
+    'lastModTime seed from tab.lastModTime not found'
+  );
+
+  // DR-65: tv-native.js openInto threads the real mtime onto the tab so start()
+  // can read it (doc.modified comes from the Rust open command).
+  assert(
+    'DR-65: openInto threads doc.modified onto tab.lastModTime',
+    /tab\.lastModTime = doc\.modified/.test(native),
+    'tab.lastModTime = doc.modified not found in tv-native.js'
+  );
+
+  // DR-65: the Rust open command exposes the file mtime on its return struct.
+  assert(
+    'DR-65: Rust open struct exposes modified mtime field',
+    /pub modified: Option<u64>/.test(rust),
+    'pub modified: Option<u64> not found in lib.rs'
   );
 })();
 
