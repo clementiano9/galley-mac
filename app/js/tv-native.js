@@ -136,6 +136,10 @@
       tab.nativePath = doc.path;
       // UF-01/UF-14: mark as live so bolt icon renders in tab strip + sidebar
       tab.live = true;
+      // Seed the live-watch recency clock from the file's real mtime so a static
+      // file (old mtime) does NOT show the live indicator on open — only a recently
+      // written / streaming file does (tv-live.js gates the open display on isRecent).
+      if (typeof doc.modified === 'number') { tab.lastModTime = doc.modified; }
     }
 
     // Persist this path in recent files (E-02)
@@ -193,6 +197,15 @@
     // N-01 / S-06: Do NOT overwrite tab.source when the tab is dirty
     // (user has unsaved edits that must not be clobbered by disk content)
     if (tab.dirty) {
+      // DR-65/DR-70: the file changed on disk, so the recency clock must reset
+      // even though we keep the dirty buffer. notifyChange does the full visual
+      // reset for the active tab (label → "updating…", blip re-pulse) and a
+      // timestamp-only stamp for background tabs — never a re-render, so the
+      // dirty edits are preserved. Without this the indicator counts from the
+      // prior change while the toast says the file just changed.
+      if (window.TVLive && typeof TVLive.notifyChange === 'function') {
+        TVLive.notifyChange(tab.id);
+      }
       showToast((tab.name || 'File') + ' changed on disk — save or discard your edits first');
       return;
     }
@@ -223,6 +236,16 @@
       if (window.TVLive && typeof TVLive.refresh === 'function') {
         TVLive.refresh();
       }
+    } else {
+      // DR-70: background (non-active) or non-reading native tab changed on disk.
+      // refresh() above only stamps lastModTime for the ACTIVE tab, so without
+      // this a background tab's recency would show stale "Xm ago" on next switch
+      // even though content just changed. Stamp the change time now (mirrors poll
+      // mode, which calls onFileChange unconditionally) — the visible label is
+      // derived from lastModTime by paintRecency() when the tab is next shown.
+      if (window.TVLive && typeof TVLive.notifyChange === 'function') {
+        TVLive.notifyChange(tab.id);
+      }
     }
   }
 
@@ -246,7 +269,15 @@
     if (!tab) return;
 
     tab.live = false;            // file is gone — drop the ⚡ live state
-    stopWatch(tab);              // nothing left to watch
+    // DR-71: tear the watch down through TVLive.stop so the status bar + recency
+    // label are removed (never a stale time on a dead watch) and the elapsed
+    // timer + _watching entry are cleared. TVLive.stop calls TVNative.stopWatch
+    // internally for native mode, so we don't call stopWatch(tab) again here.
+    if (window.TVLive && typeof TVLive.stop === 'function') {
+      TVLive.stop(tab.id);
+    } else {
+      stopWatch(tab);            // fallback (older build): at least stop the Rust watcher
+    }
     // S-10 fix: set dirty directly (no render), then call render once below
     tab.dirty = true;
 

@@ -57,9 +57,12 @@
     bar.className = 'tv-status tv-live-status';
 
     bar.innerHTML =
-      '<span class="live-pill"><span class="blip"></span> Live</span>' +
+      // DR-66: neutral initial text; injectStatusBarOnly() immediately repaints
+      // the real recency from lastModTime via paintRecency(). Never the legacy
+      // unbounded tenths-of-a-second literal, which the bounded format can't produce.
+      '<span class="live-pill"><span class="blip is-updating"></span> Live</span>' +
       '<span class="sep">—</span>' +
-      '<span data-elapsed>updated 0.0s ago</span>' +
+      '<span data-elapsed>updating…</span>' +
       '<span class="spacer"></span>' +
       '<span class="tv-pin" data-tv-pin>' +
         '<span class="ic">' + pinSvg + '</span> Pin scroll' +
@@ -110,19 +113,41 @@
     return 'updated ' + Math.floor(deltaMs / 3600000) + 'h ago';
   }
 
-  /* ── DR-68: idle threshold ─────────────────────────────────── */
+  /* ── DR-68: settle threshold — after this much quiet the bar auto-hides ── */
   var IDLE_THRESHOLD_MS = 90000; // 90 s
 
-  /* ── DR-68: apply / clear idle visual state ──────────────── */
+  /* ── DR-67/DR-68: single authority for blip pulse + idle state ──
+     The pulse animation lives ONLY on `.blip.is-updating` (see tv-app.css).
+     `.is-updating` is present whenever the watch is active (not idle) so the
+     dot pulses continuously to confirm streaming (DR-65); removing it on idle
+     yields a steady, dimmed dot (DR-68). Centralising the add/remove here means
+     no inject path can leave the blip dark or out of sync. */
   function setIdleState(watchState, idle) {
     if (!watchState.statusBarEl) return;
     var pill = watchState.statusBarEl.querySelector('.live-pill');
     if (!pill) return;
+    var blip = pill.querySelector('.blip');
     if (idle) {
       pill.classList.add('idle');
+      if (blip) blip.classList.remove('is-updating'); // DR-68: stop pulsing
     } else {
       pill.classList.remove('idle');
+      if (blip) blip.classList.add('is-updating');     // DR-65: active pulse
     }
+  }
+
+  /* ── DR-66/DR-70: paint recency text + blip state from lastModTime ──
+     The displayed text is ALWAYS derived from lastModTime — never a hardcoded
+     literal — so every (possibly redundant) re-inject path converges to the
+     correct value instead of clobbering a just-set "updating…" back to a stale
+     string. This is what fixes the change-flash race and the tab-switch flash. */
+  function paintRecency(watchState) {
+    if (!watchState.statusBarEl || !watchState.lastModTime) return;
+    var elapsed = watchState.statusBarEl.querySelector('[data-elapsed]');
+    if (!elapsed) return;
+    var delta = Date.now() - watchState.lastModTime;
+    elapsed.textContent = formatRecency(delta);
+    setIdleState(watchState, delta >= IDLE_THRESHOLD_MS);
   }
 
   /* ── DR-67: shared on-change hook (poll + native) ─────────── */
@@ -139,43 +164,110 @@
       var blip = watchState.statusBarEl.querySelector('.blip');
       if (blip) {
         blip.classList.remove('is-updating');
-        // Force reflow so the animation restarts cleanly
+        // Force reflow so the animation restarts cleanly. Works now because the
+        // pulse lives ONLY on .is-updating (base .blip has no animation).
         void blip.offsetWidth; // eslint-disable-line no-void
         blip.classList.add('is-updating');
       }
     }
+    // DR-67/DR-69: if the adaptive tick had stopped (>=1h idle, elapsedInterval
+    // null), restart it so the counter resumes after this change. The null guard
+    // prevents double-scheduling — JS run-to-completion means a tick callback
+    // cannot interleave with this call, so a non-null handle is always live.
+    if (!watchState.elapsedInterval) {
+      scheduleElapsedTick(watchState);
+    }
+    // Light the live bolt — the file is actively changing (mirrors the bar).
+    setBoltActive(watchState.tabId, true);
   }
 
-  /* ── DR-69: adaptive tick — self-rescheduling setTimeout ─── */
-  // Replaces fixed 900ms setInterval. Cadence:
-  //   delta < 60s  → reschedule in 1 s
-  //   delta < 1h   → reschedule in 60 s
-  //   delta >= 1h  → render once, stop ticking (clear elapsedInterval)
-  function scheduleElapsedTick(watchState) {
+  /* ── auto-hide threshold helper ──────────────────────────────
+     "Recent" = a change happened within the last IDLE_THRESHOLD_MS. Inject
+     paths consult this so a settled tab is never (re)shown — only a recent one. */
+  function isRecent(watchState) {
+    return !!watchState.lastModTime &&
+      (Date.now() - watchState.lastModTime) < IDLE_THRESHOLD_MS;
+  }
+
+  /* ── live "bolt" icon (tab strip + sidebar) — mirror the bottom bar ──
+     tab.liveActive drives the bolt icon. We set it with the SAME recency rules
+     as the status bar: shown only while the file is recently active — so a static
+     file opens with NO bolt, a change re-shows it, and a settle (auto-hide) hides
+     it. updateTabIndicator does a lightweight tab-strip refresh; the sidebar/header
+     bolts pick the flag up on their next render. */
+  function setBoltActive(tabId, active) {
+    var tab = getTab(tabId);
+    if (!tab) return;
+    active = !!active;
+    if (tab.liveActive === active) return;
+    tab.liveActive = active;
+    var tv = getTV();
+    if (tv && typeof tv.updateTabIndicator === 'function') tv.updateTabIndicator(tabId);
+  }
+
+  /* ── auto-hide: remove the settled bar but keep the watch armed ──
+     User-chosen behaviour — SUPERSEDES the original DR-68 "dim to a steady dot".
+     IDLE_THRESHOLD_MS (90 s) after the last detected change, the status bar is
+     removed from the DOM entirely. The _watching entry, lastModTime, native/poll
+     watcher, and tab.live flag all stay live, so the next disk change re-reveals
+     the bar (pulsing) via onFileChange → inject. This is distinct from
+     stop()/DR-71, which tears the watch down for good on file close/removal. */
+  function autoHideStatusBar(watchState) {
+    if (watchState.elapsedInterval) {
+      clearTimeout(watchState.elapsedInterval);
+      watchState.elapsedInterval = null;
+    }
+    var bar = watchState.statusBarEl;
+    watchState.statusBarEl = null;
+    watchState.pinEl = null;
+    // Settled → hide the live bolt too (same rule as the bottom bar).
+    setBoltActive(watchState.tabId, false);
+    if (!bar || !bar.parentNode) return;
+    if (prefersReducedMotion()) {
+      bar.parentNode.removeChild(bar);
+      return;
+    }
+    // Fade/slide out, then remove. The timeout is scoped to THIS bar element, so
+    // a re-reveal that rebuilds the bar meanwhile is unaffected (orphan no-ops).
+    bar.classList.add('is-hiding');
+    setTimeout(function () {
+      if (bar.parentNode) bar.parentNode.removeChild(bar);
+    }, 240);
+  }
+
+  /* ── DR-66 + auto-hide: 1 s tick until settle, then remove the bar ───
+     Cadence: tick every 1 s while the file is recent (< IDLE_THRESHOLD_MS),
+     repainting the bounded label (DR-66). At the 90 s threshold the bar is
+     auto-hidden and ticking stops — there is no visible counter past 90 s, so
+     the old minutes/hours cadence is gone. A later change re-reveals the bar and
+     restarts the tick via onFileChange's null guard. 1 s cadence through the
+     whole visible window keeps the label exact and makes the hide fire within
+     1 s of 90 s (the "settles within 90 s" success metric). */
+  function runElapsedTick(watchState) {
+    watchState.elapsedInterval = null; // cleared before any early return
+    if (!watchState.statusBarEl) return;
+    if (Date.now() - watchState.lastModTime >= IDLE_THRESHOLD_MS) {
+      autoHideStatusBar(watchState); // settled → remove bar, keep watch armed
+      return;
+    }
+    paintRecency(watchState); // bounded text (DR-66) from lastModTime
     watchState.elapsedInterval = setTimeout(function () {
-      watchState.elapsedInterval = null; // cleared before any early return
-      if (!watchState.statusBarEl) return;
-      var elapsed = watchState.statusBarEl.querySelector('[data-elapsed]');
-      if (!elapsed) return;
+      runElapsedTick(watchState);
+    }, 1000);
+  }
 
-      var delta = Date.now() - watchState.lastModTime;
-      elapsed.textContent = formatRecency(delta);
-
-      // DR-68: toggle idle visual after 90 s
-      setIdleState(watchState, delta >= IDLE_THRESHOLD_MS);
-
-      // DR-69: schedule next tick based on current delta
-      if (delta < 60000) {
-        // Still in sub-minute range — tick every 1 s
-        scheduleElapsedTick(watchState);
-      } else if (delta < 3600000) {
-        // In minutes range — tick every 60 s
-        watchState.elapsedInterval = setTimeout(function () {
-          watchState.elapsedInterval = null;
-          scheduleElapsedTick(watchState);
-        }, 60000);
-      }
-      // else: >= 1h — render once, stop ticking (elapsedInterval stays null)
+  function scheduleElapsedTick(watchState) {
+    // Single live handle: never double-schedule. onFileChange and
+    // startElapsedTimer both call this; the guard makes redundant calls a no-op.
+    if (watchState.elapsedInterval) return;
+    // Already settled when (re)started → hide rather than show a stale bar.
+    if (watchState.statusBarEl &&
+        Date.now() - watchState.lastModTime >= IDLE_THRESHOLD_MS) {
+      autoHideStatusBar(watchState);
+      return;
+    }
+    watchState.elapsedInterval = setTimeout(function () {
+      runElapsedTick(watchState);
     }, 1000);
   }
 
@@ -212,11 +304,11 @@
     watchState.statusBarEl = bar;
     watchState.pinEl = bar.querySelector('[data-tv-pin]');
 
-    // DR-68: restore idle visual state on the fresh DOM if already past threshold
-    if (watchState.lastModTime &&
-        (Date.now() - watchState.lastModTime) >= IDLE_THRESHOLD_MS) {
-      setIdleState(watchState, true);
-    }
+    // DR-66/DR-68/DR-70: paint the correct recency text + blip/idle state on the
+    // fresh DOM immediately from lastModTime. This removes the tab-switch "0.0s"
+    // flash and makes every redundant re-inject converge to the right value
+    // instead of clobbering a just-set "updating…".
+    paintRecency(watchState);
   }
 
   /* ── file handle polling mode (DR-05: real file watch) ───── */
@@ -246,6 +338,12 @@
         return file.text().then(function (newText) {
           // N-01: Do NOT overwrite tab.source when the tab is dirty
           if (tab.dirty) {
+            // DR-65/DR-66/DR-70: the file DID change on disk, so the recency
+            // clock must reset even though we keep the dirty buffer. onFileChange
+            // stamps lastModTime + resets the label/blip without re-rendering, so
+            // the indicator stays honest instead of counting from the prior change
+            // while the toast says the file just changed.
+            onFileChange(watchState);
             var tv = getTV();
             if (tv && window.TVNative && typeof TVNative.showToast === 'function') {
               TVNative.showToast((tab.name || 'File') + ' changed on disk — save or discard your edits first');
@@ -293,11 +391,28 @@
       });
     }, 1000);
 
-    // Add status bar in poll mode (shows "Live" pill for real-file watch)
-    if (isActiveTab(tabId)) {
-      injectStatusBarOnly(watchState);
+    // Open-time display: read the file's REAL mtime up front and only show the
+    // bar if the file is recent. Doing this asynchronously (rather than the old
+    // synchronous inject) prevents a static file from flashing the indicator
+    // before any getFile() resolves — open-time should not show the indicator
+    // unless the file was written within the 90 s recency window.
+    var tab0 = getTab(tabId);
+    if (tab0 && tab0.fileHandle) {
+      tab0.fileHandle.getFile().then(function (file) {
+        // Seed both the recency clock and the poll-loop baseline from the real
+        // mtime so the first real change is detected against the true value.
+        watchState.lastModTime = file.lastModified;
+        if (lastModified === null) lastModified = file.lastModified;
+        if (isActiveTab(tabId) && isRecent(watchState)) {
+          injectStatusBarOnly(watchState);
+          startElapsedTimer(watchState);
+        }
+        setBoltActive(tabId, isRecent(watchState)); // bolt mirrors recency on open
+      }).catch(function () {
+        // getFile() rejected — leave lastModTime as seeded by start() and do not
+        // crash. A later detected change still reveals the bar via onFileChange.
+      });
     }
-    startElapsedTimer(watchState);
   }
 
   /* ── render event listener to re-attach live UI ─────────── */
@@ -324,9 +439,12 @@
       // Small defer so the new DOM is fully painted
       setTimeout(function () {
         if (!_watching[activeId]) return; // stopped in the meantime
-        // Re-inject for both poll and native modes (L-04: native mode was missing this)
+        // Re-inject for both poll and native modes (L-04: native mode was missing
+        // this). Auto-hide: only (re)show while the file is recent — a settled tab
+        // (≥90 s since last change) must stay hidden, not be resurrected by a
+        // theme/mode/tab render. A real change re-reveals it via onFileChange.
         if (watchState.mode === 'poll' || watchState.mode === 'native') {
-          injectStatusBarOnly(watchState);
+          if (isRecent(watchState)) injectStatusBarOnly(watchState);
         }
       }, 0);
     });
@@ -334,23 +452,38 @@
     // E-06: use prevId to remove the previous live tab's UI when switching tabs,
     // preventing ghost status bars and writing-lines on the next tab.
     tv.on('tabchange', function (payload) {
-      // Remove live UI when switching AWAY from a live tab
+      // Remove live UI when switching AWAY from a live tab.
       var prevId = payload && payload.prevId;
       if (prevId && _watching[prevId]) {
+        var prev = _watching[prevId];
+        // Stop the previous tab's tick and drop its bar ref BEFORE removing the
+        // bar: otherwise its 1 s tick could fire autoHideStatusBar/removeLiveUI
+        // into the now-active tab's viewer and yank the wrong bar.
+        if (prev.elapsedInterval) {
+          clearTimeout(prev.elapsedInterval);
+          prev.elapsedInterval = null;
+        }
+        prev.statusBarEl = null;
+        prev.pinEl = null;
         removeLiveUI();
       }
-      // Show live UI when switching TO a live tab
+      // Show live UI when switching TO a live tab.
       var newId = payload && payload.id;
       if (newId && _watching[newId]) {
         var watchState = _watching[newId];
         setTimeout(function () {
           if (!_watching[newId]) return;
           if (watchState.mode === 'poll' || watchState.mode === 'native') {
-            injectStatusBarOnly(watchState);
-            // Start the elapsed timer if it was never started (e.g. native-mode tab
-            // was not the active tab when start() was called, so startElapsedTimer
-            // was skipped). startElapsedTimer guards against double-start internally.
-            startElapsedTimer(watchState);
+            // Auto-hide: only show the bar if the tab is still recent. A tab that
+            // settled (≥90 s) while backgrounded stays hidden until its next
+            // change re-reveals it. startElapsedTimer guards double-start.
+            if (isRecent(watchState)) {
+              injectStatusBarOnly(watchState);
+              startElapsedTimer(watchState);
+            }
+            // Sync the bolt to this tab's recency (handles a tab that settled
+            // while backgrounded — its bolt clears on switch-back).
+            setBoltActive(newId, isRecent(watchState));
           }
         }, 0);
       }
@@ -384,16 +517,25 @@
         mode: 'native',
         pollInterval: null,
         elapsedInterval: null,
-        lastModTime: Date.now(),
+        // Seed from the file's real mtime when present (threaded onto the tab at
+        // open) so a static file (old mtime) does NOT show the indicator on open;
+        // genuinely-fresh files (Save-As/demo) have no tab.lastModTime and fall
+        // back to now, keeping the bar visible.
+        lastModTime: (typeof tab.lastModTime === 'number' ? tab.lastModTime : Date.now()),
         statusBarEl: null,
         pinEl: null,
       };
 
-      // Show status bar for native mode if this is the active tab
-      if (isActiveTab(tabId)) {
+      // Show status bar for native mode only if this is the active tab AND the
+      // file is recent (written within the 90 s window). The watch is already
+      // armed above via TVNative.startWatch, so a static file stays watched but
+      // hidden; a later disk change re-reveals it via onFileChange → inject.
+      if (isActiveTab(tabId) && isRecent(_watching[tabId])) {
         injectStatusBarOnly(_watching[tabId]);
         startElapsedTimer(_watching[tabId]);
       }
+      // Bolt mirrors recency for ANY tab (active or not): static file → no bolt.
+      setBoltActive(tabId, isRecent(_watching[tabId]));
       return;
     }
 
@@ -410,7 +552,10 @@
       mode: 'poll',
       pollInterval: null,
       elapsedInterval: null,
-      lastModTime: Date.now(),
+      // Seed from the tab's real mtime when present so opening a static file does
+      // not show the indicator; startPollingMode refines this from the live
+      // fileHandle mtime before deciding whether to show the bar.
+      lastModTime: (typeof tab.lastModTime === 'number' ? tab.lastModTime : Date.now()),
       statusBarEl: null,
       pinEl: null,
     };
@@ -427,6 +572,12 @@
     clearInterval(watchState.pollInterval);
     // elapsedInterval is now a setTimeout handle (DR-69 adaptive cadence)
     clearTimeout(watchState.elapsedInterval);
+    watchState.elapsedInterval = null;
+    // Hygiene: null the bar ref so any in-flight tick closure that still holds
+    // this watchState early-returns instead of touching a detached node.
+    watchState.statusBarEl = null;
+    // Watch stopped (file removed/closed) → clear the live bolt (DR-71).
+    setBoltActive(tabId, false);
 
     // For native FSEvents mode: tell the Rust watcher to stop
     if (watchState.mode === 'native') {
@@ -475,11 +626,35 @@
     }
   }
 
+  /* ── public: notifyChange(tabId) — stamp a disk change for ANY tab ─
+     DR-70: called from tv-native.js handleFileChanged when a watched file
+     changes but its tab is NOT the active/reading tab (so refresh() didn't run
+     for it). For the active+live tab we do the full visual reset; otherwise we
+     just record lastModTime so the elapsed display is correct on the next
+     tab-switch (paintRecency derives the label from it). Mirrors poll mode,
+     which stamps lastModTime unconditionally. */
+  function notifyChange(tabId) {
+    var watchState = _watching[tabId];
+    if (!watchState) return;
+    var tv = getTV();
+    if (isActiveTab(tabId) && tv && tv.state && tv.state.mode === 'reading') {
+      // Active + reading: re-reveal the bar (injectStatusBarOnly rebuilds it even
+      // if auto-hidden) then full reset to "updating…" + pulse. Without the inject
+      // an auto-hidden active tab would stamp the time but show nothing.
+      injectStatusBarOnly(watchState);
+      onFileChange(watchState);
+    } else {
+      watchState.lastModTime = Date.now(); // background / non-reading: timestamp only
+      setBoltActive(tabId, true);          // the file changed → light the bolt
+    }
+  }
+
   /* ── public API ──────────────────────────────────────────── */
   window.TVLive = {
     start: start,
     stop: stop,
     stopAll: stopAll,
     refresh: refresh,
+    notifyChange: notifyChange,
   };
 })();

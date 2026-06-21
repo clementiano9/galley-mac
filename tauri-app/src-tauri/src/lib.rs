@@ -31,6 +31,8 @@ pub struct FileDoc {
     pub name: String,
     pub path: String,
     pub content: String,
+    /// File mtime, epoch ms; None if unavailable.
+    pub modified: Option<u64>,
 }
 
 /// A single file entry in the directory tree (name + absolute path, no content).
@@ -101,10 +103,16 @@ fn read_file_doc(path: &str) -> Result<FileDoc, String> {
         .unwrap_or_else(|| path.to_string());
     let content = std::fs::read_to_string(&pb)
         .map_err(|e| format!("read error for {}: {}", path, e))?;
+    let modified = std::fs::metadata(&pb)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as u64);
     Ok(FileDoc {
         name,
         path: path.to_string(),
         content,
+        modified,
     })
 }
 
