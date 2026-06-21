@@ -296,24 +296,26 @@ Extend the `[data-copy]` handler (tv-app.js ~2215) to: add `.tv-copy--copied` + 
 | DR-65 | While the active tab is live-watched, the status bar shows a recency label = time since that file's last detected on-disk change. | URD-10 | Must |
 | DR-66 | Humanized, bounded format: `<3s` → "updating…"; `3–59s` → "updated Ns ago"; `1–59m` → "updated Nm ago"; `≥1h` → "updated Nh ago". No unbounded decimal seconds. | URD-10, URD-06 | Must |
 | DR-67 | Each detected change resets the label to "updating…" and re-pulses the blip — sub-second confirmation the stream is live. | URD-10 | Must |
-| DR-68 | **Visual timeout:** after 90s with no change, the blip stops pulsing and dims to a steady dot (watch still active, file idle); pill text stays "Live"; the counter keeps running. | URD-10, URD-08 | Should |
-| DR-69 | Tick cadence scales with recency — every 1s while `<60s`, every 60s thereafter, static past 1h — to avoid idle CPU churn. | URD-02 | Should |
+| DR-68 | **Settle timeout (auto-hide):** after 90s with no change the status bar is removed from the DOM entirely (brief fade-out; instant under reduced-motion). The watch stays armed — the next disk change re-reveals the bar pulsing within 1s; switching to an already-settled tab shows no bar. *(Iteration 2026-06-21: supersedes the original "blip dims to a steady dot, bar persists" — see note below.)* | URD-10, URD-08 | Should |
+| DR-69 | Tick cadence: every 1s while the file is recent (`<90s`), then the bar auto-hides (DR-68) so there is no visible counter past 90s — avoids idle CPU churn (URD-02). *(Iteration 2026-06-21: the original "every 60s thereafter / static past 1h" applied to a persistent bar; with auto-hide the minutes/hours cadence is moot.)* | URD-02 | Should |
 | DR-70 | The clock measures time since `lastModTime` (last disk change), NOT since tab-open or launch; on tab switch it preserves elapsed (no reset). | URD-10, URD-04 | Must |
 | DR-71 | The label reflects only a live watch; when the watch stops (file removed/closed), the status bar and label are removed — never a stale time on a dead watch. | URD-10 | Must |
 
 **Success metric:** In a 5-person session reviewing a file streamed then stopped, users distinguish "actively updating" from "settled/idle" 5/5 without touching the file; each disk write flips the label to "updating…" within 1s; the indicator settles within 90s of the last change.
 
 **Acceptance criteria**
-- Label never exceeds the bounded format (no `Xs ago` past 60s; switches to `Nm`/`Nh`).
+- Label never exceeds the bounded format while visible (no `Xs ago` past 60s; rolls to `1m`). *(With auto-hide the bar is gone before the minutes>1m / hours buckets are reached.)*
 - A disk write resets the label to "updating…" and re-pulses the blip within 1s.
-- 90s idle → blip stops pulsing, dims to a steady dot; pill text still "Live"; counter keeps advancing.
-- Switching away from and back to a live tab preserves the elapsed reading (no reset to 0).
-- Closing or on-disk-removing the file removes the status bar entirely — no stale time shown.
-- Under `prefers-reduced-motion: reduce`, the blip does not pulse; the idle/active distinction is conveyed by the dot's opacity/state, not animation.
+- 90s with no change → the status bar auto-hides (removed from the DOM); the watch stays armed and the next disk change re-reveals it pulsing within 1s. Switching to an already-settled tab shows no bar. *(Supersedes "dims to a steady dot".)*
+- Switching away from and back to a *recent* live tab preserves the elapsed reading (no reset to 0); a tab that settled while backgrounded stays hidden until its next change.
+- Closing or on-disk-removing the file removes the status bar entirely — no stale time shown (DR-71, distinct from auto-hide: the watch is torn down).
+- Under `prefers-reduced-motion: reduce`, the blip does not pulse and the settled bar is removed instantly (no fade).
 
 **Scope boundary (out):** absolute timestamps (relative only), per-section/per-line recency, progress-bar semantics, coupling to Pin scroll, localisation (English only).
 
-**Current → target gap:** today's `updated 3847.2s ago` (unbounded, tenths, fixed 900ms tick, no idle state) fails DR-66/DR-68/DR-69 — those drive the change.
+**Iteration note (2026-06-21):** DR-68 originally specified the settled bar *persist* as a dimmed steady dot. Per **URD-08 / Cluster H ("UI chrome should be earned, not imposed")**, a settled file that has stopped changing has not earned a permanent bar, so the decision was changed to **auto-hide**: the bar is removed 90s after the last change, and re-revealed (pulsing) on the next disk write. The watch stays armed throughout; this is distinct from DR-71 teardown. Trade-off accepted: the next write produces a brief re-appearance ("pop-in"), and the **Pin scroll** control is unavailable while the bar is hidden (it returns with the bar, when Pin again matters because content is growing). Residual (needs Rust mtime plumbing, deferred): a just-opened static file still shows the bar for its first 90s before auto-hiding, because open-time seeds the recency clock.
+
+**Current → target gap:** today's `updated 3847.2s ago` (unbounded, tenths, fixed 900ms tick, no settle state) fails DR-66/DR-68/DR-69 — those drove the change.
 
 ---
 

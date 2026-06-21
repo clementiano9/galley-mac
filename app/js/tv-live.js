@@ -113,7 +113,7 @@
     return 'updated ' + Math.floor(deltaMs / 3600000) + 'h ago';
   }
 
-  /* ── DR-68: idle threshold ─────────────────────────────────── */
+  /* ── DR-68: settle threshold — after this much quiet the bar auto-hides ── */
   var IDLE_THRESHOLD_MS = 90000; // 90 s
 
   /* ── DR-67/DR-68: single authority for blip pulse + idle state ──
@@ -179,53 +179,76 @@
     }
   }
 
-  /* ── DR-68/DR-69: adaptive tick — self-rescheduling setTimeout ───
-     Cadence by recency (delta = now − lastModTime):
-       delta < 90s (IDLE_THRESHOLD_MS) → tick every 1 s
-       delta < 1h                      → tick every 60 s
-       delta >= 1h                     → stop (static past 1h)
-     A later change restarts the tick via onFileChange's null guard.
-
-     Why 1 s all the way to 90 s (not down to 60 s as the literal DR-69 text
-     reads): the idle visual (DR-68) must engage *at* 90 s. The previous impl
-     dropped to a 60 s cadence at the 60 s mark, so the 90 s threshold was only
-     re-checked at the next minute tick (~120 s) — idle engaged ~30 s late,
-     breaking the "settles within 90 s" success metric. Ticking 1 s through the
-     idle threshold guarantees the check fires within 1 s of 90 s. This honours
-     DR-69's *intent* (URD-02: no idle CPU churn) — we only tick fast while the
-     file is recent enough to still be streaming; once settled (≥90 s) we drop to
-     60 s, then stop past 1 h. The extra sub-minute repaints are no-op
-     textContent writes of the same string. */
-  function nextTickDelay(deltaMs) {
-    if (deltaMs < IDLE_THRESHOLD_MS) return 1000;  // 1 s — keeps label live + hits 90s idle on time
-    if (deltaMs < 3600000)           return 60000; // 60 s — minutes range (DR-69)
-    return 0;                                       // >= 1h — static, stop ticking (DR-69)
+  /* ── auto-hide threshold helper ──────────────────────────────
+     "Recent" = a change happened within the last IDLE_THRESHOLD_MS. Inject
+     paths consult this so a settled tab is never (re)shown — only a recent one. */
+  function isRecent(watchState) {
+    return !!watchState.lastModTime &&
+      (Date.now() - watchState.lastModTime) < IDLE_THRESHOLD_MS;
   }
 
+  /* ── auto-hide: remove the settled bar but keep the watch armed ──
+     User-chosen behaviour — SUPERSEDES the original DR-68 "dim to a steady dot".
+     IDLE_THRESHOLD_MS (90 s) after the last detected change, the status bar is
+     removed from the DOM entirely. The _watching entry, lastModTime, native/poll
+     watcher, and tab.live flag all stay live, so the next disk change re-reveals
+     the bar (pulsing) via onFileChange → inject. This is distinct from
+     stop()/DR-71, which tears the watch down for good on file close/removal. */
+  function autoHideStatusBar(watchState) {
+    if (watchState.elapsedInterval) {
+      clearTimeout(watchState.elapsedInterval);
+      watchState.elapsedInterval = null;
+    }
+    var bar = watchState.statusBarEl;
+    watchState.statusBarEl = null;
+    watchState.pinEl = null;
+    if (!bar || !bar.parentNode) return;
+    if (prefersReducedMotion()) {
+      bar.parentNode.removeChild(bar);
+      return;
+    }
+    // Fade/slide out, then remove. The timeout is scoped to THIS bar element, so
+    // a re-reveal that rebuilds the bar meanwhile is unaffected (orphan no-ops).
+    bar.classList.add('is-hiding');
+    setTimeout(function () {
+      if (bar.parentNode) bar.parentNode.removeChild(bar);
+    }, 240);
+  }
+
+  /* ── DR-66 + auto-hide: 1 s tick until settle, then remove the bar ───
+     Cadence: tick every 1 s while the file is recent (< IDLE_THRESHOLD_MS),
+     repainting the bounded label (DR-66). At the 90 s threshold the bar is
+     auto-hidden and ticking stops — there is no visible counter past 90 s, so
+     the old minutes/hours cadence is gone. A later change re-reveals the bar and
+     restarts the tick via onFileChange's null guard. 1 s cadence through the
+     whole visible window keeps the label exact and makes the hide fire within
+     1 s of 90 s (the "settles within 90 s" success metric). */
   function runElapsedTick(watchState) {
     watchState.elapsedInterval = null; // cleared before any early return
     if (!watchState.statusBarEl) return;
-    // paintRecency derives BOTH the bounded text (DR-66) and the idle state
-    // (DR-68) from lastModTime — single source of truth, so the tick can never
-    // drift from a re-inject path.
-    paintRecency(watchState);
-    var delay = nextTickDelay(Date.now() - watchState.lastModTime);
-    if (delay > 0) {
-      watchState.elapsedInterval = setTimeout(function () {
-        runElapsedTick(watchState);
-      }, delay);
+    if (Date.now() - watchState.lastModTime >= IDLE_THRESHOLD_MS) {
+      autoHideStatusBar(watchState); // settled → remove bar, keep watch armed
+      return;
     }
-    // delay === 0 → >= 1h: leave elapsedInterval null so onFileChange can restart.
+    paintRecency(watchState); // bounded text (DR-66) from lastModTime
+    watchState.elapsedInterval = setTimeout(function () {
+      runElapsedTick(watchState);
+    }, 1000);
   }
 
   function scheduleElapsedTick(watchState) {
-    // Single live handle (DR-69): never double-schedule. onFileChange and
+    // Single live handle: never double-schedule. onFileChange and
     // startElapsedTimer both call this; the guard makes redundant calls a no-op.
     if (watchState.elapsedInterval) return;
-    var delay = nextTickDelay(Date.now() - watchState.lastModTime) || 1000;
+    // Already settled when (re)started → hide rather than show a stale bar.
+    if (watchState.statusBarEl &&
+        Date.now() - watchState.lastModTime >= IDLE_THRESHOLD_MS) {
+      autoHideStatusBar(watchState);
+      return;
+    }
     watchState.elapsedInterval = setTimeout(function () {
       runElapsedTick(watchState);
-    }, delay);
+    }, 1000);
   }
 
   /* ── elapsed timer ─────────────────────────────────────────── */
@@ -379,9 +402,12 @@
       // Small defer so the new DOM is fully painted
       setTimeout(function () {
         if (!_watching[activeId]) return; // stopped in the meantime
-        // Re-inject for both poll and native modes (L-04: native mode was missing this)
+        // Re-inject for both poll and native modes (L-04: native mode was missing
+        // this). Auto-hide: only (re)show while the file is recent — a settled tab
+        // (≥90 s since last change) must stay hidden, not be resurrected by a
+        // theme/mode/tab render. A real change re-reveals it via onFileChange.
         if (watchState.mode === 'poll' || watchState.mode === 'native') {
-          injectStatusBarOnly(watchState);
+          if (isRecent(watchState)) injectStatusBarOnly(watchState);
         }
       }, 0);
     });
@@ -389,23 +415,35 @@
     // E-06: use prevId to remove the previous live tab's UI when switching tabs,
     // preventing ghost status bars and writing-lines on the next tab.
     tv.on('tabchange', function (payload) {
-      // Remove live UI when switching AWAY from a live tab
+      // Remove live UI when switching AWAY from a live tab.
       var prevId = payload && payload.prevId;
       if (prevId && _watching[prevId]) {
+        var prev = _watching[prevId];
+        // Stop the previous tab's tick and drop its bar ref BEFORE removing the
+        // bar: otherwise its 1 s tick could fire autoHideStatusBar/removeLiveUI
+        // into the now-active tab's viewer and yank the wrong bar.
+        if (prev.elapsedInterval) {
+          clearTimeout(prev.elapsedInterval);
+          prev.elapsedInterval = null;
+        }
+        prev.statusBarEl = null;
+        prev.pinEl = null;
         removeLiveUI();
       }
-      // Show live UI when switching TO a live tab
+      // Show live UI when switching TO a live tab.
       var newId = payload && payload.id;
       if (newId && _watching[newId]) {
         var watchState = _watching[newId];
         setTimeout(function () {
           if (!_watching[newId]) return;
           if (watchState.mode === 'poll' || watchState.mode === 'native') {
-            injectStatusBarOnly(watchState);
-            // Start the elapsed timer if it was never started (e.g. native-mode tab
-            // was not the active tab when start() was called, so startElapsedTimer
-            // was skipped). startElapsedTimer guards against double-start internally.
-            startElapsedTimer(watchState);
+            // Auto-hide: only show the bar if the tab is still recent. A tab that
+            // settled (≥90 s) while backgrounded stays hidden until its next
+            // change re-reveals it. startElapsedTimer guards double-start.
+            if (isRecent(watchState)) {
+              injectStatusBarOnly(watchState);
+              startElapsedTimer(watchState);
+            }
           }
         }, 0);
       }
@@ -544,10 +582,15 @@
   function notifyChange(tabId) {
     var watchState = _watching[tabId];
     if (!watchState) return;
-    if (isActiveTab(tabId) && watchState.statusBarEl) {
-      onFileChange(watchState);          // active: full label/blip/tick reset
+    var tv = getTV();
+    if (isActiveTab(tabId) && tv && tv.state && tv.state.mode === 'reading') {
+      // Active + reading: re-reveal the bar (injectStatusBarOnly rebuilds it even
+      // if auto-hidden) then full reset to "updating…" + pulse. Without the inject
+      // an auto-hidden active tab would stamp the time but show nothing.
+      injectStatusBarOnly(watchState);
+      onFileChange(watchState);
     } else {
-      watchState.lastModTime = Date.now(); // background: timestamp only
+      watchState.lastModTime = Date.now(); // background / non-reading: timestamp only
     }
   }
 

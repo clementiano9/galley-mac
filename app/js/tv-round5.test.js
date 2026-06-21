@@ -455,12 +455,20 @@ console.log('\n#8 DR-65–71: live-watch recency label\n');
     'notifyChange not called for background native tabs'
   );
 
-  // DR-68/DR-69: adaptive tick stays at 1s cadence through the 90s idle
-  // threshold (so idle engages on time, not ~30s late at the next minute tick).
+  // DR-68 (auto-hide): the 1s tick removes the settled bar at IDLE_THRESHOLD_MS
+  // (supersedes dim-to-dot). The watch stays armed — autoHideStatusBar nulls the
+  // bar ref but does NOT delete the _watching entry, so a change re-reveals it.
   assert(
-    'DR-68/DR-69: nextTickDelay ticks 1s below IDLE_THRESHOLD_MS (idle on time)',
-    /function nextTickDelay[\s\S]*?deltaMs < IDLE_THRESHOLD_MS\)\s*return 1000/.test(live),
-    'nextTickDelay does not tick 1s through the 90s idle threshold'
+    'DR-68: tick auto-hides the settled bar at IDLE_THRESHOLD_MS',
+    /function autoHideStatusBar/.test(live) &&
+      />= IDLE_THRESHOLD_MS\)\s*\{\s*autoHideStatusBar/.test(live),
+    'runElapsedTick does not auto-hide at the settle threshold'
+  );
+  assert(
+    'DR-68: inject paths gate on isRecent (settled tab not resurrected)',
+    /function isRecent/.test(live) &&
+      /if \(isRecent\(watchState\)\) injectStatusBarOnly/.test(live),
+    'render/tab re-inject not gated on isRecent'
   );
 
   // DR-65/DR-70: a disk change to a DIRTY poll tab must still stamp recency

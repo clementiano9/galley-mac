@@ -517,6 +517,11 @@ function makeLiveTab(id) {
   // event (the real L-04 re-inject path → paintRecency reads Date.now()-lastModTime).
   function freshPaint() { h.TV.fire('render'); h.clock.advance(0); }
 
+  // Auto-hide note: the bar is removed at the 90s settle threshold, so the live
+  // label is only ever VISIBLE up to ~90s. Past that the minutes>1m / hours
+  // buckets are unreachable in the UI by design — so these cases stop at 89s
+  // (the last second the label is shown). formatRecency's higher buckets remain
+  // in code for the 60–90s window + defensive use.
   var cases = [
     { at: 1000,    expect: 'updating…',        why: '<3s lower' },
     { at: 2000,    expect: 'updating…',        why: '<3s upper' },
@@ -527,11 +532,7 @@ function makeLiveTab(id) {
     { at: 59000,   expect: 'updated 59s ago',  why: '3-59s upper' },
     { at: 60000,   expect: 'updated 1m ago',   why: 'minute boundary (NOT 60s)' },
     { at: 65000,   expect: 'updated 1m ago',   why: '1m' },
-    { at: 300000,  expect: 'updated 5m ago',   why: '5min' },
-    { at: 3540000, expect: 'updated 59m ago',  why: '59m upper' },
-    { at: 3599999, expect: 'updated 59m ago',  why: 'just under 1h' },
-    { at: 3600000, expect: 'updated 1h ago',   why: 'hour boundary' },
-    { at: 7200000, expect: 'updated 2h ago',   why: '2h' },
+    { at: 89000,   expect: 'updated 1m ago',   why: 'last visible second pre auto-hide' },
   ];
 
   var prev = 0;
@@ -566,7 +567,8 @@ var DR66_CADENCE = { samples: [] };
   h.TV.state.activeId = tab.id;
   h.TVLive.start(tab.id);
 
-  var sampleTimes = [4000, 30000, 59000, 65000, 300000, 3540000, 3700000];
+  // Only sample < 90s — the only window the label is visible before auto-hide.
+  var sampleTimes = [4000, 30000, 59000, 65000, 89000];
   var prev = 0;
   sampleTimes.forEach(function (at) {
     h.clock.advance(at - prev); prev = at;
@@ -616,90 +618,77 @@ var DR66_CADENCE = { samples: [] };
     !!(pill && !pill.classList.contains('idle')),
     pill ? pill.className : null);
 
-  // And a second change after going idle should also re-pulse (the harder case).
-  // Advance >90s, then FORCE a fresh paint (render re-inject) so idle is actually
-  // applied — the passive tick is too coarse to apply idle exactly at 95s (that
-  // latency is characterised under DR-68). With idle truly engaged, is-updating
-  // must be cleared; the subsequent change must restore it.
-  h.clock.advance(95000); // > 90s
-  h.TV.fire('render'); h.clock.advance(0); // fresh paint → idle now applied
-  var blipIdle = h.getBlip();
-  check('DR-67', 'precondition: idle clears is-updating before 2nd change',
-    !!(blipIdle && !blipIdle.classList.contains('is-updating')),
-    blipIdle ? blipIdle.className : null);
+  // And a change AFTER the bar auto-hid must re-reveal it pulsing (the harder
+  // case). Advance >90s so the passive tick auto-hides the bar, then a new change
+  // (refresh) must bring it back with "updating…" + a pulsing blip.
+  h.clock.advance(95000); // > 90s → passive tick auto-hides
+  h.clock.advance(300);   // let the fade-out removal complete
+  check('DR-67', 'precondition: bar auto-hidden after settle',
+    h.getStatus() === null, h.getStatus() ? 'present' : 'null', 'null');
   h.TVLive.refresh();
   var blip2 = h.getBlip();
-  check('DR-67', '2nd change after idle: blip re-pulses (is-updating restored)',
+  check('DR-67', '2nd change after auto-hide: bar re-revealed + blip pulses',
     !!(blip2 && blip2.classList.contains('is-updating')),
     blip2 ? blip2.className : null, 'is-updating present');
-  check('DR-67', '2nd change after idle: label back to "updating…"',
+  check('DR-67', '2nd change after auto-hide: label back to "updating…"',
     h.getElapsedText() === 'updating…', h.getElapsedText(), 'updating…');
 
   h.TVLive.stop(tab.id);
 })();
 
 /* ═══════════════════════════════════════════════════════════
-   DR-68 — after 90s idle: .live-pill gets .idle, blip loses
-   is-updating (steady dot), pill text still "Live", counter advancing.
-
-   We test the IDLE MECHANISM with a fresh paint at the relevant deltas
-   (correctness of setIdleState given the delta). The PASSIVE timing —
-   *when* the idle visual actually engages without a forced repaint — is
-   measured separately under DR-68-LATENCY and surfaced in the report,
-   because the adaptive tick applies idle lazily (see findings).
+   DR-68 (auto-hide variant) — 90s after the last change the status bar is
+   REMOVED from the DOM (supersedes the original "dim to a steady dot"). The
+   watch stays armed: a later change re-reveals the bar pulsing. Switching to a
+   tab that already settled shows nothing.
    ═══════════════════════════════════════════════════════════ */
-var DR68_LATENCY = { firstIdleAtMs: null };
-(function testDR68Mechanism() {
+var DR68_LATENCY = { firstHideAtMs: null };
+(function testDR68AutoHide() {
   var h = loadLive();
   var tab = makeLiveTab();
   h.TV.state.tabs = [tab];
   h.TV.state.activeId = tab.id;
   h.TVLive.start(tab.id);
-  function freshPaint() { h.TV.fire('render'); h.clock.advance(0); }
 
-  // Just below threshold (89s): NOT idle, blip still pulsing.
-  h.clock.advance(89000); freshPaint();
-  var pillBefore = h.getPill();
-  check('DR-68', 'mechanism: at 89s (<90s) pill is NOT idle',
-    !!(pillBefore && !pillBefore.classList.contains('idle')),
-    pillBefore ? pillBefore.className : null);
+  // Just below the settle threshold (89s): bar present, blip still pulsing.
+  h.clock.advance(89000);
+  check('DR-68', 'at 89s (<90s): bar still present',
+    h.getStatus() !== null, h.getStatus() ? 'present' : 'null', 'present');
   var blipBefore = h.getBlip();
-  check('DR-68', 'mechanism: at 89s blip still pulsing (is-updating present)',
+  check('DR-68', 'at 89s: blip still pulsing (is-updating present)',
     !!(blipBefore && blipBefore.classList.contains('is-updating')),
     blipBefore ? blipBefore.className : null);
 
-  // At/after threshold (95s) with a fresh paint: idle engaged.
-  h.clock.advance(6000); freshPaint(); // → 95s
-  var pill = h.getPill();
-  check('DR-68', 'mechanism: at 95s (>90s) .live-pill gets class idle',
-    !!(pill && pill.classList.contains('idle')),
-    pill ? pill.className : null, 'idle present');
-  var blip = h.getBlip();
-  check('DR-68', 'mechanism: at 95s blip loses is-updating (steady dot)',
-    !!(blip && !blip.classList.contains('is-updating')),
-    blip ? blip.className : null, 'is-updating absent');
-  var pillText = pill ? pill.textContent : null;
-  check('DR-68', 'mechanism: at 95s pill text still contains "Live"',
-    !!(pillText && /Live/.test(pillText)), pillText, 'contains "Live"');
+  // Cross the threshold passively → auto-hide removes the bar (after the fade).
+  h.clock.advance(2000);  // → 91s: tick fires autoHideStatusBar
+  h.clock.advance(300);   // fade-out completes; node detached from DOM
+  check('DR-68', 'at ~91s: settled bar auto-hidden (removed from DOM)',
+    h.getStatus() === null, h.getStatus() ? 'present' : 'null', 'null');
 
-  // Counter still advancing while idle (passive tick keeps repainting the label).
-  check('DR-68', 'at 95s: counter advancing (label shows 1m)',
-    h.getElapsedText() === 'updated 1m ago', h.getElapsedText(), 'updated 1m ago');
-  h.clock.advance(125000); freshPaint(); // → 220s ≈ 3m
-  check('DR-68', 'at 220s: counter still advancing (label shows 3m)',
-    h.getElapsedText() === 'updated 3m ago', h.getElapsedText(), 'updated 3m ago');
-  // And idle persists.
-  var pill2 = h.getPill();
-  check('DR-68', 'at 220s: still idle (persists past threshold)',
-    !!(pill2 && pill2.classList.contains('idle')), pill2 ? pill2.className : null, 'idle');
+  // The watch is still ARMED (not stopped): a later disk change re-reveals it.
+  h.TVLive.refresh();
+  check('DR-68', 'after auto-hide: a change re-reveals the bar',
+    h.getStatus() !== null, h.getStatus() ? 'present' : 'null', 'present');
+  check('DR-68', 'after re-reveal: label resets to "updating…"',
+    h.getElapsedText() === 'updating…', h.getElapsedText(), 'updating…');
+  var blip2 = h.getBlip();
+  check('DR-68', 'after re-reveal: blip pulses again (is-updating)',
+    !!(blip2 && blip2.classList.contains('is-updating')),
+    blip2 ? blip2.className : null);
+
+  // …and it settles + hides again if nothing else changes.
+  h.clock.advance(91000); h.clock.advance(300);
+  check('DR-68', 'after re-reveal: auto-hides again on the next settle',
+    h.getStatus() === null, h.getStatus() ? 'present' : 'null', 'null');
 
   h.TVLive.stop(tab.id);
 })();
 
-/* ── DR-68 PASSIVE latency characterisation (reported, not gating) ──
-   Walk virtual time WITHOUT forcing repaints and record the first
-   moment the passive tick actually applies `.idle`. The spec target is
-   90s; we measure the real engage time produced by the adaptive tick. */
+/* ── DR-68 PASSIVE auto-hide latency — HARD regression guard ──
+   Walk virtual time WITHOUT forcing repaints and record the first moment the
+   passive tick begins removing the bar (adds .is-hiding or detaches it). The
+   pre-fix tick dropped to a 60s cadence at 60s, so the 90s settle was only
+   re-checked at ~121s — this fails at 121s and passes at ≤91s. */
 (function testDR68Latency() {
   var h = loadLive();
   var tab = makeLiveTab();
@@ -709,19 +698,46 @@ var DR68_LATENCY = { firstIdleAtMs: null };
   var step = 1000, t = 0, max = 200000;
   while (t < max) {
     h.clock.advance(step); t += step;
-    var pill = h.getPill();
-    if (pill && pill.classList.contains('idle')) { DR68_LATENCY.firstIdleAtMs = t; break; }
+    var bar = h.getStatus();
+    var hiding = bar && bar.classList.contains('is-hiding');
+    if (bar === null || hiding) { DR68_LATENCY.firstHideAtMs = t; break; }
   }
-  // HARD regression guard for the cadence fix: with NO forced repaint, the
-  // passive adaptive tick must apply `.idle` within 1s of the 90s threshold
-  // (i.e. by 91s). The pre-fix impl dropped to a 60s cadence at 60s and only
-  // re-checked the threshold at ~121s — this assertion fails at 121s and passes
-  // at ≤91s, locking in DR-68 + the "settles within 90s" success metric.
-  check('DR-68', 'passive: idle engages by 91s (no forced repaint)',
-    DR68_LATENCY.firstIdleAtMs !== null && DR68_LATENCY.firstIdleAtMs <= 91000,
-    DR68_LATENCY.firstIdleAtMs === null ? 'never' : (DR68_LATENCY.firstIdleAtMs / 1000) + 's',
+  check('DR-68', 'passive: bar auto-hides by 91s (no forced repaint)',
+    DR68_LATENCY.firstHideAtMs !== null && DR68_LATENCY.firstHideAtMs <= 91000,
+    DR68_LATENCY.firstHideAtMs === null ? 'never' : (DR68_LATENCY.firstHideAtMs / 1000) + 's',
     '<= 91s');
   h.TVLive.stop(tab.id);
+})();
+
+/* ── DR-68 auto-hide + tab switch — a tab that SETTLED while backgrounded
+   shows no bar on switch-back; a change still re-reveals it. ── */
+(function testDR68SettledSwitch() {
+  var h = loadLive();
+  var tabA = makeLiveTab('A');
+  var tabB = { id: 'B', live: false, name: 'plain.md' };
+  h.TV.state.tabs = [tabA, tabB];
+  h.TV.state.activeId = tabA.id;
+  h.TVLive.start(tabA.id);
+
+  // Switch away to B, then let A settle (>90s) in the background.
+  h.TV.state.activeId = tabB.id;
+  h.TV.fire('tabchange', { prevId: tabA.id, id: tabB.id });
+  h.clock.advance(0);
+  h.clock.advance(95000); // A is now settled (95s since its last change)
+
+  // Switch back to A: it settled while backgrounded → bar stays hidden.
+  h.TV.state.activeId = tabA.id;
+  h.TV.fire('tabchange', { prevId: tabB.id, id: tabA.id });
+  h.clock.advance(0);
+  check('DR-68', 'switch back to a SETTLED tab: no bar shown',
+    h.getStatus() === null, h.getStatus() ? 'present' : 'null', 'null');
+
+  // A change on the now-active tab re-reveals it.
+  h.TVLive.refresh();
+  check('DR-68', 'settled tab: a change still re-reveals the bar',
+    h.getStatus() !== null, h.getStatus() ? 'present' : 'null', 'present');
+
+  h.TVLive.stop(tabA.id);
 })();
 
 /* ═══════════════════════════════════════════════════════════
@@ -860,21 +876,20 @@ console.log('──────────────────────�
 
 /* ── Behavioural findings (runtime characterisation, not pass/fail) ── */
 console.log(' BEHAVIOURAL FINDINGS (passive timing, real runtime):');
-console.log('   • DR-68 idle latency: spec target = 90s; the passive adaptive');
-console.log('     tick first applied .idle at ' +
-  (DR68_LATENCY.firstIdleAtMs !== null ? (DR68_LATENCY.firstIdleAtMs / 1000) + 's' : 'never') +
-  ' (≈' + (DR68_LATENCY.firstIdleAtMs !== null
-    ? Math.round((DR68_LATENCY.firstIdleAtMs - 90000) / 1000)
-    : '?') + 's late).');
-console.log('     Cadence ticks every 1s through the 90s idle threshold, then');
-console.log('     drops to 60s, then stops past 1h (nextTickDelay) — so idle');
-console.log('     engages within 1s of 90s instead of at the ~121s minute tick.');
-console.log('   • DR-66 passive label staleness (no forced repaint):');
+console.log('   • DR-68 auto-hide latency: settle target = 90s; the passive tick');
+console.log('     first began removing the bar at ' +
+  (DR68_LATENCY.firstHideAtMs !== null ? (DR68_LATENCY.firstHideAtMs / 1000) + 's' : 'never') +
+  ' (≈' + (DR68_LATENCY.firstHideAtMs !== null
+    ? Math.round((DR68_LATENCY.firstHideAtMs - 90000) / 1000)
+    : '?') + 's off target).');
+console.log('     1s cadence runs through the 90s threshold, so the bar auto-hides');
+console.log('     within 1s of settling; the watch stays armed + a change re-reveals it.');
+console.log('   • DR-66 passive label (no forced repaint) — visible window only');
+console.log('     (< 90s; the bar is gone after that):');
 DR66_CADENCE.samples.forEach(function (s) {
   console.log('       t=' + (s.t / 1000) + 's → displayed "' + s.label + '"');
 });
-console.log('     In the minutes range the displayed Nm can lag true elapsed by up');
-console.log('     to ~60s (label repainted only ~once/min). Format stays bounded.');
+console.log('     1s cadence keeps the visible label exact (no minutes-range lag).');
 console.log('──────────────────────────────────────────────────────\n');
 
 if (totalFail > 0) process.exit(1);

@@ -807,11 +807,22 @@ html, body, #tv-root {
    removing the class. */
 .tv-status .live-pill .blip.is-updating { animation: tv-blip 1.6s ease-out infinite; }
 @keyframes tv-blip { 0%{box-shadow:0 0 0 0 var(--tv-live-glow)} 70%{box-shadow:0 0 0 7px transparent} 100%{box-shadow:0 0 0 0 transparent} }
-/* DR-68: .idle on .live-pill — blip stops pulsing and dims to a steady dot */
+/* DR-68: .idle on .live-pill — blip stops pulsing and dims to a steady dot.
+   NOTE: with auto-hide enabled (the settled bar is removed at 90s, not dimmed)
+   this idle state is now a transient fallback, not the resting state. */
 .tv-status .live-pill.idle .blip {
   animation: none !important;
   box-shadow: none !important;
   opacity: 0.35;
+}
+/* DR-68 (auto-hide variant): when a settled bar is being removed it fades/slides
+   out first. The element is removed from the DOM after the transition (tv-live.js
+   autoHideStatusBar). Reduced-motion removes it instantly (see @media block). */
+.tv-status.tv-live-status.is-hiding {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity .22s ease, transform .22s ease;
+  pointer-events: none;
 }
 .tv-status .sep { color: var(--tv-text-muted) !important; }
 .tv-status .spacer { flex: 1; }
@@ -1752,6 +1763,12 @@ input:focus-visible,
   /* DR-68 idle in reduced-motion: dim dot instead of stopping animation */
   .tv-status .live-pill.idle .blip {
     opacity: 0.35;
+  }
+  /* DR-68 auto-hide in reduced-motion: no fade transition (tv-live.js removes the
+     settled bar instantly under prefers-reduced-motion). */
+  .tv-status.tv-live-status.is-hiding {
+    transition: none !important;
+    transform: none !important;
   }
   /* shimmer */
   .tv-diagram .dg-shimmer::after {
