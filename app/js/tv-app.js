@@ -502,10 +502,27 @@
       );
     }).join('');
 
+    // UX-SBR (edge-sidebar): the reveal toggle lives in the tab strip ONLY while
+    // the sidebar is collapsed — a neutral re-entry affordance so a hidden sidebar
+    // is never a dead-end. When the sidebar is OPEN the collapse control recedes
+    // into the sidebar FILES header (the « button), keeping the chrome minimal.
+    // Reuses the global [data-sidebar-toggle] handler (same path as ⌘B).
+    var sideToggle = '';
+    if (!state.sidebarOpen) {
+      var sideTitle = 'Show sidebar (⌘B)';
+      sideToggle =
+        '<button class="tv-side-toggle" data-sidebar-toggle' +
+          ' title="' + sideTitle + '" aria-label="' + sideTitle + '"' +
+          ' aria-pressed="false" type="button">' +
+          (icons.sidebar || '') +
+        '</button>';
+    }
+
     // L-03: tabs live in a scrolling .tv-tab-strip; .tv-newtab is a SIBLING
     // (outside the strip) so the "+" stays opaque + clickable when tabs overflow.
     return (
       '<div class="tv-tabbar" role="tablist">' +
+        sideToggle +
         '<div class="tv-tab-strip">' + tabs + '</div>' +
         '<button class="tv-newtab" data-newtab title="New tab (⌘T)" aria-label="New tab (⌘T)" type="button">' +
           (icons.plus || '') +
@@ -1334,7 +1351,7 @@
           '<span class="tv-side-header-label">Files</span>' +
           '<button class="tv-side-collapse" data-sidebar-toggle' +
             ' title="Hide sidebar (⌘B)" aria-label="Hide sidebar (⌘B)" type="button">' +
-            '<span class="kbd">⌘B</span>' +
+            (icons.collapseLeft || '«') +
           '</button>' +
         '</div>' +
         '<div class="tv-side-scroll"' +
@@ -1747,12 +1764,13 @@
           'tiny-viewer' +
         '</div>' +
       '</div>' +
-      '<div class="tv-tabbar" role="tablist">' +
-        '<button class="tv-newtab" data-newtab title="New tab (⌘T)" aria-label="New tab (⌘T)" type="button">' +
-          (icons.plus || '') +
-        '</button>' +
-      '</div>' +
+      // Reuse the standard tabbar so the sidebar toggle is present in the empty
+      // state too, and render the sidebar in the body so it can reveal the Recent
+      // list (otherwise the empty state had no path to it but the ⌘O launcher).
+      buildTabbar() +
       '<div class="tv-body">' +
+        buildSidebar() +
+        (state.sidebarOpen ? '<div class="tv-sidebar-resizer" data-sidebar-resize></div>' : '') +
         buildViewer() +
       '</div>'
     );

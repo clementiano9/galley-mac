@@ -147,11 +147,38 @@ html, body, #tv-root {
   display: flex; align-items: center; justify-content: center;
   width: 34px; flex: 0 0 34px;
   color: var(--tv-text-muted) !important; cursor: default;
+  /* URD-08: no bezel — flat, transparent chrome at rest (border + native button
+     appearance reset). The bg-hover fill only appears on interaction, so the
+     control doesn't read as a framed button competing with the tabs. */
+  border: 0; -webkit-appearance: none; appearance: none;
   border-radius: 6px; margin: 4px 4px 4px 2px;
-  background: var(--tv-bg-chrome) !important;
+  background: transparent !important;
   z-index: 2;                   /* above the strip fade pseudo */
 }
 .tv-newtab:hover { background: var(--tv-bg-hover) !important; color: var(--tv-text-secondary) !important; }
+
+/* UX-SBR (edge-sidebar): neutral sidebar-reveal toggle — far-left of the tabbar,
+   rendered ONLY when the sidebar is collapsed (JS omits it while open). It is a
+   pure re-entry affordance, so it stays neutral — no accent active state. When
+   the sidebar is open the collapse control lives in the FILES header instead.
+   Matches .tv-newtab sizing so the bar's two ends balance.
+   URD-08: no bezel — flat, transparent chrome at rest (border + native button
+   appearance reset), the bg-hover fill only appears on interaction. */
+.tv-side-toggle {
+  display: flex; align-items: center; justify-content: center;
+  width: 34px; flex: 0 0 34px;
+  color: var(--tv-text-muted) !important; cursor: default;
+  border: 0; -webkit-appearance: none; appearance: none;
+  border-radius: 6px; margin: 4px 4px 4px 0;
+  background: transparent !important;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+.tv-side-toggle:hover { background: var(--tv-bg-hover) !important; color: var(--tv-text-secondary) !important; }
+/* Keyboard focus ring only. A mouse click leaves WebKit's default :focus outline
+   showing (the global button:focus-visible rule doesn't cover plain :focus) — kill
+   it, and draw a tight 1px ring on keyboard focus to match .tv-close/.tv-sb-close. */
+.tv-side-toggle:focus { outline: none; }
+.tv-side-toggle:focus-visible { outline: 2px solid var(--tv-accent); outline-offset: 1px; }
 
 /* body row: sidebar + viewer -------------------------------- */
 .tv-body { flex: 1; display: flex; min-height: 0; background: var(--tv-bg-primary) !important; }
@@ -195,8 +222,9 @@ html, body, #tv-root {
   /* thin accent line centered on the resizer */
   border-left: 1.5px solid var(--tv-accent);
 }
-/* UX-SB3: sidebar top header — "Files" label + ⌘B collapse button.
-   Gives the sidebar a clear identity and surfaces the toggle affordance. */
+/* UX-SB3 (edge-sidebar): sidebar top header — "Files" label + « collapse button.
+   While the sidebar is open this « is the primary hide affordance (the tab-strip
+   toggle is omitted), so the control "recedes into the edge" of the panel. */
 .tv-side-header {
   flex: 0 0 auto;
   display: flex; align-items: center;
@@ -209,16 +237,18 @@ html, body, #tv-root {
   flex: 1;
 }
 .tv-side-collapse {
-  display: inline-flex; align-items: center; gap: 4px;
-  padding: 3px 6px; border-radius: 4px;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; padding: 0; border-radius: 4px;
   border: 0; background: transparent; cursor: default;
-  font-size: 11px; color: var(--tv-text-muted) !important;
+  color: var(--tv-text-muted) !important;
   opacity: .7;
   transition: opacity .12s, background .12s;
   -webkit-user-select: none; user-select: none;
 }
 .tv-side-collapse:hover { opacity: 1; background: var(--tv-bg-hover) !important; }
-.tv-side-collapse .kbd { font-size: 10px; padding: 1px 4px; }
+.tv-side-collapse svg { display: block; }
+.tv-side-collapse:focus { outline: none; }
+.tv-side-collapse:focus-visible { opacity: 1; outline: 2px solid var(--tv-accent); outline-offset: 1px; }
 
 /* D-01 / E-09: sidebar file list must scroll when entries exceed panel height */
 .tv-side-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--tv-s3) var(--tv-s2); }
@@ -1777,6 +1807,7 @@ input:focus-visible,
   /* L-16: suppress micro-transitions (0.10–0.12s) per WCAG 2.3.3 */
   .tv-tab,
   .tv-newtab,
+  .tv-side-toggle,
   .tv-close,
   .tv-prefs-swatch,
   .tv-prefs-btn,
