@@ -193,6 +193,15 @@
     // N-01 / S-06: Do NOT overwrite tab.source when the tab is dirty
     // (user has unsaved edits that must not be clobbered by disk content)
     if (tab.dirty) {
+      // DR-65/DR-70: the file changed on disk, so the recency clock must reset
+      // even though we keep the dirty buffer. notifyChange does the full visual
+      // reset for the active tab (label → "updating…", blip re-pulse) and a
+      // timestamp-only stamp for background tabs — never a re-render, so the
+      // dirty edits are preserved. Without this the indicator counts from the
+      // prior change while the toast says the file just changed.
+      if (window.TVLive && typeof TVLive.notifyChange === 'function') {
+        TVLive.notifyChange(tab.id);
+      }
       showToast((tab.name || 'File') + ' changed on disk — save or discard your edits first');
       return;
     }

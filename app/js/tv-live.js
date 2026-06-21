@@ -179,37 +179,53 @@
     }
   }
 
-  /* ── DR-69: adaptive tick — self-rescheduling setTimeout ─── */
-  // Replaces fixed 900ms setInterval. Cadence:
-  //   delta < 60s  → reschedule in 1 s
-  //   delta < 1h   → reschedule in 60 s
-  //   delta >= 1h  → render once, stop ticking (clear elapsedInterval)
+  /* ── DR-68/DR-69: adaptive tick — self-rescheduling setTimeout ───
+     Cadence by recency (delta = now − lastModTime):
+       delta < 90s (IDLE_THRESHOLD_MS) → tick every 1 s
+       delta < 1h                      → tick every 60 s
+       delta >= 1h                     → stop (static past 1h)
+     A later change restarts the tick via onFileChange's null guard.
+
+     Why 1 s all the way to 90 s (not down to 60 s as the literal DR-69 text
+     reads): the idle visual (DR-68) must engage *at* 90 s. The previous impl
+     dropped to a 60 s cadence at the 60 s mark, so the 90 s threshold was only
+     re-checked at the next minute tick (~120 s) — idle engaged ~30 s late,
+     breaking the "settles within 90 s" success metric. Ticking 1 s through the
+     idle threshold guarantees the check fires within 1 s of 90 s. This honours
+     DR-69's *intent* (URD-02: no idle CPU churn) — we only tick fast while the
+     file is recent enough to still be streaming; once settled (≥90 s) we drop to
+     60 s, then stop past 1 h. The extra sub-minute repaints are no-op
+     textContent writes of the same string. */
+  function nextTickDelay(deltaMs) {
+    if (deltaMs < IDLE_THRESHOLD_MS) return 1000;  // 1 s — keeps label live + hits 90s idle on time
+    if (deltaMs < 3600000)           return 60000; // 60 s — minutes range (DR-69)
+    return 0;                                       // >= 1h — static, stop ticking (DR-69)
+  }
+
+  function runElapsedTick(watchState) {
+    watchState.elapsedInterval = null; // cleared before any early return
+    if (!watchState.statusBarEl) return;
+    // paintRecency derives BOTH the bounded text (DR-66) and the idle state
+    // (DR-68) from lastModTime — single source of truth, so the tick can never
+    // drift from a re-inject path.
+    paintRecency(watchState);
+    var delay = nextTickDelay(Date.now() - watchState.lastModTime);
+    if (delay > 0) {
+      watchState.elapsedInterval = setTimeout(function () {
+        runElapsedTick(watchState);
+      }, delay);
+    }
+    // delay === 0 → >= 1h: leave elapsedInterval null so onFileChange can restart.
+  }
+
   function scheduleElapsedTick(watchState) {
+    // Single live handle (DR-69): never double-schedule. onFileChange and
+    // startElapsedTimer both call this; the guard makes redundant calls a no-op.
+    if (watchState.elapsedInterval) return;
+    var delay = nextTickDelay(Date.now() - watchState.lastModTime) || 1000;
     watchState.elapsedInterval = setTimeout(function () {
-      watchState.elapsedInterval = null; // cleared before any early return
-      if (!watchState.statusBarEl) return;
-      var elapsed = watchState.statusBarEl.querySelector('[data-elapsed]');
-      if (!elapsed) return;
-
-      var delta = Date.now() - watchState.lastModTime;
-      elapsed.textContent = formatRecency(delta);
-
-      // DR-68: toggle idle visual after 90 s
-      setIdleState(watchState, delta >= IDLE_THRESHOLD_MS);
-
-      // DR-69: schedule next tick based on current delta
-      if (delta < 60000) {
-        // Still in sub-minute range — tick every 1 s
-        scheduleElapsedTick(watchState);
-      } else if (delta < 3600000) {
-        // In minutes range — tick every 60 s
-        watchState.elapsedInterval = setTimeout(function () {
-          watchState.elapsedInterval = null;
-          scheduleElapsedTick(watchState);
-        }, 60000);
-      }
-      // else: >= 1h — render once, stop ticking (elapsedInterval stays null)
-    }, 1000);
+      runElapsedTick(watchState);
+    }, delay);
   }
 
   /* ── elapsed timer ─────────────────────────────────────────── */
@@ -279,6 +295,12 @@
         return file.text().then(function (newText) {
           // N-01: Do NOT overwrite tab.source when the tab is dirty
           if (tab.dirty) {
+            // DR-65/DR-66/DR-70: the file DID change on disk, so the recency
+            // clock must reset even though we keep the dirty buffer. onFileChange
+            // stamps lastModTime + resets the label/blip without re-rendering, so
+            // the indicator stays honest instead of counting from the prior change
+            // while the toast says the file just changed.
+            onFileChange(watchState);
             var tv = getTV();
             if (tv && window.TVNative && typeof TVNative.showToast === 'function') {
               TVNative.showToast((tab.name || 'File') + ' changed on disk — save or discard your edits first');

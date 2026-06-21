@@ -454,6 +454,30 @@ console.log('\n#8 DR-65–71: live-watch recency label\n');
     /TVLive\.notifyChange\(tab\.id\)/.test(native),
     'notifyChange not called for background native tabs'
   );
+
+  // DR-68/DR-69: adaptive tick stays at 1s cadence through the 90s idle
+  // threshold (so idle engages on time, not ~30s late at the next minute tick).
+  assert(
+    'DR-68/DR-69: nextTickDelay ticks 1s below IDLE_THRESHOLD_MS (idle on time)',
+    /function nextTickDelay[\s\S]*?deltaMs < IDLE_THRESHOLD_MS\)\s*return 1000/.test(live),
+    'nextTickDelay does not tick 1s through the 90s idle threshold'
+  );
+
+  // DR-65/DR-70: a disk change to a DIRTY poll tab must still stamp recency
+  // (keep the buffer, but reset the clock) — onFileChange inside the dirty guard.
+  assert(
+    'DR-65/DR-70: poll dirty-tab change stamps recency (onFileChange in dirty guard)',
+    /if \(tab\.dirty\)\s*\{[\s\S]*?onFileChange\(watchState\)/.test(live),
+    'poll dirty branch does not stamp lastModTime via onFileChange'
+  );
+
+  // DR-65/DR-70: same for native mode — dirty handleFileChanged stamps recency
+  // via notifyChange before the early return.
+  assert(
+    'DR-65/DR-70: native dirty-tab change stamps recency (notifyChange in dirty guard)',
+    /if \(tab\.dirty\)\s*\{[\s\S]*?TVLive\.notifyChange\(tab\.id\)/.test(native),
+    'native dirty branch does not stamp lastModTime via notifyChange'
+  );
 })();
 
 /* ═══════════════════════════════════════════════════════════
