@@ -140,10 +140,8 @@ html, body, #tv-root {
 }
 @keyframes tv-pulse { 0%,100%{opacity:.55} 50%{opacity:1} }
 
-/* U-14 / F-20: drag-to-reorder ─────────────────────────── */
-.tv-tab[draggable="true"] { cursor: grab; }
-.tv-tab[draggable="true"]:active { cursor: grabbing; }
-.tv-tab--dragging { opacity: 0.4; will-change: transform; }
+/* U-14 / F-20: drag-to-reorder (pointer-event driven; no HTML5 draggable) ─── */
+.tv-tab--dragging { opacity: 0.4; cursor: grabbing; will-change: transform; }
 /* .tv-drop-indicator: position:absolute inside .tv-tab-strip (position:relative).
    left is computed in JS as tabEl.offsetLeft (before) / tabEl.offsetLeft+offsetWidth (after).
    Strip-local coords — do NOT subtract scrollLeft. */

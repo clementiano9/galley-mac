@@ -493,7 +493,6 @@
           ' aria-selected="' + (isActive ? 'true' : 'false') + '"' +
           ' aria-controls="tv-viewer-panel"' +
           ' tabindex="' + (isActive ? '0' : '-1') + '"' +
-          ' draggable="true"' +
           ' data-tab-id="' + esc(t.id) + '">' +
           lead +
           '<span class="name">' + esc(t.name) + '</span>' +
@@ -2834,29 +2833,32 @@
   }
 
   /* ────────────────────────────────────────────────────────────
-     U-14 / F-20: Tab drag-to-reorder (DR-91–DR-98)
-     Event delegation via the tabbar element. All four handlers
-     share two module-level drag-state variables.
+     U-14 / F-20: Tab drag-to-reorder (DR-91–DR-98) — POINTER EVENTS.
+     HTML5 drag-and-drop CANNOT be used: Tauri's native drag-drop
+     system (`dragDropEnabled`, default true) is required for Finder
+     file-drop-to-open and is mutually EXCLUSIVE with DOM drag-and-drop —
+     it swallows the `drop` event before the webview ever sees it
+     (tauri-apps/tauri#14373; confirmed on macOS WKWebView). Pointer
+     events are not intercepted, so reorder uses pointerdown/move/up.
    ──────────────────────────────────────────────────────────── */
-  var _dragTabId = null;         // id of the tab currently being dragged
-  var _dragIndicatorEl = null;   // current .tv-drop-indicator element
+  var _ptrDrag = null;            // { id, startX, srcEl, dragging } while reordering
+  var _dragIndicatorEl = null;    // current .tv-drop-indicator element
+  var _suppressTabClick = false;  // set after a reorder so the trailing click doesn't activate
 
-  // Compute which .tv-tab the cursor is over and the insertion slot (before/after).
-  // Returns { tabEl, insertBefore } or null.
-  function _dragHitTest(e) {
-    var tabEl = e.target.closest('[data-tab-id]');
+  // Hit-test the tab under the cursor. Pointer capture makes e.target the source
+  // tab, so the real target is resolved via elementFromPoint.
+  function _ptrHitTest(clientX, clientY) {
+    var el = document.elementFromPoint(clientX, clientY);
+    var tabEl = (el && el.closest) ? el.closest('[data-tab-id]') : null;
     if (!tabEl) return null;
     var rect = tabEl.getBoundingClientRect();
-    var mid = rect.left + rect.width / 2;
-    return { tabEl: tabEl, insertBefore: e.clientX < mid };
+    return { tabEl: tabEl, insertBefore: clientX < rect.left + rect.width / 2 };
   }
 
-  // Place (or move) the drop-indicator inside the strip.
-  // left = tabEl.offsetLeft (before) or tabEl.offsetLeft + offsetWidth (after).
-  // offsetLeft is already strip-local — do NOT subtract scrollLeft.
+  // Place (or move) the drop-indicator inside the strip. offsetLeft is strip-local.
   function _placeIndicator(strip, tabEl, insertBefore) {
     var left = insertBefore ? tabEl.offsetLeft : tabEl.offsetLeft + tabEl.offsetWidth;
-    if (!_dragIndicatorEl) {
+    if (!_dragIndicatorEl || _dragIndicatorEl.parentNode !== strip) {
       _dragIndicatorEl = document.createElement('div');
       _dragIndicatorEl.className = 'tv-drop-indicator';
       strip.appendChild(_dragIndicatorEl);
@@ -2864,131 +2866,80 @@
     _dragIndicatorEl.style.left = left + 'px';
   }
 
-  function _cleanupDrag() {
-    // Remove dragging class from any tab still carrying it
-    var strip = document.querySelector('.tv-tab-strip');
-    if (strip) {
-      var draggingEls = strip.querySelectorAll('.tv-tab--dragging');
-      for (var di = 0; di < draggingEls.length; di++) {
-        draggingEls[di].classList.remove('tv-tab--dragging');
-      }
-      // Remove all indicator elements
-      var indicators = strip.querySelectorAll('.tv-drop-indicator');
-      for (var ii = 0; ii < indicators.length; ii++) {
-        indicators[ii].parentNode.removeChild(indicators[ii]);
-      }
+  function _removeIndicator() {
+    if (_dragIndicatorEl && _dragIndicatorEl.parentNode) {
+      _dragIndicatorEl.parentNode.removeChild(_dragIndicatorEl);
     }
-    _dragTabId = null;
     _dragIndicatorEl = null;
   }
 
-  function _onTabDragStart(e) {
-    // DR-91/DR-92: only handle .tv-tab elements
-    var tabEl = e.target.closest('[data-tab-id]');
-    if (!tabEl) return;
-
-    _dragTabId = tabEl.dataset.tabId;
-    e.dataTransfer.setData('text/plain', _dragTabId);
-    e.dataTransfer.effectAllowed = 'move';
-
-    // DR-93: custom ghost — clone off-screen, setDragImage, then remove.
-    // If setDragImage is a no-op in this WKWebView version the browser default
-    // ghost is used as a cosmetic fallback (see spec WKWebView reliability note).
-    var ghost = tabEl.cloneNode(true);
-    ghost.style.position = 'absolute';
-    ghost.style.top = '-9999px';
-    ghost.style.left = '-9999px';
-    document.body.appendChild(ghost);
-    if (typeof e.dataTransfer.setDragImage === 'function') {
-      e.dataTransfer.setDragImage(ghost, 0, 0);
+  function _cleanupDrag() {
+    var strip = document.querySelector('.tv-tab-strip');
+    if (strip) {
+      var draggingEls = strip.querySelectorAll('.tv-tab--dragging');
+      for (var di = 0; di < draggingEls.length; di++) draggingEls[di].classList.remove('tv-tab--dragging');
     }
-    setTimeout(function () {
-      if (ghost.parentNode) ghost.parentNode.removeChild(ghost);
-    }, 0);
-
-    // Apply .tv-tab--dragging after ghost is captured (deferred so opacity change
-    // doesn't affect the ghost snapshot).
-    setTimeout(function () { tabEl.classList.add('tv-tab--dragging'); }, 0);
+    _removeIndicator();
+    _ptrDrag = null;
   }
 
-  function _onTabDragOver(e) {
-    // DR-96: let Tauri's native tauri://drag-drop path handle Finder drags.
-    if (e.dataTransfer.types && Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') !== -1) return;
-    if (!_dragTabId) return;
+  function _onTabPointerDown(e) {
+    if (e.button !== 0) return;                          // primary button only (middle-click = U-11)
+    var tabEl = e.target.closest('[data-tab-id]');
+    if (!tabEl) return;
+    if (e.target.closest('[data-close-tab]')) return;    // close button → let the click handler run
+    _ptrDrag = { id: tabEl.dataset.tabId, startX: e.clientX, srcEl: tabEl, dragging: false };
+    try { tabEl.setPointerCapture(e.pointerId); } catch (ex) {}
+  }
 
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-
+  function _onTabPointerMove(e) {
+    if (!_ptrDrag) return;
+    if (!_ptrDrag.dragging) {
+      if (Math.abs(e.clientX - _ptrDrag.startX) < 5) return; // movement past threshold = drag, not a click
+      _ptrDrag.dragging = true;
+      if (_ptrDrag.srcEl) _ptrDrag.srcEl.classList.add('tv-tab--dragging');
+    }
+    e.preventDefault(); // suppress text selection while dragging
     var strip = e.currentTarget.querySelector('.tv-tab-strip');
     if (!strip) return;
-
-    var hit = _dragHitTest(e);
-    if (!hit) {
-      // Cursor not over a tab — remove indicator
-      if (_dragIndicatorEl && _dragIndicatorEl.parentNode) {
-        _dragIndicatorEl.parentNode.removeChild(_dragIndicatorEl);
-        _dragIndicatorEl = null;
-      }
-      return;
-    }
-
-    // Don't show an indicator when hovering the dragged tab itself
-    if (hit.tabEl.dataset.tabId === _dragTabId) {
-      if (_dragIndicatorEl && _dragIndicatorEl.parentNode) {
-        _dragIndicatorEl.parentNode.removeChild(_dragIndicatorEl);
-        _dragIndicatorEl = null;
-      }
-      return;
-    }
-
+    var hit = _ptrHitTest(e.clientX, e.clientY);
+    if (!hit || hit.tabEl.dataset.tabId === _ptrDrag.id) { _removeIndicator(); return; }
     _placeIndicator(strip, hit.tabEl, hit.insertBefore);
   }
 
-  function _onTabDrop(e) {
-    // DR-96: Finder drag — let Tauri handle it
-    if (e.dataTransfer.types && Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') !== -1) return;
+  function _onTabPointerUp(e) {
+    if (!_ptrDrag) return;
+    var pd = _ptrDrag;
+    try { if (pd.srcEl && pd.srcEl.releasePointerCapture) pd.srcEl.releasePointerCapture(e.pointerId); } catch (ex) {}
 
-    e.preventDefault();
+    var didReorder = false;
+    if (pd.dragging) {
+      // A real drag happened — block the trailing click so it doesn't activate a tab.
+      _suppressTabClick = true;
+      setTimeout(function () { _suppressTabClick = false; }, 0);
 
-    var srcId = e.dataTransfer.getData('text/plain');
-    if (!srcId) { _cleanupDrag(); return; }
-
-    var srcIdx = -1;
-    for (var si = 0; si < state.tabs.length; si++) {
-      if (state.tabs[si].id === srcId) { srcIdx = si; break; }
+      var hit = _ptrHitTest(e.clientX, e.clientY);
+      if (hit && hit.tabEl.dataset.tabId !== pd.id) {
+        var srcIdx = -1, destIdx = -1, i;
+        for (i = 0; i < state.tabs.length; i++) { if (state.tabs[i].id === pd.id) { srcIdx = i; break; } }
+        for (i = 0; i < state.tabs.length; i++) { if (state.tabs[i].id === hit.tabEl.dataset.tabId) { destIdx = i; break; } }
+        if (srcIdx !== -1 && destIdx !== -1) {
+          if (!hit.insertBefore) destIdx = destIdx + 1;          // "after" slot
+          if (destIdx !== srcIdx && destIdx !== srcIdx + 1) {    // not a no-op move
+            // Splice with index correction (DR-95): after removing src, shift dest left.
+            var tab = state.tabs.splice(srcIdx, 1)[0];
+            var insertIdx = (destIdx > srcIdx) ? destIdx - 1 : destIdx;
+            state.tabs.splice(insertIdx, 0, tab);
+            didReorder = true;
+          }
+        }
+      }
     }
-    if (srcIdx === -1) { _cleanupDrag(); return; }
-
-    var hit = _dragHitTest(e);
-    if (!hit) { _cleanupDrag(); return; }
-
-    // Compute destination index in the original (pre-splice) array
-    var destTabId = hit.tabEl.dataset.tabId;
-    var destIdx = -1;
-    for (var di = 0; di < state.tabs.length; di++) {
-      if (state.tabs[di].id === destTabId) { destIdx = di; break; }
-    }
-    if (destIdx === -1) { _cleanupDrag(); return; }
-
-    // Adjust destIdx for "after" slot
-    if (!hit.insertBefore) destIdx = destIdx + 1;
-
-    // No-op: inserting immediately before or after itself stays in place
-    if (destIdx === srcIdx || destIdx === srcIdx + 1) { _cleanupDrag(); return; }
-
-    // Splice with index correction (DR-95):
-    // After splice(srcIdx, 1) the array shifts — if destIdx > srcIdx, use destIdx-1.
-    var tab = state.tabs.splice(srcIdx, 1)[0];
-    var insertIdx = (destIdx > srcIdx) ? destIdx - 1 : destIdx;
-    state.tabs.splice(insertIdx, 0, tab);
-
     _cleanupDrag();
-    render();
-    saveSession();
+    if (didReorder) { render(); saveSession(); }
   }
 
-  function _onTabDragEnd(e) {
-    // DR-97: always clean up regardless of whether drop was accepted or cancelled
+  function _onTabPointerCancel(e) {
     _cleanupDrag();
   }
 
@@ -3001,15 +2952,15 @@
     // New-tab page: focus filter input + wire filter/cursor keyboard model
     wireNewTabPage(tvEl);
 
-    // U-14 / F-20: Tab drag-to-reorder (DR-91–DR-98).
-    // Delegate on tvEl (the root component element) — tabbar is a child.
-    // dragover/drop check for 'Files' to stay disjoint from Tauri file-drop (DR-96).
+    // U-14 / F-20: Tab drag-to-reorder (DR-91–DR-98) via POINTER EVENTS.
+    // HTML5 DnD can't be used — Tauri's native drag-drop (needed for Finder
+    // file-drop) swallows the drop (#14373). Pointer events sidestep it.
     var tabbarEl = tvEl.querySelector('.tv-tabbar');
     if (tabbarEl) {
-      tabbarEl.addEventListener('dragstart', _onTabDragStart);
-      tabbarEl.addEventListener('dragover',  _onTabDragOver);
-      tabbarEl.addEventListener('drop',      _onTabDrop);
-      tabbarEl.addEventListener('dragend',   _onTabDragEnd);
+      tabbarEl.addEventListener('pointerdown',   _onTabPointerDown);
+      tabbarEl.addEventListener('pointermove',   _onTabPointerMove);
+      tabbarEl.addEventListener('pointerup',     _onTabPointerUp);
+      tabbarEl.addEventListener('pointercancel', _onTabPointerCancel);
     }
 
     // UX-11: keyboard activation for .tv-recent-row (role="button")
@@ -3084,6 +3035,9 @@
       // Tab activation
       var tabEl = e.target.closest('[data-tab-id]');
       if (tabEl && !e.target.closest('[data-close-tab]')) {
+        // U-14: a pointer drag-reorder just ended — swallow the trailing click
+        // so the dragged tab isn't also activated.
+        if (_suppressTabClick) { _suppressTabClick = false; return; }
         activateTab(tabEl.getAttribute('data-tab-id'));
         return;
       }
