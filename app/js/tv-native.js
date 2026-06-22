@@ -204,7 +204,7 @@
       // dirty edits are preserved. Without this the indicator counts from the
       // prior change while the toast says the file just changed.
       if (window.TVLive && typeof TVLive.notifyChange === 'function') {
-        TVLive.notifyChange(tab.id);
+        TVLive.notifyChange(tab.id, payload.modified);
       }
       showToast((tab.name || 'File') + ' changed on disk — save or discard your edits first');
       return;
@@ -232,9 +232,10 @@
       }
 
       // L-04: Re-inject live status bar after render (tv.render() replaces DOM)
-      // TVLive.refresh() handles finding the correct watchState for the active tab
+      // TVLive.refresh() handles finding the correct watchState for the active tab.
+      // DR-119: pass disk mtime so watchState.lastModTime uses the real value.
       if (window.TVLive && typeof TVLive.refresh === 'function') {
-        TVLive.refresh();
+        TVLive.refresh(payload.modified);
       }
     } else {
       // DR-70: background (non-active) or non-reading native tab changed on disk.
@@ -243,8 +244,9 @@
       // even though content just changed. Stamp the change time now (mirrors poll
       // mode, which calls onFileChange unconditionally) — the visible label is
       // derived from lastModTime by paintRecency() when the tab is next shown.
+      // DR-119: thread disk mtime through so the background stamp is also exact.
       if (window.TVLive && typeof TVLive.notifyChange === 'function') {
-        TVLive.notifyChange(tab.id);
+        TVLive.notifyChange(tab.id, payload.modified);
       }
     }
   }

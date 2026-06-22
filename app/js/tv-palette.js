@@ -114,6 +114,11 @@
       { ic: 'circle', main: 'Decrease text size',    action: 'fontSizeDown',   value: '' },
       // DR-30: F-22 shortcuts overlay
       { ic: 'kbd',    main: 'Preferences & Shortcuts…', action: 'shortcuts',   value: '' },
+      // U-14 / DR-98: keyboard-accessible tab reorder (flat rows, no group header)
+      { ic: 'circle', main: 'Move Tab Left',            action: 'moveTabLeft',  value: '' },
+      { ic: 'circle', main: 'Move Tab Right',           action: 'moveTabRight', value: '' },
+      // U-15 / DR-99: print / export to PDF (hint ⌘P)
+      { ic: 'circle', main: 'Print / Export PDF…',      action: 'printDoc',     value: '' },
     ];
     return commands.filter(function (c) { return _matches(c.main, query); });
   }
@@ -454,6 +459,45 @@
       TVPalette.close();
       if (window.TV && typeof window.TV.openShortcuts === 'function') {
         window.TV.openShortcuts();
+      }
+      return;
+    }
+
+    // U-14 / DR-98: Move Tab Left / Right — keyboard-accessible tab reorder.
+    // Splices active tab one position, then render() + TV.saveSession().
+    if (action === 'moveTabLeft' || action === 'moveTabRight') {
+      TVPalette.close();
+      if (!window.TV || !window.TV.state) return;
+      var tabs = window.TV.state.tabs;
+      var activeId = window.TV.state.activeId;
+      var activeIdx = -1;
+      for (var mti = 0; mti < tabs.length; mti++) {
+        if (tabs[mti].id === activeId) { activeIdx = mti; break; }
+      }
+      if (activeIdx === -1) return;
+      var targetIdx = action === 'moveTabLeft' ? activeIdx - 1 : activeIdx + 1;
+      // Clamp: no-op at boundaries
+      if (targetIdx < 0 || targetIdx >= tabs.length) return;
+      // Splice with index correction (same logic as _onTabDrop in tv-app.js)
+      var movedTab = tabs.splice(activeIdx, 1)[0];
+      var mtInsert = (targetIdx > activeIdx) ? targetIdx - 1 : targetIdx;
+      tabs.splice(mtInsert, 0, movedTab);
+      if (typeof window.TV.render === 'function') window.TV.render();
+      if (typeof window.TV.saveSession === 'function') window.TV.saveSession();
+      return;
+    }
+
+    // U-15 / DR-99: Print / Export PDF
+    if (action === 'printDoc') {
+      TVPalette.close();
+      // window.print() is a no-op in WKWebView — prefer the native print command.
+      if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
+        window.__TAURI__.core.invoke('print_page').catch(function (err) {
+          console.warn('U-15: native print failed; falling back to window.print()', err);
+          if (typeof window.print === 'function') window.print();
+        });
+      } else if (typeof window.print === 'function') {
+        window.print();
       }
       return;
     }

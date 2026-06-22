@@ -153,8 +153,8 @@
   /* ── DR-67: shared on-change hook (poll + native) ─────────── */
   // Called whenever a disk change is detected. Stamps lastModTime, resets
   // the label to "updating…", clears idle state, and re-pulses the blip.
-  function onFileChange(watchState) {
-    watchState.lastModTime = Date.now();
+  function onFileChange(watchState, ts) {
+    watchState.lastModTime = (typeof ts === 'number' && ts > 0) ? ts : Date.now();
     // Clear idle and force-restart blip pulse (DR-67 / DR-68)
     setIdleState(watchState, false);
     if (watchState.statusBarEl) {
@@ -608,7 +608,7 @@
      Also records the file-change timestamp so the elapsed display
      counts from the actual change (native mode has no other place to
      update lastModTime — poll mode updates it inline). */
-  function refresh() {
+  function refresh(ts) {
     var tv = getTV();
     var activeId = tv && tv.state && tv.state.activeId;
     if (!activeId || !_watching[activeId]) return;
@@ -622,7 +622,7 @@
       // injectStatusBarOnly runs after so statusBarEl is fresh and onFileChange
       // can find [data-elapsed] and .blip in the new DOM.
       injectStatusBarOnly(watchState);
-      onFileChange(watchState);
+      onFileChange(watchState, ts);
     }
   }
 
@@ -633,7 +633,7 @@
      just record lastModTime so the elapsed display is correct on the next
      tab-switch (paintRecency derives the label from it). Mirrors poll mode,
      which stamps lastModTime unconditionally. */
-  function notifyChange(tabId) {
+  function notifyChange(tabId, ts) {
     var watchState = _watching[tabId];
     if (!watchState) return;
     var tv = getTV();
@@ -642,9 +642,10 @@
       // if auto-hidden) then full reset to "updating…" + pulse. Without the inject
       // an auto-hidden active tab would stamp the time but show nothing.
       injectStatusBarOnly(watchState);
-      onFileChange(watchState);
+      onFileChange(watchState, ts);
     } else {
-      watchState.lastModTime = Date.now(); // background / non-reading: timestamp only
+      // DR-119: use real disk mtime when available; fall back to Date.now().
+      watchState.lastModTime = (typeof ts === 'number' && ts > 0) ? ts : Date.now();
       setBoltActive(tabId, true);          // the file changed → light the bolt
     }
   }

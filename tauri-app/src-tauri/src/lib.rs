@@ -85,6 +85,8 @@ pub struct DeepEntry {
 pub struct FileChanged {
     pub path: String,
     pub content: String,
+    /// File mtime at change time, epoch ms; None if metadata() fails.
+    pub modified: Option<u64>,
 }
 
 /// Payload emitted when a watched file is removed from disk.
@@ -244,6 +246,15 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
         .map_err(|e| format!("reveal error for {}: {}", path, e))
 }
 
+/// U-15: trigger the WebView's NATIVE print dialog. `window.print()` is a no-op in
+/// WKWebView, so the ⌘P handler and the palette "Print / Export PDF…" command invoke
+/// this instead. The native print renders the page with print media, so tv-print.css
+/// (@media print: hide chrome, force light, unclip diagrams) still applies.
+#[tauri::command]
+fn print_page(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.print().map_err(|e| format!("print error: {}", e))
+}
+
 /// Native save-as dialog; writes content; returns Some(FileDoc) or None if cancelled.
 /// Uses the non-blocking callback API with a oneshot channel to avoid deadlocking
 /// the main thread (E-01 fix).
@@ -375,11 +386,18 @@ fn watch_file(
                         *last = Some(new_content.clone());
                     }
 
+                    let modified = std::fs::metadata(&target_clone)
+                        .and_then(|m| m.modified())
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                        .map(|d| d.as_millis() as u64);
+
                     let _ = app_handle.emit(
                         "file-changed",
                         FileChanged {
                             path: path_clone.clone(),
                             content: new_content,
+                            modified,
                         },
                     );
                 }
@@ -885,6 +903,7 @@ pub fn run() {
             save_md_file,
             save_md_file_as,
             reveal_in_finder,
+            print_page,
             watch_file,
             unwatch_file,
         ])
@@ -1000,4 +1019,50 @@ pub fn run() {
                 }
             }
         });
+}
+
+// ── Tests ──────────────────────────────────────────────────────────────────
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    // F-19 / DR-33, DR-37, DR-39: read_dir_tree lists depth-0 files, one level of
+    // subfolders with their direct files, and flattens depth-2 files into `deep`
+    // with a "sub/deeper/" prefix; non-md/markdown/txt files are excluded.
+    #[test]
+    fn read_dir_tree_structure() {
+        let mut base = std::env::temp_dir();
+        base.push(format!("tv_rdt_test_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(base.join("sub").join("deeper")).unwrap();
+        fs::write(base.join("top.md"), "x").unwrap();
+        fs::write(base.join("notes.txt"), "x").unwrap();
+        fs::write(base.join("ignore.png"), "x").unwrap();
+        fs::write(base.join("sub").join("a.md"), "x").unwrap();
+        fs::write(base.join("sub").join("b.markdown"), "x").unwrap();
+        fs::write(base.join("sub").join("deeper").join("d.md"), "x").unwrap();
+
+        let tree = read_dir_tree(base.to_string_lossy().to_string()).expect("read_dir_tree ok");
+
+        // DR-33: top-level md + txt listed, png excluded
+        let names: Vec<&str> = tree.files.iter().map(|f| f.name.as_str()).collect();
+        assert!(names.contains(&"top.md"), "top.md listed: {:?}", names);
+        assert!(names.contains(&"notes.txt"), "notes.txt listed: {:?}", names);
+        assert!(!names.iter().any(|n| n.ends_with(".png")), "png excluded: {:?}", names);
+        assert!(tree.files.iter().all(|f| !f.path.is_empty()), "entries carry absolute path");
+
+        // DR-37: exactly one subfolder ("sub") with its direct files
+        assert_eq!(tree.subfolders.len(), 1, "one subfolder");
+        assert_eq!(tree.subfolders[0].name, "sub");
+        let sub: Vec<&str> = tree.subfolders[0].files.iter().map(|f| f.name.as_str()).collect();
+        assert!(sub.contains(&"a.md") && sub.contains(&"b.markdown"), "sub files: {:?}", sub);
+
+        // DR-37: depth-2 file flattened into `deep` with from="sub/deeper/"
+        assert_eq!(tree.deep.len(), 1, "one deep file");
+        assert_eq!(tree.deep[0].name, "d.md");
+        assert_eq!(tree.deep[0].from, "sub/deeper/", "deep `from` prefix");
+
+        let _ = fs::remove_dir_all(&base);
+    }
 }

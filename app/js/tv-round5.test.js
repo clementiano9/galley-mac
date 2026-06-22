@@ -451,9 +451,11 @@ console.log('\n#8 DR-65–71: live-watch recency label\n');
     /notifyChange:\s*notifyChange/.test(live),
     'notifyChange not on the public API'
   );
+  // DR-119: notifyChange now also threads the real disk mtime as a 2nd arg
+  // (notifyChange(tab.id, payload.modified)); the [,)] accepts both arities.
   assert(
     'DR-70: handleFileChanged stamps background tabs via TVLive.notifyChange',
-    /TVLive\.notifyChange\(tab\.id\)/.test(native),
+    /TVLive\.notifyChange\(tab\.id[,)]/.test(native),
     'notifyChange not called for background native tabs'
   );
 
@@ -485,7 +487,7 @@ console.log('\n#8 DR-65–71: live-watch recency label\n');
   // via notifyChange before the early return.
   assert(
     'DR-65/DR-70: native dirty-tab change stamps recency (notifyChange in dirty guard)',
-    /if \(tab\.dirty\)\s*\{[\s\S]*?TVLive\.notifyChange\(tab\.id\)/.test(native),
+    /if \(tab\.dirty\)\s*\{[\s\S]*?TVLive\.notifyChange\(tab\.id[,)]/.test(native),
     'native dirty branch does not stamp lastModTime via notifyChange'
   );
 

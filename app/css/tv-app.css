@@ -139,6 +139,28 @@ html, body, #tv-root {
   animation: tv-pulse 1.9s ease-in-out infinite;
 }
 @keyframes tv-pulse { 0%,100%{opacity:.55} 50%{opacity:1} }
+
+/* U-14 / F-20: drag-to-reorder ─────────────────────────── */
+.tv-tab[draggable="true"] { cursor: grab; }
+.tv-tab[draggable="true"]:active { cursor: grabbing; }
+.tv-tab--dragging { opacity: 0.4; will-change: transform; }
+/* .tv-drop-indicator: position:absolute inside .tv-tab-strip (position:relative).
+   left is computed in JS as tabEl.offsetLeft (before) / tabEl.offsetLeft+offsetWidth (after).
+   Strip-local coords — do NOT subtract scrollLeft. */
+.tv-drop-indicator {
+  position: absolute;
+  top: 4px; bottom: 4px;
+  width: 2px;
+  background: var(--tv-accent) !important;
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 10;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tv-tab--dragging { transition: none !important; }
+  .tv-drop-indicator { transition: none !important; }
+}
+
 /* L-03: .tv-newtab is now a SIBLING to .tv-tab-strip (not a child of the scroll
    area). It lives in .tv-tabbar's flex row, is never scrolled, never masked,
    and is always fully opaque and clickable regardless of tab count.
@@ -295,10 +317,12 @@ html, body, #tv-root {
 }
 .tv-tree-row.active .ic { color: var(--tv-accent-text) !important; }
 .tv-tree-row:hover:not(.active) { background: var(--tv-bg-hover) !important; }
-/* UX-10: Keyboard cursor highlight — visible in both light and dark themes,
+/* UX-10 / DR-108: Keyboard cursor highlight — visible in both light and dark themes,
    on both active and inactive rows. Uses outline so it does not affect layout.
-   Distinct from .active (which uses accent-weak background + accent border). */
-.tv-tree-row.kbd-cursor {
+   Distinct from .active (which uses accent-weak background + accent border).
+   .tv-folder-head is not a .tv-tree-row so gets its own matching rule. */
+.tv-tree-row.kbd-cursor,
+.tv-folder-head.kbd-cursor {
   outline: 2px solid var(--tv-accent);
   outline-offset: -2px;
   border-radius: var(--tv-radius-sm);
@@ -1598,6 +1622,23 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
   background: var(--tv-bg-hover) !important;
   color: var(--tv-text-secondary) !important;
 }
+/* DR-83: filename truncates before the timestamp is ever clipped */
+.tv-tree-row.recent .tv-recent-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* DR-83: muted relative timestamp — flex-shrink:0 keeps it fully visible */
+.tv-tree-row.recent .tv-recent-ts {
+  flex: 0 0 auto;
+  white-space: nowrap;
+  font-size: 10.5px;
+  color: var(--tv-text-muted);
+  opacity: .7;
+  padding-left: 4px;
+}
 
 /* ── UX-SB5: sidebar per-row close button ────────────────────
    Hidden at rest (opacity:0); visible when the row is hovered
@@ -1826,6 +1867,7 @@ input:focus-visible,
     transform: translateX(-50%) !important;
   }
   /* L-16: suppress micro-transitions (0.10–0.12s) per WCAG 2.3.3 */
+  /* DR-115: .tv-folder-head added — not a .tv-tree-row but shares the cursor cascade */
   .tv-tab,
   .tv-newtab,
   .tv-side-toggle,
@@ -1833,6 +1875,7 @@ input:focus-visible,
   .tv-prefs-swatch,
   .tv-prefs-btn,
   .tv-tree-row,
+  .tv-folder-head,
   .tv-pal-row { transition: none !important; }
   /* UV-09: round-5 components with transition — missing from prior block */
   .tv-titlebtn,

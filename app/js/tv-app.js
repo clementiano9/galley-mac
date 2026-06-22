@@ -493,6 +493,7 @@
           ' aria-selected="' + (isActive ? 'true' : 'false') + '"' +
           ' aria-controls="tv-viewer-panel"' +
           ' tabindex="' + (isActive ? '0' : '-1') + '"' +
+          ' draggable="true"' +
           ' data-tab-id="' + esc(t.id) + '">' +
           lead +
           '<span class="name">' + esc(t.name) + '</span>' +
@@ -574,6 +575,18 @@
     render();
   }
 
+  // DR-108: stable DOM id from a sidebar-item key string (no crypto needed).
+  // Replaces non-word chars with '_', prepends 'sbitem-', truncates to 48 chars.
+  function sbItemId(key) {
+    // ids must be unique (aria-activedescendant resolves to the first DOM match),
+    // so append a djb2 hash of the full key — truncating the slug alone collides
+    // for files whose sanitized path prefix matches in the first N chars.
+    var s = String(key);
+    var h = 5381;
+    for (var i = 0; i < s.length; i++) { h = ((h << 5) + h + s.charCodeAt(i)) | 0; }
+    return 'sbitem-' + s.replace(/[^\w-]/g, '_').slice(0, 40) + '-' + (h >>> 0).toString(36);
+  }
+
   /* ── F-19: build one folder's tree section ─────────────────── */
   function buildFolderSection(tree) {
     var icons = window.TV_ICONS || {};
@@ -589,9 +602,14 @@
 
     var html = '';
 
-    // Folder head
+    // Folder head — DR-108: role="option" + data-sidebar-item + id for cursor
+    var fhKey = 'folder:' + path;
     html += (
       '<div class="tv-folder-head"' +
+        ' id="' + sbItemId(fhKey) + '"' +
+        ' role="option"' +
+        ' aria-selected="false"' +
+        ' data-sidebar-item="' + esc(fhKey) + '"' +
         ' data-folder-toggle="' + esc(path) + '"' +
         ' data-folder-ctx-target="' + esc(path) + '">' +
         '<span class="tv-chev' + (folded ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
@@ -620,8 +638,15 @@
         tree.subfolders.forEach(function (s) {
           var skey = path + '/' + s.name;
           var sfolded = !!state.folderCollapsed[skey];
+          // DR-108: subfolder row gets role="option" + data-sidebar-item
+          var sfKey = 'subfolder:' + skey;
           html += (
-            '<div class="tv-tree-row subfolder" data-folder-toggle="' + esc(skey) + '">' +
+            '<div class="tv-tree-row subfolder"' +
+              ' id="' + sbItemId(sfKey) + '"' +
+              ' role="option"' +
+              ' aria-selected="false"' +
+              ' data-sidebar-item="' + esc(sfKey) + '"' +
+              ' data-folder-toggle="' + esc(skey) + '">' +
               '<span class="tv-chev' + (sfolded ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
               '<span class="ic">' + (icons.folder || '') + '</span>' +
               '<span>' + esc(s.name) + '</span>' +
@@ -639,8 +664,15 @@
       if (tree.deep && tree.deep.length > 0) {
         var dkey = path + '/__deep';
         var dfolded = !!state.folderCollapsed[dkey];
+        // DR-108: deep-bucket row gets role="option" + data-sidebar-item
+        var dItemKey = 'deep:' + dkey;
         html += (
-          '<div class="tv-tree-row subfolder deep-bucket" data-folder-toggle="' + esc(dkey) + '"' +
+          '<div class="tv-tree-row subfolder deep-bucket"' +
+            ' id="' + sbItemId(dItemKey) + '"' +
+            ' role="option"' +
+            ' aria-selected="false"' +
+            ' data-sidebar-item="' + esc(dItemKey) + '"' +
+            ' data-folder-toggle="' + esc(dkey) + '"' +
             ' title="Files nested more than one level deep, grouped here">' +
             '<span class="tv-chev' + (dfolded ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
             '<span class="ic ic-ell">' + (icons.ellipsis || '') + '</span>' +
@@ -689,8 +721,14 @@
       ? ('title="' + esc('…/' + opts.trail + fileName) + '"')
       : (isOpen ? 'title="' + esc(fileName + ' · open') + '"' : '');
 
+    // DR-108: tree file rows get role="option" + data-sidebar-item for cursor participation
+    var tfrKey = filePath ? 'file:' + filePath : '';
     return (
       '<div class="' + cls + '"' +
+        (tfrKey ? ' id="' + sbItemId(tfrKey) + '"' : '') +
+        ' role="option"' +
+        ' aria-selected="' + (isActive ? 'true' : 'false') + '"' +
+        (tfrKey ? ' data-sidebar-item="' + esc(tfrKey) + '"' : '') +
         (filePath ? ' data-tree-file-path="' + esc(filePath) + '"' : '') +
         (openTab ? ' data-tree-tab-id="' + esc(openTab.id) + '"' : '') +
         (titleAttr ? ' ' + titleAttr : '') + '>' +
@@ -1243,14 +1281,13 @@
     });
 
     // F-02: Recent section — closed files from localStorage not currently open
-    var recentPaths = loadRecentPaths();
     var openNativePaths = {};
     state.tabs.forEach(function (t) {
       if (t.nativePath) openNativePaths[t.nativePath] = true;
     });
-    var closedRecent = recentPaths.filter(function (p) {
-      return !openNativePaths[p];
-    }).slice(0, 10);
+    var closedRecent = loadRecentEntries().filter(function (entry) {
+      return !openNativePaths[entry.path];
+    }).slice(0, 8); // DR-82: cap at 8
 
     // UX-10: Build rows with ARIA listbox/option roles.
     var rows = '';
@@ -1337,12 +1374,22 @@
     if (closedRecent.length) {
       rows += '<div class="tv-side-divider"></div>';
       rows += '<div class="tv-side-label tv-side-recent-label">Recent</div>';
-      closedRecent.forEach(function (p) {
-        var name = p.split('/').pop() || p;
+      closedRecent.forEach(function (entry) {
+        var name = entry.path.split('/').pop() || entry.path;
+        var tsLabel = (entry.ts > 0) ? relativeTime(entry.ts) : '';
+        // DR-109: recent rows need id + aria-selected for cursor participation
+        var rKey = 'recent:' + entry.path;
         rows += (
-          '<div class="tv-tree-row file recent" data-recent-path="' + esc(p) + '">' +
+          '<div class="tv-tree-row file recent"' +
+            ' id="' + sbItemId(rKey) + '"' +
+            ' role="option"' +
+            ' aria-selected="false"' +
+            ' data-sidebar-item="' + esc(rKey) + '"' +
+            ' data-recent-path="' + esc(entry.path) + '"' +
+            ' title="' + esc(entry.path) + '">' +
             ic('clock') +
-            '<span>' + esc(name) + '</span>' +
+            '<span class="tv-recent-name">' + esc(name) + '</span>' +
+            (tsLabel ? '<span class="tv-recent-ts">' + esc(tsLabel) + '</span>' : '') +
           '</div>'
         );
       });
@@ -1364,7 +1411,7 @@
           ' role="listbox"' +
           ' aria-label="Open files"' +
           ' aria-orientation="vertical"' +
-          ' tabindex="-1">' +
+          ' tabindex="0">' +
           // F-19: folder trees at the top
           folderSections +
           // Legacy open-tabs / recent rows below
@@ -1462,7 +1509,7 @@
       return (
         '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
           toolbar +
-          '<div class="tv-scroll" data-scroll>' +
+          '<div class="tv-scroll" data-scroll tabindex="0">' +
             '<div class="tv-content">' +
               editContent +
             '</div>' +
@@ -1477,7 +1524,7 @@
     if (!tab.source || !tab.source.trim()) {
       return (
         '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
-          '<div class="tv-scroll" data-scroll>' +
+          '<div class="tv-scroll" data-scroll tabindex="0">' +
             '<div class="tv-content tv-content--readable">' +
               '<div class="tv-empty-doc">This file is empty.</div>' +
             '</div>' +
@@ -1515,7 +1562,7 @@
     var editHint = '<div class="tv-edit-hint">⌘E to edit</div>';
     return (
       '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
-        '<div class="tv-scroll" data-scroll>' +
+        '<div class="tv-scroll" data-scroll tabindex="0">' +
           largeBanner +
           '<div class="tv-content tv-content--readable">' +
             pencilBtn +
@@ -1556,7 +1603,7 @@
 
     return (
       '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
-        '<div class="tv-scroll" data-scroll>' +
+        '<div class="tv-scroll" data-scroll tabindex="0">' +
           '<div class="tv-content tv-content--readable">' +
             '<div class="tv-error-state">' +
               '<span class="tv-error-badge" aria-hidden="true">&#9888;</span>' +
@@ -1580,7 +1627,7 @@
   function buildNewTabPage() {
     return (
       '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
-        '<div class="tv-scroll" data-scroll>' +
+        '<div class="tv-scroll" data-scroll tabindex="0">' +
           '<div class="tv-ntp-canvas" aria-hidden="true"></div>' +
         '</div>' +
       '</div>'
@@ -1912,6 +1959,17 @@
       }
     }
 
+    // U-15 / DR-106 (Should): set data-print-title on .tv-content so
+    // tv-print.css can emit a filename header above the first heading.
+    // tab.name is already the basename (e.g. "architecture.md") — no
+    // path is written here (privacy: full paths not exposed in shared PDFs).
+    if (activeTab && !activeTab.untitled) {
+      var printTitleEl = root.querySelector('.tv-content');
+      if (printTitleEl) {
+        printTitleEl.setAttribute('data-print-title', activeTab.name || '');
+      }
+    }
+
     // Wire TVEdit if in edit mode
     if (state.mode === 'edit' && window.TVEdit && typeof TVEdit.wire === 'function' && activeTab) {
       var tvRoot = root.querySelector('.tv');
@@ -1953,34 +2011,38 @@
     renderSidebarCursor();
   }
 
-  // UX-10: Renders the sidebar keyboard cursor highlight using .kbd-cursor class
-  // and aria-activedescendant on the listbox. Uses sbKbd.id (tab id) NOT index,
+  // UX-10 / DR-108: Renders the sidebar keyboard cursor highlight using .kbd-cursor class
+  // and aria-activedescendant on the listbox. Uses sbKbd.id (item key or tab id) NOT index,
   // so it survives re-renders correctly. No DOM focus() call — WebKit-safe.
+  // DR-108: widened selector covers both data-sidebar-tab rows (open-file rows) and
+  // data-sidebar-item rows (folder-head, subfolder, recent) in all three query sites.
   function renderSidebarCursor() {
     var listbox = document.getElementById('tv-sidebar-listbox');
     if (!listbox) return;
 
-    // Clear all cursor highlights and aria-activedescendant
+    // DR-108 site (a): clear-pass — widen to include all option row types
     var opts = Array.prototype.slice.call(
-      listbox.querySelectorAll('[role="option"][data-sidebar-tab]')
+      listbox.querySelectorAll('[role="option"][data-sidebar-tab],[role="option"][data-sidebar-item]')
     );
     opts.forEach(function (el) { el.classList.remove('kbd-cursor'); });
     listbox.removeAttribute('aria-activedescendant');
 
     if (!sbKbd.active || !sbKbd.id) return;
 
-    // Find the option matching sbKbd.id
+    // DR-108 site (b): find-target loop — match against both data attrs
     var target = null;
     for (var i = 0; i < opts.length; i++) {
-      if (opts[i].getAttribute('data-sidebar-tab') === sbKbd.id) {
+      var elKey = opts[i].getAttribute('data-sidebar-item') || opts[i].getAttribute('data-sidebar-tab');
+      if (elKey === sbKbd.id) {
         target = opts[i]; break;
       }
     }
 
-    // If the cursor id no longer exists (tab was closed), clamp to first option
+    // DR-108 site (c): clamp block — fall back to first option; read id via
+    // data-sidebar-item (preferred) or data-sidebar-tab (legacy open-file rows)
     if (!target && opts.length) {
       target = opts[0];
-      sbKbd.id = target.getAttribute('data-sidebar-tab');
+      sbKbd.id = target.getAttribute('data-sidebar-item') || target.getAttribute('data-sidebar-tab');
     }
 
     if (target) {
@@ -2771,6 +2833,165 @@
     setCursor(0);
   }
 
+  /* ────────────────────────────────────────────────────────────
+     U-14 / F-20: Tab drag-to-reorder (DR-91–DR-98)
+     Event delegation via the tabbar element. All four handlers
+     share two module-level drag-state variables.
+   ──────────────────────────────────────────────────────────── */
+  var _dragTabId = null;         // id of the tab currently being dragged
+  var _dragIndicatorEl = null;   // current .tv-drop-indicator element
+
+  // Compute which .tv-tab the cursor is over and the insertion slot (before/after).
+  // Returns { tabEl, insertBefore } or null.
+  function _dragHitTest(e) {
+    var tabEl = e.target.closest('[data-tab-id]');
+    if (!tabEl) return null;
+    var rect = tabEl.getBoundingClientRect();
+    var mid = rect.left + rect.width / 2;
+    return { tabEl: tabEl, insertBefore: e.clientX < mid };
+  }
+
+  // Place (or move) the drop-indicator inside the strip.
+  // left = tabEl.offsetLeft (before) or tabEl.offsetLeft + offsetWidth (after).
+  // offsetLeft is already strip-local — do NOT subtract scrollLeft.
+  function _placeIndicator(strip, tabEl, insertBefore) {
+    var left = insertBefore ? tabEl.offsetLeft : tabEl.offsetLeft + tabEl.offsetWidth;
+    if (!_dragIndicatorEl) {
+      _dragIndicatorEl = document.createElement('div');
+      _dragIndicatorEl.className = 'tv-drop-indicator';
+      strip.appendChild(_dragIndicatorEl);
+    }
+    _dragIndicatorEl.style.left = left + 'px';
+  }
+
+  function _cleanupDrag() {
+    // Remove dragging class from any tab still carrying it
+    var strip = document.querySelector('.tv-tab-strip');
+    if (strip) {
+      var draggingEls = strip.querySelectorAll('.tv-tab--dragging');
+      for (var di = 0; di < draggingEls.length; di++) {
+        draggingEls[di].classList.remove('tv-tab--dragging');
+      }
+      // Remove all indicator elements
+      var indicators = strip.querySelectorAll('.tv-drop-indicator');
+      for (var ii = 0; ii < indicators.length; ii++) {
+        indicators[ii].parentNode.removeChild(indicators[ii]);
+      }
+    }
+    _dragTabId = null;
+    _dragIndicatorEl = null;
+  }
+
+  function _onTabDragStart(e) {
+    // DR-91/DR-92: only handle .tv-tab elements
+    var tabEl = e.target.closest('[data-tab-id]');
+    if (!tabEl) return;
+
+    _dragTabId = tabEl.dataset.tabId;
+    e.dataTransfer.setData('text/plain', _dragTabId);
+    e.dataTransfer.effectAllowed = 'move';
+
+    // DR-93: custom ghost — clone off-screen, setDragImage, then remove.
+    // If setDragImage is a no-op in this WKWebView version the browser default
+    // ghost is used as a cosmetic fallback (see spec WKWebView reliability note).
+    var ghost = tabEl.cloneNode(true);
+    ghost.style.position = 'absolute';
+    ghost.style.top = '-9999px';
+    ghost.style.left = '-9999px';
+    document.body.appendChild(ghost);
+    if (typeof e.dataTransfer.setDragImage === 'function') {
+      e.dataTransfer.setDragImage(ghost, 0, 0);
+    }
+    setTimeout(function () {
+      if (ghost.parentNode) ghost.parentNode.removeChild(ghost);
+    }, 0);
+
+    // Apply .tv-tab--dragging after ghost is captured (deferred so opacity change
+    // doesn't affect the ghost snapshot).
+    setTimeout(function () { tabEl.classList.add('tv-tab--dragging'); }, 0);
+  }
+
+  function _onTabDragOver(e) {
+    // DR-96: let Tauri's native tauri://drag-drop path handle Finder drags.
+    if (e.dataTransfer.types && Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') !== -1) return;
+    if (!_dragTabId) return;
+
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+
+    var strip = e.currentTarget.querySelector('.tv-tab-strip');
+    if (!strip) return;
+
+    var hit = _dragHitTest(e);
+    if (!hit) {
+      // Cursor not over a tab — remove indicator
+      if (_dragIndicatorEl && _dragIndicatorEl.parentNode) {
+        _dragIndicatorEl.parentNode.removeChild(_dragIndicatorEl);
+        _dragIndicatorEl = null;
+      }
+      return;
+    }
+
+    // Don't show an indicator when hovering the dragged tab itself
+    if (hit.tabEl.dataset.tabId === _dragTabId) {
+      if (_dragIndicatorEl && _dragIndicatorEl.parentNode) {
+        _dragIndicatorEl.parentNode.removeChild(_dragIndicatorEl);
+        _dragIndicatorEl = null;
+      }
+      return;
+    }
+
+    _placeIndicator(strip, hit.tabEl, hit.insertBefore);
+  }
+
+  function _onTabDrop(e) {
+    // DR-96: Finder drag — let Tauri handle it
+    if (e.dataTransfer.types && Array.prototype.indexOf.call(e.dataTransfer.types, 'Files') !== -1) return;
+
+    e.preventDefault();
+
+    var srcId = e.dataTransfer.getData('text/plain');
+    if (!srcId) { _cleanupDrag(); return; }
+
+    var srcIdx = -1;
+    for (var si = 0; si < state.tabs.length; si++) {
+      if (state.tabs[si].id === srcId) { srcIdx = si; break; }
+    }
+    if (srcIdx === -1) { _cleanupDrag(); return; }
+
+    var hit = _dragHitTest(e);
+    if (!hit) { _cleanupDrag(); return; }
+
+    // Compute destination index in the original (pre-splice) array
+    var destTabId = hit.tabEl.dataset.tabId;
+    var destIdx = -1;
+    for (var di = 0; di < state.tabs.length; di++) {
+      if (state.tabs[di].id === destTabId) { destIdx = di; break; }
+    }
+    if (destIdx === -1) { _cleanupDrag(); return; }
+
+    // Adjust destIdx for "after" slot
+    if (!hit.insertBefore) destIdx = destIdx + 1;
+
+    // No-op: inserting immediately before or after itself stays in place
+    if (destIdx === srcIdx || destIdx === srcIdx + 1) { _cleanupDrag(); return; }
+
+    // Splice with index correction (DR-95):
+    // After splice(srcIdx, 1) the array shifts — if destIdx > srcIdx, use destIdx-1.
+    var tab = state.tabs.splice(srcIdx, 1)[0];
+    var insertIdx = (destIdx > srcIdx) ? destIdx - 1 : destIdx;
+    state.tabs.splice(insertIdx, 0, tab);
+
+    _cleanupDrag();
+    render();
+    saveSession();
+  }
+
+  function _onTabDragEnd(e) {
+    // DR-97: always clean up regardless of whether drop was accepted or cancelled
+    _cleanupDrag();
+  }
+
   function wireEvents(tvEl) {
     if (!tvEl) return;
 
@@ -2779,6 +3000,17 @@
 
     // New-tab page: focus filter input + wire filter/cursor keyboard model
     wireNewTabPage(tvEl);
+
+    // U-14 / F-20: Tab drag-to-reorder (DR-91–DR-98).
+    // Delegate on tvEl (the root component element) — tabbar is a child.
+    // dragover/drop check for 'Files' to stay disjoint from Tauri file-drop (DR-96).
+    var tabbarEl = tvEl.querySelector('.tv-tabbar');
+    if (tabbarEl) {
+      tabbarEl.addEventListener('dragstart', _onTabDragStart);
+      tabbarEl.addEventListener('dragover',  _onTabDragOver);
+      tabbarEl.addEventListener('drop',      _onTabDrop);
+      tabbarEl.addEventListener('dragend',   _onTabDragEnd);
+    }
 
     // UX-11: keyboard activation for .tv-recent-row (role="button")
     tvEl.addEventListener('keydown', function (e) {
@@ -2805,6 +3037,29 @@
           renderSidebarCursor();
         }
       }, { passive: true });
+    }
+
+    // DR-107: Tab-key focus on #tv-sidebar-listbox seeds the cursor so the user
+    // can navigate immediately via arrow keys. Guard: only when sidebar is open.
+    var listboxEl = tvEl.querySelector('#tv-sidebar-listbox');
+    if (listboxEl) {
+      listboxEl.addEventListener('focus', function () {
+        if (!state.sidebarOpen) return;
+        var firstOpt = listboxEl.querySelector('[data-sidebar-item],[data-sidebar-tab]');
+        if (!firstOpt) return;
+        // Restore last-used position if it is still in the DOM; otherwise seed to first
+        if (sbKbd.id) {
+          var existing = listboxEl.querySelector(
+            '[data-sidebar-item="' + CSS.escape(sbKbd.id) + '"],[data-sidebar-tab="' + CSS.escape(sbKbd.id) + '"]'
+          );
+          if (!existing) sbKbd.id = null;
+        }
+        if (!sbKbd.id) {
+          sbKbd.id = firstOpt.getAttribute('data-sidebar-item') || firstOpt.getAttribute('data-sidebar-tab');
+        }
+        sbKbd.active = true;
+        renderSidebarCursor();
+      });
     }
 
     tvEl.addEventListener('click', function (e) {
@@ -2876,6 +3131,18 @@
                   var tab = state.tabs.find(function (t) { return t.id === id; });
                   if (tab) tab.nativePath = doc.path || rpath;
                 }
+              }
+              // DR-84: restore stored scrollTop for the created tab.
+              // No tv:rendered event exists; openInto/openDoc have no nativeScrollTop
+              // param — mutate the tab directly so the next render() applies it.
+              var recentEntries = loadRecentEntries();
+              var recentEntry = null;
+              for (var ri = 0; ri < recentEntries.length; ri++) {
+                if (recentEntries[ri].path === rpath) { recentEntry = recentEntries[ri]; break; }
+              }
+              if (recentEntry && recentEntry.scrollTop) {
+                var created = state.tabs.find(function (t) { return t.nativePath === rpath; });
+                if (created) created.scrollTop = recentEntry.scrollTop;
               }
             })
             .catch(function (err) {
@@ -3582,11 +3849,29 @@
   }
 
   function toggleSidebar() {
+    var wasOpen = state.sidebarOpen;
     state.sidebarOpen = !state.sidebarOpen;
     // F-09: an explicit user toggle pins the choice — the responsive
     // ResizeObserver stops auto-adjusting the sidebar default after this.
     state.sidebarUserToggled = true;
+    // Closing: clear the keyboard cursor BEFORE render() so the stale .kbd-cursor
+    // class isn't painted onto the (now hidden) listbox.
+    if (wasOpen && !state.sidebarOpen) sbKbd.active = false;
     render();
+    // DR-113: when ⌘B opens the sidebar, seed the keyboard cursor to the first
+    // option so the user can navigate immediately via arrow keys — new work.
+    if (!wasOpen && state.sidebarOpen) {
+      requestAnimationFrame(function () {
+        var listbox = document.getElementById('tv-sidebar-listbox');
+        if (!listbox) return;
+        var firstOpt = listbox.querySelector('[data-sidebar-item],[data-sidebar-tab]');
+        if (firstOpt) {
+          sbKbd.active = true;
+          sbKbd.id = firstOpt.getAttribute('data-sidebar-item') || firstOpt.getAttribute('data-sidebar-tab');
+          renderSidebarCursor();
+        }
+      });
+    }
   }
 
   // F-05/U-07: Font size control — DR-27: floor 13px, cap 22px (DR-29: persisted)
@@ -3828,6 +4113,7 @@
 
     // Only handle navigation keys here; other keys fall through to the keyboard router below.
     var navKey = (e.key === 'ArrowDown' || e.key === 'ArrowUp' ||
+                  e.key === 'ArrowLeft' || e.key === 'ArrowRight' ||
                   e.key === 'Enter' || e.key === ' ' ||
                   e.key === 'Home' || e.key === 'End' ||
                   e.key === 'Escape');
@@ -3842,6 +4128,10 @@
       if (sbKbd.active) {
         sbKbd.active = false;
         renderSidebarCursor();
+        // DR-112: return keyboard attention to content pane. The only permitted
+        // element.focus() in this feature — requires .tv-scroll tabindex="0" (buildViewer).
+        var scrollEl = document.querySelector('.tv-scroll');
+        if (scrollEl) scrollEl.focus();
       }
       return; // return so arrows/Enter/etc below don't run on Escape
     }
@@ -3853,15 +4143,21 @@
 
     var listbox = document.getElementById('tv-sidebar-listbox');
     if (!listbox) return;
+    // DR-108: widen query to cover all option row types (folder-head, subfolder, recent, file)
     var opts = Array.prototype.slice.call(
-      listbox.querySelectorAll('[role="option"][data-sidebar-tab]')
+      listbox.querySelectorAll('[role="option"][data-sidebar-tab],[role="option"][data-sidebar-item]')
     );
     if (!opts.length) return;
+
+    // DR-108: read key from data-sidebar-item (preferred) or data-sidebar-tab (open-file legacy)
+    function _optKey(el) {
+      return el.getAttribute('data-sidebar-item') || el.getAttribute('data-sidebar-tab');
+    }
 
     // Find current cursor index (fallback to 0)
     var curIdx = 0;
     for (var i = 0; i < opts.length; i++) {
-      if (opts[i].getAttribute('data-sidebar-tab') === sbKbd.id) {
+      if (_optKey(opts[i]) === sbKbd.id) {
         curIdx = i; break;
       }
     }
@@ -3869,7 +4165,7 @@
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       var nextIdx = Math.min(curIdx + 1, opts.length - 1);
-      sbKbd.id = opts[nextIdx].getAttribute('data-sidebar-tab');
+      sbKbd.id = _optKey(opts[nextIdx]);
       renderSidebarCursor();
       return;
     }
@@ -3877,33 +4173,156 @@
     if (e.key === 'ArrowUp') {
       e.preventDefault();
       var prevIdx = Math.max(curIdx - 1, 0);
-      sbKbd.id = opts[prevIdx].getAttribute('data-sidebar-tab');
+      sbKbd.id = _optKey(opts[prevIdx]);
       renderSidebarCursor();
       return;
     }
 
     if (e.key === 'Home') {
       e.preventDefault();
-      sbKbd.id = opts[0].getAttribute('data-sidebar-tab');
+      sbKbd.id = _optKey(opts[0]);
       renderSidebarCursor();
       return;
     }
 
     if (e.key === 'End') {
       e.preventDefault();
-      sbKbd.id = opts[opts.length - 1].getAttribute('data-sidebar-tab');
+      sbKbd.id = _optKey(opts[opts.length - 1]);
       renderSidebarCursor();
       return;
     }
 
+    // DR-110: ArrowLeft / ArrowRight — collapse/expand folder sections
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      e.preventDefault();
+      var curEl = null;
+      for (var j = 0; j < opts.length; j++) {
+        if (_optKey(opts[j]) === sbKbd.id) { curEl = opts[j]; break; }
+      }
+      if (!curEl) return;
+      var itemKey = curEl.getAttribute('data-sidebar-item') || '';
+      var toggleKey = curEl.getAttribute('data-folder-toggle');
+      var isFolderRow = (itemKey.indexOf('folder:') === 0 ||
+                         itemKey.indexOf('subfolder:') === 0 ||
+                         itemKey.indexOf('deep:') === 0);
+      if (isFolderRow && toggleKey) {
+        var isCollapsed = !!state.folderCollapsed[toggleKey];
+        if (e.key === 'ArrowLeft') {
+          if (!isCollapsed) {
+            // Collapse the section
+            toggleFolderCollapse(toggleKey);
+            requestAnimationFrame(function () { renderSidebarCursor(); });
+          }
+          // If already collapsed: no-op (no parent navigation — one level only)
+        } else {
+          // ArrowRight
+          if (isCollapsed) {
+            // Expand the section
+            toggleFolderCollapse(toggleKey);
+            requestAnimationFrame(function () {
+              // Move cursor to first child file row after expansion
+              var lb = document.getElementById('tv-sidebar-listbox');
+              if (!lb) return;
+              var newOpts = Array.prototype.slice.call(
+                lb.querySelectorAll('[role="option"][data-sidebar-tab],[role="option"][data-sidebar-item]')
+              );
+              // Find the folder row and pick the next row after it
+              var fIdx = 0;
+              for (var k = 0; k < newOpts.length; k++) {
+                var nk = newOpts[k].getAttribute('data-sidebar-item') || newOpts[k].getAttribute('data-sidebar-tab');
+                if (nk === sbKbd.id) { fIdx = k; break; }
+              }
+              if (fIdx + 1 < newOpts.length) {
+                var nextEl = newOpts[fIdx + 1];
+                var nextKey = nextEl.getAttribute('data-sidebar-item') || nextEl.getAttribute('data-sidebar-tab');
+                sbKbd.id = nextKey;
+              }
+              renderSidebarCursor();
+            });
+          }
+          // If already expanded: no-op (cursor stays on folder row)
+        }
+      }
+      // ArrowLeft/Right on file rows: no-op per spec
+      return;
+    }
+
+    // DR-111: Enter/Space — dispatch-first: inspect data-sidebar-item prefix before
+    // falling through to activateTab. This fixes the silent misroute of path-keyed rows.
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      if (sbKbd.id) {
+      if (!sbKbd.id) return;
+
+      // Find the current cursor element to inspect its attributes
+      var cursorEl = null;
+      for (var m = 0; m < opts.length; m++) {
+        if (_optKey(opts[m]) === sbKbd.id) { cursorEl = opts[m]; break; }
+      }
+      if (!cursorEl) return;
+
+      var sidebarItem = cursorEl.getAttribute('data-sidebar-item') || '';
+
+      // (1) Folder / subfolder / deep-bucket toggle
+      if (sidebarItem.indexOf('folder:') === 0 ||
+          sidebarItem.indexOf('subfolder:') === 0 ||
+          sidebarItem.indexOf('deep:') === 0) {
+        var ftoggleKey = cursorEl.getAttribute('data-folder-toggle');
+        if (ftoggleKey) {
+          toggleFolderCollapse(ftoggleKey);
+          requestAnimationFrame(function () { renderSidebarCursor(); });
+        }
+        return;
+      }
+
+      // (2) Folder-tree file row (file:<nativePath>)
+      if (sidebarItem.indexOf('file:') === 0) {
+        var tfPath = cursorEl.getAttribute('data-tree-file-path');
+        var existingTabId = cursorEl.getAttribute('data-tree-tab-id');
+        if (existingTabId) {
+          activateTab(existingTabId);
+        } else if (tfPath) {
+          _openTreeFilePath(tfPath);
+        }
+        requestAnimationFrame(function () { renderSidebarCursor(); });
+        return;
+      }
+
+      // (3) Recent row (recent:<path>)
+      if (sidebarItem.indexOf('recent:') === 0) {
+        var rpath = cursorEl.getAttribute('data-recent-path');
+        if (rpath && window.TVNative && TVNative.available) {
+          window.__TAURI__.core.invoke('read_md_file', { path: rpath })
+            .then(function (doc) {
+              if (window.TVNative && typeof TVNative.openInto === 'function') {
+                TVNative.openInto(doc);
+              }
+              // DR-84: restore stored scrollTop for the created tab (parity with the
+              // click path) — mutate the tab directly so the next render() applies it.
+              var kEntries = loadRecentEntries();
+              var kEntry = null;
+              for (var ki = 0; ki < kEntries.length; ki++) {
+                if (kEntries[ki].path === rpath) { kEntry = kEntries[ki]; break; }
+              }
+              if (kEntry && kEntry.scrollTop) {
+                var kCreated = state.tabs.find(function (t) { return t.nativePath === rpath; });
+                if (kCreated) kCreated.scrollTop = kEntry.scrollTop;
+              }
+            })
+            .catch(function (err) {
+              console.warn('[TV] recent file keyboard open failed', rpath, err);
+              var kind = (window.TVNative && typeof TVNative.classifyReadError === 'function')
+                ? TVNative.classifyReadError(err) : 'not-found';
+              openErrorTab(rpath.split('/').pop() || rpath, rpath, kind);
+            });
+        }
+        return;
+      }
+
+      // (4) Open-file row with data-sidebar-tab only — fall through to activateTab
+      if (cursorEl.getAttribute('data-sidebar-tab') && !sidebarItem) {
         activateTab(sbKbd.id);
         // activateTab → render → renderSidebarCursor (called inside render).
         // sbKbd.active stays true so arrows keep working post-Enter.
-        // The cursor id stays on the just-opened row; reapply after rAF
-        // to ensure the new DOM has the class.
         requestAnimationFrame(function () { renderSidebarCursor(); });
       }
       return;
@@ -4118,6 +4537,27 @@
       return;
     }
 
+    // U-15 / DR-99: ⌘P — Print / Export to PDF
+    // The if(!meta) guard above ensures this block is meta-only.
+    // The activeElement check is required in addition: a focused <textarea>
+    // or <input> must not trigger window.print() — let the browser handle it.
+    if (k === 'p' || k === 'P') {
+      var printFocused = document.activeElement;
+      if (printFocused && (printFocused.tagName === 'TEXTAREA' || printFocused.tagName === 'INPUT')) return;
+      e.preventDefault();
+      // window.print() is a no-op in WKWebView — prefer the native print command
+      // (wry WebView.print() via Rust); fall back to window.print() in a browser.
+      if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
+        window.__TAURI__.core.invoke('print_page').catch(function (err) {
+          console.warn('U-15: native print failed; falling back to window.print()', err);
+          if (typeof window.print === 'function') window.print();
+        });
+      } else if (typeof window.print === 'function') {
+        window.print();
+      }
+      return;
+    }
+
     // ⌘1–9 — activate nth tab
     if (k >= '1' && k <= '9') {
       var n = parseInt(k, 10) - 1;
@@ -4261,10 +4701,10 @@
     listen('menu:zoom-out', function () { setFontSize(state.fontSize - 2); }).catch(function () {});
     listen('menu:zoom-reset', function () { setFontSize(16); }).catch(function () {});
 
-    // F-22: Help menu → Keyboard Shortcuts overlay
-    listen('menu:shortcuts', function () {
-      openShortcuts();
-    }).catch(function () {});
+    // F-22: Help menu → Keyboard Shortcuts overlay is handled in tv-native.js,
+    // which listens for the real "menu:keyboard-shortcuts" event Rust emits. The
+    // former "menu:shortcuts" listener here was dead (no such event is emitted) and
+    // is removed to avoid a double-invocation of openShortcuts() if names ever align.
   }
 
   /* ────────────────────────────────────────────────────────────
@@ -4405,6 +4845,15 @@
           }
           render();
 
+          // DR-117: arm the file watcher for every restored live tab. (There is no
+          // implicit "post-render TVLive.start loop" — it must be invoked here, or
+          // session-restored tabs stay silently unwatched despite live=true.)
+          if (window.TVLive && typeof TVLive.start === 'function') {
+            state.tabs.forEach(function (t) {
+              if (t.live) TVLive.start(t.id);
+            });
+          }
+
           // DR-50: single consolidated toast for missing files
           if (sessionMissed > 0 && window.TVNative && typeof TVNative.showToast === 'function') {
             var noun = sessionMissed === 1 ? 'file' : 'files';
@@ -4433,6 +4882,13 @@
               path: parentDir,
             });
             newTab.nativePath = doc.path || ePath;
+            // DR-116: seed recency clock from real mtime so a static file opens
+            // settled (no bar). Per DR-120, missing modified → leave undefined so
+            // TVLive.start() falls back to Date.now() without error.
+            if (typeof doc.modified === 'number') { newTab.lastModTime = doc.modified; }
+            // DR-117: mark as live so the post-render TVLive.start() loop arms
+            // the file watcher — session-restored tabs must not be silently unwatched.
+            newTab.live = true;
             // DR-48 / DR-53: apply saved scroll; render() will pick it up via [data-scroll]
             newTab.scrollTop = eScroll;
             state.tabs.push(newTab);
@@ -4503,6 +4959,13 @@
           // Overwrite in-memory content; mark clean
           tab.source = doc.content || '';
           tab.dirty = false;
+          // DR-118: refresh tab.lastModTime from the reloaded mtime so the
+          // recency bar reflects the reload's mtime, not a stale pre-reload value.
+          // Note: tab.lastModTime is seed-only for TVLive.start(); after a watch
+          // is already running, watchState.lastModTime is authoritative. TVLive.refresh()
+          // (called below via render()) will stamp watchState from the change event,
+          // so this assignment primarily covers the first-render-after-reload case.
+          if (typeof doc.modified === 'number') { tab.lastModTime = doc.modified; }
           render();
         })
         .catch(function (err) {
@@ -4567,6 +5030,9 @@
     // F-22/U-06: shortcut overlay — called by Native Help menu + palette
     openShortcuts: openShortcuts,
     closeShortcuts: closeShortcuts,
+    // U-14 / DR-98: exposed so tv-palette.js Move Tab Left/Right commands can
+    // call TV.saveSession() without relying on IIFE-internal access.
+    saveSession: saveSession,
   };
 
   /* ── Boot when DOM is ready ───────────────────────────────── */

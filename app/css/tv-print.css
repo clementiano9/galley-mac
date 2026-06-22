@@ -1,0 +1,154 @@
+/* ───────────────────────────────────────────────────────────
+   tiny-viewer · print / PDF export stylesheet
+   U-15 · DR-99–106
+   All rules are inside @media print — zero effect on screen.
+   ─────────────────────────────────────────────────────────── */
+
+@media print {
+
+  /* ── 1. Hide application chrome (DR-102) ───────────────── */
+  /* Selectors verified against tv-app.css class inventory.
+     .tv-status is the live-watch status bar at tv-app.css:819.
+     .tv-overlay is used for palette scrim, shortcut overlay,
+     context menus — all the absolute-positioned overlays.   */
+  .tv-titlebar,
+  .tv-tabbar,
+  .tv-sidebar,
+  .tv-sidebar-resizer,
+  .tv-status,
+  .tv-toolbar,
+  .tv-edit-toolbar,
+  .tv-find,
+  .tv-copy,
+  .tv-edit-pencil,
+  .tv-edit-hint,
+  .tv-overlay,
+  .tv-palette-scrim,
+  .tv-ntp,
+  .tv-zoom-ctrl {
+    display: none !important;
+  }
+
+  /* ── 2. Force light-theme tokens (DR-103) ───────────────── */
+  /* Applied on .tv regardless of .tv--dark so dark-mode tokens
+     cannot bleed through to print output.                    */
+  .tv {
+    --tv-bg-primary:          #ffffff;
+    --tv-bg-surface:          #ffffff;
+    --tv-bg-chrome:           #ffffff;
+    --tv-text-primary:        #1d1d1f;
+    --tv-text-secondary:      #62626a;
+    --tv-text-muted:          #636369;
+    --tv-code-bg:             #f4f4f1;
+    --tv-border:              rgba(0, 0, 0, .09);
+    --tv-table-head:          #f4f4f1;
+    --tv-table-stripe:        #faf9f7;
+    /* inline code chip tokens (DR-103) */
+    --tv-inline-code-bg:      #f4f4f1;
+    --tv-inline-code-border:  rgba(0, 0, 0, .07);
+    --tv-inline-code-text:    #1d1d1f;
+    /* syntax highlight tokens — light values */
+    --tv-syn-comment:         #5e5e66;
+    --tv-syn-key:             #b3439b;
+    --tv-syn-str:             #236523;
+    --tv-syn-num:             #8f4213;
+    --tv-syn-fn:              #2d68d8;
+    background: #ffffff !important;
+    color: #1d1d1f !important;
+  }
+
+  /* ── 3. Full-width layout (DR-104) ─────────────────────── */
+  /* Collapse the flex shell so the content column fills the
+     full printable width with no sidebar gap or chrome margin. */
+  .tv,
+  .tv-body {
+    display: block !important;
+    width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  .tv-viewer {
+    display: block !important;
+    width: 100% !important;
+  }
+
+  .tv-scroll {
+    overflow: visible !important;
+    height: auto !important;
+  }
+
+  .tv-content {
+    max-width: 100% !important;
+    width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  .md {
+    max-width: 100% !important;
+    width: 100% !important;
+  }
+
+  /* ── 4. Page-break avoidance (DR-105) ──────────────────── */
+  .md pre,
+  .md .tv-diagram,
+  .md .tbl-wrap,
+  .md blockquote,
+  .md li {
+    page-break-inside: avoid;
+    break-inside: avoid;
+  }
+
+  .md h1,
+  .md h2,
+  .md h3 {
+    page-break-after: avoid;
+    break-after: avoid;
+  }
+
+  /* ── 5. Diagrams and table overflow (DR-106) ─────────────── */
+  /* Unclip the pinch-zoom viewport so tall diagrams are not
+     cut at the 70vh screen cap (tv-app.css:629–637).
+     max-height:none is required in addition to overflow:visible
+     because the browser honours max-height constraints in print. */
+  .tv-diagram-viewport {
+    overflow: visible !important;
+    transform: none !important;
+    max-height: none !important;
+  }
+
+  /* SVG inside the viewport: full width, no clip */
+  .tv-diagram svg {
+    max-width: 100% !important;
+    height: auto !important;
+    overflow: visible !important;
+  }
+
+  /* Hide unresolved diagram spinners — blank slot is better
+     than a broken spinner artefact (DR-106) */
+  .tv-diagram .dg-load {
+    display: none !important;
+  }
+
+  /* Convert table overflow to visible wrapping (DR-106) */
+  .md .tbl-wrap {
+    overflow: visible !important;
+  }
+
+  /* ── 6. Print header — document basename (DR-106 Should) ─── */
+  /* Outputs the basename set by tv-app.js render() via
+     contentEl.setAttribute('data-print-title', tab.name).
+     Only renders when the attribute is non-empty.            */
+  .tv-content[data-print-title]::before {
+    content: attr(data-print-title);
+    display: block;
+    font-size: 11px;
+    color: #636369;
+    margin-bottom: 12px;
+    font-family: -apple-system, sans-serif;
+    font-weight: 400;
+    letter-spacing: .1px;
+  }
+
+}
