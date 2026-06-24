@@ -42,50 +42,11 @@
     .tv-titlebtn:hover { opacity: 0.9; }
     .tv-theme-toggle { line-height: 1; }
 
-    /* F-07: Find bar */
-    .tv-find {
-      position: absolute;
-      bottom: 12px;
-      right: 16px;
-      display: flex;
-      align-items: center;
-      gap: 4px;
-      background: var(--tv-bg-chrome, #e9e9e6);
-      border: 1px solid var(--tv-border, rgba(0,0,0,.1));
-      border-radius: 8px;
-      padding: 4px 8px;
-      box-shadow: 0 2px 12px rgba(0,0,0,.12);
-      z-index: 40;
-      min-width: 260px;
-    }
-    .tv-find-input {
-      flex: 1;
-      border: none;
-      background: transparent;
-      outline: none;
-      font-size: 13px;
-      color: inherit;
-      min-width: 120px;
-    }
-    .tv-find-count {
-      font-size: 11px;
-      opacity: 0.6;
-      white-space: nowrap;
-      min-width: 40px;
-      text-align: center;
-    }
-    .tv-find-nav {
-      background: none;
-      border: none;
-      cursor: pointer;
-      padding: 2px 4px;
-      border-radius: 3px;
-      font-size: 12px;
-      color: inherit;
-      opacity: 0.6;
-    }
-    .tv-find-nav:hover { opacity: 1; background: var(--tv-bg-hover, rgba(0,0,0,.06)); }
-    .tv-find-close { margin-left: 2px; }
+    /* F-07: Find bar — full styling lives in tv-app.css (.tv-find et al.).
+       ISS-002: the old inline fallback below set `bottom: 12px` and loaded
+       AFTER tv-app.css, so it won the cascade and — combined with tv-app.css's
+       `top` — stretched the bar to full viewport height. Removed so the
+       canonical top-anchored, compact .tv-find in tv-app.css wins. */
 
     /* Find marks */
     .md mark[data-find] {

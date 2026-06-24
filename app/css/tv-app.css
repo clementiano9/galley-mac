@@ -982,21 +982,30 @@ html, body, #tv-root {
 }
 
 /* ── cross-tab search results ──────────────────────────────── */
+/* UX-22 / ISS-002: compact single-row find bar (~39px) — was a ~59px padded
+   nested pill. Vertical padding 12px→6px and the inner .field 34px→26px keep
+   the bordered input frame familiar while reclaiming the excess height. */
 .tv-searchbar {
   display: flex; align-items: center; gap: 10px;
-  padding: 12px var(--tv-s4); border-bottom: 1px solid var(--tv-border);
+  padding: 6px var(--tv-s4); border-bottom: 1px solid var(--tv-border);
   background: var(--tv-bg-surface) !important;
 }
 .tv-searchbar .field {
-  flex: 1; display: flex; align-items: center; gap: 9px;
-  height: 34px; padding: 0 12px; border-radius: 8px;
+  flex: 1; min-width: 0; display: flex; align-items: center; gap: 9px;
+  height: 26px; padding: 0 10px; border-radius: 8px;
   background: var(--tv-bg-primary) !important; border: 1px solid var(--tv-border-strong);
   font-size: 14px; color: var(--tv-text-primary) !important;
 }
 .tv-searchbar .field .ic { color: var(--tv-text-muted) !important; }
 .tv-searchbar .field .pal-caret { display:inline-block; width:1.5px; height:16px; background: var(--tv-accent) !important; animation: tv-blink 1.05s steps(1) infinite; }
-.tv-searchbar .scope { font-size: 12px; color: var(--tv-text-muted) !important; }
-.tv-search-results { padding: var(--tv-s4) var(--tv-s5) 60px; max-width: 760px; }
+/* Narrow-width guard: the scope label shrinks/ellipsises so the input (which
+   has min-width:0) keeps its room and nothing overflows the bar. */
+.tv-searchbar .scope {
+  flex: 0 1 auto; min-width: 0;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  font-size: 12px; color: var(--tv-text-muted) !important;
+}
+.tv-search-results { padding: var(--tv-s3) var(--tv-s5) 60px; max-width: 760px; }
 .tv-sr-count { font-size: 12.5px; color: var(--tv-text-muted) !important; margin-bottom: var(--tv-s4); }
 .tv-sr-file { margin-bottom: var(--tv-s5); }
 .tv-sr-filehead {
@@ -1382,7 +1391,7 @@ html, body, #tv-root {
 }
 /* Hint/empty count line within search results (UX-22) */
 .tv-sr-count--hint {
-  padding-top: 8px;
+  padding-top: 4px;
 }
 
 /* ── search bar real input ──────────────────────────────── */
@@ -1501,19 +1510,19 @@ html, body, #tv-root {
   top: calc(40px + var(--tv-tabbar-h) + 8px);
   right: 12px;
   z-index: 25;
-  display: flex; align-items: center; gap: 6px;
-  padding: 5px 8px;
+  display: flex; align-items: center; gap: 5px;
+  padding: 3px 6px;
   background: var(--tv-bg-elev) !important;
   border: 1px solid var(--tv-border-strong);
   border-radius: var(--tv-radius-md);
   box-shadow: var(--tv-shadow-pop);
-  min-width: 280px; max-width: 360px;
+  min-width: 248px; max-width: 360px;
   -webkit-user-select: none; user-select: none;
 }
 .tv-find-input {
   flex: 1; min-width: 0;
   background: transparent; border: 0; outline: 0;
-  font-family: var(--tv-font-ui); font-size: 13px;
+  font-family: var(--tv-font-ui); font-size: 12.5px;
   color: var(--tv-text-primary) !important;
   caret-color: var(--tv-accent);
 }
@@ -1524,7 +1533,7 @@ html, body, #tv-root {
 }
 .tv-find-nav {
   display: inline-flex; align-items: center; justify-content: center;
-  min-width: 28px; min-height: 28px; border-radius: 5px;
+  min-width: 22px; min-height: 22px; border-radius: 5px;
   color: var(--tv-text-secondary) !important; cursor: default;
   border: 0; background: transparent;
   transition: background .1s;
@@ -1532,7 +1541,7 @@ html, body, #tv-root {
 .tv-find-nav:hover { background: var(--tv-bg-hover) !important; }
 .tv-find-close {
   display: inline-flex; align-items: center; justify-content: center;
-  min-width: 28px; min-height: 28px; border-radius: 4px;
+  min-width: 22px; min-height: 22px; border-radius: 4px;
   color: var(--tv-text-muted) !important; cursor: default;
   border: 0; background: transparent;
   transition: background .1s;
