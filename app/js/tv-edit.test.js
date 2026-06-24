@@ -300,6 +300,91 @@ console.log('\nwordCount basic sanity\n');
   assert('null → 0', wordCount(null) === 0);
 })();
 
+// ── ISS-001: first double-click lands on the exact word ──────────────────────
+// These tests load the REAL tv-edit.js (DOM-mocked) — no inlined copies — so they
+// guard the actual reported bug: the FIRST double-click in a freshly-opened doc.
+// The prior failures all hardened the offset mapping but never tested the
+// listener-install TIMING (the true root cause) nor word-boundary fidelity.
+
+console.log('\nISS-001: first double-click anchor capture + native word selection\n');
+
+(function () {
+  var fs = require('fs');
+  var path = require('path');
+
+  // ── Minimal DOM mock ───────────────────────────────────────────────────────
+  var listeners = [];
+  function el(nodeName, selectors, textContent) {
+    var node = { nodeType: 1, nodeName: nodeName, parentElement: null,
+                 textContent: textContent || '', _sel: selectors || [] };
+    node.closest = function (sel) {
+      var n = node;
+      while (n) { if (n._sel && n._sel.indexOf(sel) !== -1) return n; n = n.parentElement; }
+      return null;
+    };
+    return node;
+  }
+  var mockDoc = {
+    addEventListener: function (type, fn, capture) {
+      listeners.push({ type: type, fn: fn, capture: !!capture });
+    },
+    caretRangeFromPoint: null,         // set per dispatch
+    querySelector: function () { return null; },
+  };
+  global.window = {};
+  global.document = mockDoc;
+
+  // ── Load the real module (executes its IIFE, incl. init-time install) ───────
+  var code = fs.readFileSync(path.join(__dirname, 'tv-edit.js'), 'utf8');
+  (0, eval)(code);
+  var TVEdit = global.window.TVEdit;
+
+  // ── A. Capture listener installed at INIT (before any wire() call) ──────────
+  var capDbl = listeners.filter(function (l) { return l.type === 'dblclick' && l.capture; });
+  assert('capture-phase dblclick listener installed at module init (not lazily in wire())',
+    capDbl.length === 1, 'found ' + capDbl.length);
+
+  // Idempotent: calling the installer again must NOT add a second listener.
+  TVEdit._internals.installAnchorCapture();
+  assert('anchor-capture install is idempotent (still exactly one listener)',
+    listeners.filter(function (l) { return l.type === 'dblclick' && l.capture; }).length === 1);
+
+  // ── B. First double-click captures an anchor and maps to the exact word ─────
+  var src = 'The quick brown fox jumps over';
+  var content = el('DIV', ['.tv-content']);
+  var para = el('P', [], src); para.parentElement = content;
+  var target = el('SPAN', []); target.parentElement = para;
+  mockDoc.caretRangeFromPoint = function () {
+    return { startContainer: { nodeType: 3, textContent: src }, startOffset: 12 }; // inside "brown"
+  };
+  global.window._tvEditAnchor = undefined;
+  capDbl[0].fn({ target: target, clientX: 100, clientY: 40 });
+
+  assert('first double-click sets window._tvEditAnchor before edit mode',
+    !!(global.window._tvEditAnchor && global.window._tvEditAnchor.window24 != null),
+    JSON.stringify(global.window._tvEditAnchor));
+
+  var off = TVEdit._internals.findPreciseOffset(src, global.window._tvEditAnchor);
+  var word = TVEdit._internals.expandToWord(src, off);
+  assert('first double-click selects the exact clicked word ("brown")',
+    src.slice(word[0], word[1]) === 'brown',
+    'got ' + JSON.stringify(src.slice(word[0], word[1])) + ' @offset ' + off);
+
+  // ── C. _expandToWord matches NATIVE textarea word selection (hard-coded
+  //      oracle = what WKWebView/ICU selects; NOT a copy of the impl) ──────────
+  function wordAt(text, offset) {
+    var w = TVEdit._internals.expandToWord(text, offset);
+    return text.slice(w[0], w[1]);
+  }
+  assert('contraction stays whole: "don\'t"', wordAt("don't go", 1) === "don't", 'got ' + wordAt("don't go", 1));
+  assert('possessive stays whole: "Sam\'s"', wordAt("Sam's cat", 1) === "Sam's", 'got ' + wordAt("Sam's cat", 1));
+  assert('decimal stays whole: "3.14"', wordAt("pi 3.14 e", 5) === "3.14", 'got ' + wordAt("pi 3.14 e", 5));
+  assert('non-ASCII stays whole: "café"', wordAt("a café here", 4) === "café", 'got ' + wordAt("a café here", 4));
+  assert('non-ASCII stays whole: "résumé"', wordAt("résumé ok", 0) === "résumé", 'got ' + wordAt("résumé ok", 0));
+  assert('hyphen splits (native): "state-of-the-art" → "state"', wordAt("state-of-the-art", 2) === "state", 'got ' + wordAt("state-of-the-art", 2));
+  assert('plain mid-word click: "world"', wordAt("hello world", 7) === "world", 'got ' + wordAt("hello world", 7));
+})();
+
 // ── Report ─────────────────────────────────────────────────────────────────────
 console.log('\n' + (fail === 0 ? 'ALL PASSED' : 'FAILURES: ' + fail) +
   ' (' + pass + ' passed, ' + fail + ' failed)\n');
