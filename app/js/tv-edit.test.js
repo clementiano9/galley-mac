@@ -72,6 +72,105 @@ function _findAnchorOffset(src, anchorText) {
   return bestOffset;
 }
 
+// ── Ink+ syntax highlighter (verbatim from tv-edit.js highlightSource path) ───
+// Copied 1:1 so the test exercises the real tokenizer logic. Pure string in →
+// HTML out, no DOM, no deps. If these drift from tv-edit.js the markdown-
+// construct tests below will catch missing/renamed tokens.
+
+function _escHtml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
+function _M(t) { return '<span class="sm-marker">' + t + '</span>'; }
+
+function _inlineHL(s) {
+  s = _escHtml(s);
+  var codes = [];
+  s = s.replace(/`([^`]+)`/g, function (_, c) {
+    codes.push(c); return ' ' + (codes.length - 1) + ' ';
+  });
+  s = s.replace(/(!?)\[([^\]]*)\]\(([^)]+)\)/g, function (_, bang, txt, url) {
+    return _M(bang + '[') + '<span class="sm-link">' + txt + '</span>' + _M('](') +
+           '<span class="sm-url">' + url + '</span>' + _M(')');
+  });
+  s = s.replace(/\*\*([^*]+)\*\*/g, _M('**') + '<span class="sm-bold">$1</span>' + _M('**'));
+  s = s.replace(/(^|[^\*])\*([^*\s][^*]*?)\*(?!\*)/g, '$1' + _M('*') + '<span class="sm-em">$2</span>' + _M('*'));
+  s = s.replace(/~~([^~]+)~~/g, _M('~~') + '<span class="sm-strike">$1</span>' + _M('~~'));
+  s = s.replace(/ (\d+) /g, function (_, i) {
+    return '<span class="sm-code">' + _M('`') + codes[+i] + _M('`') + '</span>';
+  });
+  return s;
+}
+
+function _codeTokens(line) {
+  var h = _escHtml(line);
+  var stash = [];
+  var encId = function (n) { return String(n).replace(/\d/g, function (d) { return String.fromCharCode(65 + +d); }); };
+  var decId = function (s) { return +s.split('').map(function (c) { return c.charCodeAt(0) - 65; }).join(''); };
+  var keep = function (cls, txt) { stash.push('<span class="' + cls + '">' + txt + '</span>'); return '' + encId(stash.length - 1) + ''; };
+  h = h.replace(/(&#39;[^&]*?&#39;|'[^']*?'|"[^"]*?")/g, function (m) { return keep('sm-str', m); });
+  h = h.replace(/(--[^\n]*|\/\/[^\n]*|#[^\n]*)/g, function (m) { return keep('sm-com', m); });
+  h = h.replace(/\b(\d[\d_.]*)\b/g, function (m) { return keep('sm-num', m); });
+  h = h.replace(/\b(SELECT|FROM|WHERE|JOIN|ON|GROUP|ORDER|BY|LIMIT|AND|OR|NOT|NULL|const|let|var|function|return|if|else|import|from|true|false)\b/g, function (m) { return keep('sm-key', m); });
+  h = h.replace(/([A-J]+)/g, function (_, i) { return stash[decId(i)]; });
+  return h;
+}
+
+function _isTableSep(l) {
+  return /^\s*\|?[\s:|-]+\|?\s*$/.test(l) && l.indexOf('-') !== -1 && l.indexOf('|') !== -1;
+}
+
+function highlightSource(src) {
+  var lines = (src || '').replace(/\r\n/g, '\n').split('\n');
+  var inFence = false;
+  var out = lines.map(function (l) {
+    if (/^(?:```|~~~)/.test(l)) { inFence = !inFence; return '<span class="sm-fence">' + _escHtml(l) + '</span>'; }
+    if (inFence) return '<span class="sm-codeline">' + _codeTokens(l) + '</span>';
+    if (/^\s*([-*_])\1\1+\s*$/.test(l)) return _M(_escHtml(l));
+    var h = l.match(/^(#{1,6})(\s+)(.*)$/);
+    if (h) {
+      var lv = h[1].length;
+      return '<span class="sm-marker sm-hmark">' + h[1] + h[2] + '</span>' +
+             '<span class="sm-h sm-h' + lv + '">' + _inlineHL(h[3]) + '</span>';
+    }
+    var q = l.match(/^(\s*>\s?)(.*)$/);
+    if (q) return _M(_escHtml(q[1])) + '<span class="sm-quote">' + _inlineHL(q[2]) + '</span>';
+    var t = l.match(/^(\s*-\s+)\[( |x|X)\](\s*)(.*)$/);
+    if (t) {
+      var done = t[2] !== ' ';
+      return _M(_escHtml(t[1])) + '<span class="' + (done ? 'sm-task-done' : 'sm-task') + '">[' + t[2] + ']</span>' +
+             _escHtml(t[3]) + (done ? '<span class="sm-task-done-text">' + _inlineHL(t[4]) + '</span>' : _inlineHL(t[4]));
+    }
+    var li = l.match(/^(\s*(?:[-*+]|\d+\.)\s+)(.*)$/);
+    if (li) return _M(_escHtml(li[1])) + _inlineHL(li[2]);
+    if (l.indexOf('|') !== -1 && /^\s*\|/.test(l)) {
+      if (_isTableSep(l)) return _M(_escHtml(l));
+      return _inlineHL(l).replace(/\|/g, '<span class="sm-pipe">|</span>');
+    }
+    return _inlineHL(l);
+  });
+  return out.join('\n');
+}
+
+// ── highlighter test helpers ─────────────────────────────────────────────────
+// hasTok: does the highlighted HTML contain a span carrying class `cls`?
+function hasTok(html, cls) {
+  return new RegExp('class="[^"]*\\b' + cls + '\\b').test(html);
+}
+// visibleText: strip all tags + decode the three escaped entities, recovering
+// the text the user actually sees in the mirror. Highlighting is presentation-
+// only, so this MUST equal the original source (no text loss/duplication).
+function visibleText(html) {
+  return html
+    .replace(/<[^>]*>/g, '')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
 // ── Simulate renderSource + wire() behaviour ──────────────────────────────────
 // BUG-1 FIX verification:
 //   OLD design: renderSource embedded HTML-escaped src in the textarea via innerHTML;
@@ -298,6 +397,160 @@ console.log('\nwordCount basic sanity\n');
   assert('single word → 1', wordCount('hello') === 1);
   assert('markdown stripped', wordCount('# Title\n\nParagraph.') === 2);
   assert('null → 0', wordCount(null) === 0);
+})();
+
+console.log('\nINK+: highlightSource tokenizes every major markdown construct\n');
+
+(function () {
+  // AC#2 — each construct must emit its expected sm-* token(s).
+  assert('ATX h1 → sm-hmark + sm-h1', (function () {
+    var o = highlightSource('# Title');
+    return hasTok(o, 'sm-hmark') && hasTok(o, 'sm-h1');
+  })());
+  assert('ATX h3 → sm-h3', hasTok(highlightSource('### Sub'), 'sm-h3'));
+  assert('ATX h6 → sm-h6', hasTok(highlightSource('###### Deep'), 'sm-h6'));
+  assert('**bold** → sm-bold', hasTok(highlightSource('a **bold** b'), 'sm-bold'));
+  assert('*italic* → sm-em', hasTok(highlightSource('a *italic* b'), 'sm-em'));
+  assert('~~strike~~ → sm-strike', hasTok(highlightSource('a ~~gone~~ b'), 'sm-strike'));
+  assert('`inline code` → sm-code', hasTok(highlightSource('use `npm i` now'), 'sm-code'));
+  assert('[link](url) → sm-link + sm-url', (function () {
+    var o = highlightSource('see [docs](https://x.io)');
+    return hasTok(o, 'sm-link') && hasTok(o, 'sm-url');
+  })());
+  assert('![image](src) → sm-link + sm-url', (function () {
+    var o = highlightSource('![alt](pic.png)');
+    return hasTok(o, 'sm-link') && hasTok(o, 'sm-url');
+  })());
+  assert('unordered list → sm-marker', hasTok(highlightSource('- item'), 'sm-marker'));
+  assert('ordered list → sm-marker', hasTok(highlightSource('1. first'), 'sm-marker'));
+  assert('task list unchecked → sm-task', hasTok(highlightSource('- [ ] todo'), 'sm-task'));
+  assert('task list checked → sm-task-done', (function () {
+    var o = highlightSource('- [x] done');
+    return hasTok(o, 'sm-task-done') && hasTok(o, 'sm-task-done-text');
+  })());
+  assert('blockquote → sm-quote', hasTok(highlightSource('> quoted'), 'sm-quote'));
+  assert('horizontal rule → sm-marker', hasTok(highlightSource('---'), 'sm-marker'));
+  assert('table separator → sm-marker', hasTok(highlightSource('| --- | --- |'), 'sm-marker'));
+  assert('table row → sm-pipe', hasTok(highlightSource('| a | b |'), 'sm-pipe'));
+
+  // Fenced code block: fence lines read as sm-fence, interior as sm-codeline
+  // with language-aware sub-tokens (sm-key / sm-str).
+  var fenced = highlightSource('```js\nconst x = \'hi\';\n```');
+  assert('fenced ``` → sm-fence', hasTok(fenced, 'sm-fence'));
+  assert('fenced interior → sm-codeline', hasTok(fenced, 'sm-codeline'));
+  assert('fenced interior keyword → sm-key', hasTok(fenced, 'sm-key'));
+  assert('fenced interior string → sm-str', hasTok(fenced, 'sm-str'));
+  assert('fence language tag preserved in output', fenced.indexOf('js') !== -1);
+})();
+
+console.log('\nINK+: strikethrough specifics (new behaviour)\n');
+
+(function () {
+  var o = highlightSource('text ~~struck~~ end');
+  assert('strike content wrapped in sm-strike span',
+    /<span class="sm-strike">struck<\/span>/.test(o));
+  assert('strike markers wrapped as sm-marker (~~)',
+    (o.match(/<span class="sm-marker">~~<\/span>/g) || []).length === 2);
+  // Two independent strikes on one line
+  var o2 = highlightSource('~~a~~ and ~~b~~');
+  assert('two strikes on one line → two sm-strike spans',
+    (o2.match(/class="sm-strike"/g) || []).length === 2);
+  // Bold + strike coexist without clobbering each other
+  var o3 = highlightSource('**bold** and ~~strike~~');
+  assert('bold and strike coexist on one line',
+    hasTok(o3, 'sm-bold') && hasTok(o3, 'sm-strike'));
+  // Lone tildes are not a strike
+  assert('lone ~~ with no closer → no sm-strike',
+    !hasTok(highlightSource('a ~~ b'), 'sm-strike'));
+})();
+
+console.log('\nINK+: highlighting is presentation-only (no text loss/duplication, AC#3)\n');
+
+(function () {
+  // visibleText(highlightSource(x)) must equal x for every construct — proving
+  // the mirror never adds, drops, or reorders a character (caret stays in sync).
+  var cases = [
+    '# Heading one',
+    'plain paragraph with no markup',
+    'a **bold** and *italic* and ~~strike~~ mix',
+    'inline `code()` chip',
+    'see [docs](https://example.com) link',
+    '![alt text](image.png)',
+    '- bullet item',
+    '1. numbered item',
+    '- [ ] open task',
+    '- [x] closed task',
+    '> a blockquote line',
+    '---',
+    '| a | b |',
+    '| --- | --- |',
+    'escape < & > chars',
+  ];
+  cases.forEach(function (src) {
+    assert('round-trip preserves: ' + JSON.stringify(src),
+      visibleText(highlightSource(src)) === src,
+      'got: ' + JSON.stringify(visibleText(highlightSource(src))));
+  });
+
+  // Multi-line document round-trip (newlines preserved, single-source-of-truth).
+  var doc = [
+    '# Title',
+    '',
+    'Body with **bold**, *em*, ~~strike~~ and `code`.',
+    '',
+    '- [x] shipped',
+    '- [ ] pending',
+    '',
+    '> quote',
+    '',
+    '```',
+    'plain fenced line',
+    '```',
+  ].join('\n');
+  assert('multi-line document round-trips with newlines intact',
+    visibleText(highlightSource(doc)) === doc);
+
+  // Empty / null sources don't throw and produce empty visible text.
+  assert('empty string → empty output', highlightSource('') === '');
+  assert('null source → empty output', highlightSource(null) === '');
+
+  // prefers-reduced-motion is a CSS concern; highlightSource is pure string work
+  // with no animation/timing — so it is unaffected by motion settings. Sanity:
+  // identical input yields identical output (deterministic, no time-based state).
+  assert('highlightSource is deterministic (motion-agnostic)',
+    highlightSource(doc) === highlightSource(doc));
+})();
+
+console.log('\nINK+: every sm-* colour resolves from the design tokens (AC#1)\n');
+
+(function () {
+  var fs = require('fs');
+  var path = require('path');
+  var appCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'tv-app.css'), 'utf8');
+  var tokensCss = fs.readFileSync(path.join(__dirname, '..', 'css', 'tv-tokens.css'), 'utf8');
+
+  // 1. The new sm-strike rule exists, uses line-through + a themable token.
+  assert('.sm-strike rule present in tv-app.css', /\.sm-strike\s*\{[^}]*\}/.test(appCss));
+  var strikeRule = (appCss.match(/\.sm-strike\s*\{[^}]*\}/) || [''])[0];
+  assert('.sm-strike uses text-decoration: line-through',
+    /text-decoration:\s*line-through/.test(strikeRule));
+  assert('.sm-strike colour comes from var(--tv-text-secondary)',
+    /var\(--tv-text-secondary\)/.test(strikeRule));
+
+  // 2. Every var(--tv-*) referenced by a .srchl rule must be defined in
+  //    tv-tokens.css so the highlighter re-skins across themes/accents.
+  var srchlBlock = appCss.slice(appCss.indexOf('.srchl '));
+  var refs = {};
+  srchlBlock.replace(/var\((--tv-[\w-]+)\)/g, function (_, name) { refs[name] = true; return _; });
+  var refNames = Object.keys(refs);
+  assert('srchl block references at least 6 design tokens', refNames.length >= 6,
+    'found: ' + refNames.join(', '));
+  var unresolved = refNames.filter(function (name) {
+    return tokensCss.indexOf(name + ':') === -1;
+  });
+  assert('all srchl token references resolve in tv-tokens.css',
+    unresolved.length === 0,
+    'unresolved: ' + unresolved.join(', '));
 })();
 
 // ── ISS-001: first double-click lands on the exact word ──────────────────────

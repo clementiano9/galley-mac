@@ -213,10 +213,9 @@
     //   { path, files:[{name,path}], subfolders:[{name,files}], deep:[{name,path,from}] }
     // keyed by `path` (unique per folder).
     openFolders: [],
-    // F-19: per-folder collapse state. Keys:
-    //   <folderPath>           → true = folder head collapsed
-    //   <folderPath>/<subName> → true = subfolder collapsed
-    //   <folderPath>/__deep    → true = deep-bucket collapsed
+    // F-19 / ISS-005: per-folder collapse state. Keys:
+    //   <folderPath>                    → true = folder head collapsed
+    //   <folderPath>/<sub>[/<deeper>…]  → true = nested subfolder collapsed
     folderCollapsed: {},
     // F-22 / U-06: shortcut overlay open flag
     shortcutsOpen: false,
@@ -553,22 +552,23 @@
     render();
   }
 
-  // Close a folder by path.
+  // Close a folder by path: remove its tree section and collapse keys, and stop
+  // any native watch keyed to the folder root. Open tabs keep their own per-file
+  // watches (keyed by file path), so closing a folder never closes a tab (ISS-005 AC#2).
   function closeFolder(path) {
     state.openFolders = state.openFolders.filter(function (f) { return f.path !== path; });
-    // Clean up collapse keys for this folder
-    var newCollapsed = {};
-    Object.keys(state.folderCollapsed).forEach(function (k) {
-      if (k !== path && k.indexOf(path + '/') !== 0) {
-        newCollapsed[k] = state.folderCollapsed[k];
-      }
-    });
-    state.folderCollapsed = newCollapsed;
+    // Clean up collapse keys for this folder (root + any nested descendants).
+    state.folderCollapsed = window.TVTree
+      ? window.TVTree.pruneCollapsed(state.folderCollapsed, path)
+      : state.folderCollapsed;
+    if (window.TVNative && typeof TVNative.unwatchFolder === 'function') {
+      TVNative.unwatchFolder(path);
+    }
     state.folderCtx = null;
     render();
   }
 
-  // Toggle the collapse state for a key (folder path, subfolder key, or deep-bucket key)
+  // Toggle the collapse state for a key (folder root path or a nested subfolder key)
   function toggleFolderCollapse(key) {
     state.folderCollapsed[key] = !state.folderCollapsed[key];
     render();
@@ -586,120 +586,86 @@
     return 'sbitem-' + s.replace(/[^\w-]/g, '_').slice(0, 40) + '-' + (h >>> 0).toString(36);
   }
 
-  /* ── F-19: build one folder's tree section ─────────────────── */
+  /* ── F-19 / ISS-005: build one folder's nested tree section ── */
+  // Delegates the tree build + collapse logic to the pure window.TVTree module
+  // (js/tv-tree.js) so it stays unit-testable; this function only renders the
+  // depth-annotated nodes it returns. Indentation is per-depth (depth 0 head,
+  // depth 1 = 26px file / 22px folder, +16px per level deeper). DR-108 a11y
+  // attributes (role=option, aria-selected, data-sidebar-item, id) go on every
+  // row so the sidebar keyboard cursor can target tree items.
   function buildFolderSection(tree) {
     var icons = window.TV_ICONS || {};
-    var path = tree.path;
-    var folded = !!state.folderCollapsed[path];
-    var news = []; // new files on disk (not yet implemented in this pass — placeholder)
+    var TVTree = window.TVTree;
+    if (!TVTree || !tree || !tree.path) return '';
 
-    // DR-41: count rows to decide if capped
-    var rowCount = (tree.files ? tree.files.length : 0)
-      + (tree.subfolders ? tree.subfolders.reduce(function (a, s) { return a + 1 + (s.files ? s.files.length : 0); }, 0) : 0)
-      + (tree.deep && tree.deep.length ? 1 + tree.deep.length : 0);
-    var capped = rowCount > 50;
+    var nodes = TVTree.buildTreeNodes(tree, state.folderCollapsed);
+    if (!nodes.length) return '';
 
-    var html = '';
+    var head = nodes[0];
+    var bodyNodes = nodes.slice(1);
+    // DR-41: cap section height when the expanded tree is large.
+    var capped = bodyNodes.length > 50;
 
-    // Folder head — DR-108: role="option" + data-sidebar-item + id for cursor
-    var fhKey = 'folder:' + path;
-    html += (
+    // Root folder head — chevron, folder icon, name, close button; DR-108 a11y.
+    var fhKey = 'folder:' + head.path;
+    var html = (
       '<div class="tv-folder-head"' +
         ' id="' + sbItemId(fhKey) + '"' +
         ' role="option"' +
         ' aria-selected="false"' +
         ' data-sidebar-item="' + esc(fhKey) + '"' +
-        ' data-folder-toggle="' + esc(path) + '"' +
-        ' data-folder-ctx-target="' + esc(path) + '">' +
-        '<span class="tv-chev' + (folded ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
+        ' data-folder-toggle="' + esc(head.path) + '"' +
+        ' data-folder-ctx-target="' + esc(head.path) + '">' +
+        '<span class="tv-chev' + (head.collapsed ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
         '<span class="ic">' + (icons.folder || '') + '</span>' +
-        '<span class="fname" title="' + esc(path) + '">' + esc(pathBasename(path)) + '</span>' +
+        '<span class="fname" title="' + esc(head.path) + '">' + esc(pathBasename(head.path)) + '</span>' +
         '<span class="fh-spacer"></span>' +
-        (news.length > 0 ? '<span class="folder-badge" title="' + news.length + ' new files">' + news.length + '</span>' : '') +
-        '<button class="folder-x" data-folder-close="' + esc(path) + '" title="Close folder" type="button">' +
+        '<button class="folder-x" data-folder-close="' + esc(head.path) + '" title="Close folder" type="button">' +
           (icons.close || '') +
         '</button>' +
       '</div>'
     );
 
-    if (!folded) {
+    if (!head.collapsed) {
       html += '<div class="tv-folder-body' + (capped ? ' capped' : '') + '">';
-
-      // Top-level files
-      if (tree.files) {
-        tree.files.forEach(function (f) {
-          html += buildTreeFileRow(f, { isNew: false });
-        });
-      }
-
-      // Subfolders (one level)
-      if (tree.subfolders) {
-        tree.subfolders.forEach(function (s) {
-          var skey = path + '/' + s.name;
-          var sfolded = !!state.folderCollapsed[skey];
-          // DR-108: subfolder row gets role="option" + data-sidebar-item
-          var sfKey = 'subfolder:' + skey;
-          html += (
-            '<div class="tv-tree-row subfolder"' +
-              ' id="' + sbItemId(sfKey) + '"' +
-              ' role="option"' +
-              ' aria-selected="false"' +
-              ' data-sidebar-item="' + esc(sfKey) + '"' +
-              ' data-folder-toggle="' + esc(skey) + '">' +
-              '<span class="tv-chev' + (sfolded ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
-              '<span class="ic">' + (icons.folder || '') + '</span>' +
-              '<span>' + esc(s.name) + '</span>' +
-            '</div>'
-          );
-          if (!sfolded && s.files) {
-            s.files.forEach(function (f) {
-              html += buildTreeFileRow(f, { nested: true });
-            });
-          }
-        });
-      }
-
-      // Deep-files bucket
-      if (tree.deep && tree.deep.length > 0) {
-        var dkey = path + '/__deep';
-        var dfolded = !!state.folderCollapsed[dkey];
-        // DR-108: deep-bucket row gets role="option" + data-sidebar-item
-        var dItemKey = 'deep:' + dkey;
-        html += (
-          '<div class="tv-tree-row subfolder deep-bucket"' +
-            ' id="' + sbItemId(dItemKey) + '"' +
-            ' role="option"' +
-            ' aria-selected="false"' +
-            ' data-sidebar-item="' + esc(dItemKey) + '"' +
-            ' data-folder-toggle="' + esc(dkey) + '"' +
-            ' title="Files nested more than one level deep, grouped here">' +
-            '<span class="tv-chev' + (dfolded ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
-            '<span class="ic ic-ell">' + (icons.ellipsis || '') + '</span>' +
-            '<span class="db-label">More files</span>' +
-            '<span class="db-count">' + tree.deep.length + '</span>' +
-          '</div>'
-        );
-        if (!dfolded) {
-          tree.deep.forEach(function (d) {
-            html += buildTreeFileRow(d, { nested: true, trail: d.from });
-          });
-        }
-      }
-
+      bodyNodes.forEach(function (n) {
+        html += (n.kind === 'folder')
+          ? buildTreeFolderRow(n)
+          : buildTreeFileRow(n);
+      });
       html += '</div>';
     }
 
     return html;
   }
 
-  // Build a single file row for the folder tree.
-  // f = { name, path } (or just { name } for deep files)
-  // opts = { isNew, nested, trail }
-  function buildTreeFileRow(f, opts) {
+  // A nested subfolder row (any depth). Disclosure caret toggles the same
+  // collapse map keyed by the node's unique "root/sub/deeper" key.
+  function buildTreeFolderRow(n) {
     var icons = window.TV_ICONS || {};
-    opts = opts || {};
-    var filePath = f.path || '';
-    var fileName = f.name || (filePath ? filePath.split('/').pop() : '');
+    // DR-108: subfolder rows participate in the sidebar keyboard cursor.
+    var sfKey = 'subfolder:' + n.key;
+    return (
+      '<div class="tv-tree-row subfolder"' +
+        ' id="' + sbItemId(sfKey) + '"' +
+        ' role="option"' +
+        ' aria-selected="false"' +
+        ' data-sidebar-item="' + esc(sfKey) + '"' +
+        ' data-folder-toggle="' + esc(n.key) + '"' +
+        ' style="padding-left:' + (n.depth * 16 + 6) + 'px">' +
+        '<span class="tv-chev' + (n.collapsed ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
+        '<span class="ic">' + (icons.folder || '') + '</span>' +
+        '<span>' + esc(n.name) + '</span>' +
+      '</div>'
+    );
+  }
+
+  // A single file row in the folder tree.
+  // n = { name, path, depth } (a render node from TVTree.buildTreeNodes)
+  function buildTreeFileRow(n) {
+    var icons = window.TV_ICONS || {};
+    var filePath = n.path || '';
+    var fileName = n.name || (filePath ? filePath.split('/').pop() : '');
 
     // DR-34: open-as-tab distinction
     var openTab = null;
@@ -711,14 +677,10 @@
     var isLive = openTab && openTab.liveActive;
 
     var cls = 'tv-tree-row file';
-    if (opts.nested) cls += ' nested';
-    if (opts.trail) cls += ' deep-file';
     if (isActive) cls += ' active';
     else if (isOpen) cls += ' is-open';
 
-    var titleAttr = opts.trail
-      ? ('title="' + esc('…/' + opts.trail + fileName) + '"')
-      : (isOpen ? 'title="' + esc(fileName + ' · open') + '"' : '');
+    var titleAttr = isOpen ? 'title="' + esc(fileName + ' · open') + '"' : '';
 
     // DR-108: tree file rows get role="option" + data-sidebar-item for cursor participation
     var tfrKey = filePath ? 'file:' + filePath : '';
@@ -728,13 +690,13 @@
         ' role="option"' +
         ' aria-selected="' + (isActive ? 'true' : 'false') + '"' +
         (tfrKey ? ' data-sidebar-item="' + esc(tfrKey) + '"' : '') +
+        ' style="padding-left:' + (n.depth * 16 + 10) + 'px"' +
         (filePath ? ' data-tree-file-path="' + esc(filePath) + '"' : '') +
         (openTab ? ' data-tree-tab-id="' + esc(openTab.id) + '"' : '') +
         (titleAttr ? ' ' + titleAttr : '') + '>' +
         '<span class="ic">' + (icons.doc || '') + '</span>' +
         '<span class="tname">' + esc(fileName) + '</span>' +
         (isLive ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
-        (opts.isNew ? '<span class="tree-new" title="New on disk"></span>' : '') +
       '</div>'
     );
   }

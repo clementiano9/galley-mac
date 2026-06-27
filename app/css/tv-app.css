@@ -1334,6 +1334,9 @@ html, body, #tv-root {
 .srchl-inkcolor .sm-com      { color: var(--tv-syn-comment) !important; font-style: italic; }
 .srchl-inkcolor .sm-task-done      { color: var(--tv-syn-str) !important; font-weight: 600; }
 .srchl-inkcolor .sm-task-done-text { color: var(--tv-text-muted) !important; }
+/* ~~strikethrough~~ — line-through is metric-safe (no advance-width change),
+   so the textarea caret stays in sync with the mirror glyph grid. */
+.srchl-inkcolor .sm-strike { color: var(--tv-text-secondary) !important; text-decoration: line-through; }
 
 /* Sentinel — invisible trailing span that ensures mirror height matches textarea */
 .ehl-sentinel { visibility: hidden; white-space: pre; }
