@@ -417,6 +417,16 @@
       });
   }
 
+  /* ── public: unwatchFolder (ISS-005) ─────────────────────── */
+  // Stop any native watch keyed to a folder root when its sidebar section is
+  // closed. Per-file tab watches are keyed by file path, so they are untouched
+  // and open tabs stay live. A no-op today if nothing is watched under `path`.
+  function unwatchFolder(path) {
+    if (!available || !path) return;
+    invoke('unwatch_file', { path: path })
+      .catch(function () { /* nothing watched under this path — ignore */ });
+  }
+
   /* ── titlebar drag-region: set data-tauri-drag-region
         on .tv-titlebar after every render ─────────────────── */
   function wireTitlebarDragRegion() {
@@ -598,6 +608,7 @@
     saveTab: saveTab,
     startWatch: startWatch,
     stopWatch: stopWatch,
+    unwatchFolder: unwatchFolder,      // ISS-005: stop a folder-root watch on close
     revealInFinder: revealInFinder,    // F-10/F-16
     classifyReadError: classifyReadError,
     showToast: showToast,      // exposed so tv-app.js handleSave can surface errors
