@@ -286,6 +286,10 @@
   // Uses ID (data-sidebar-tab value), NOT index, so it survives re-renders.
   // active=false means arrow keys scroll content normally; they never hijack.
   var sbKbd = { active: false, id: null };
+  // JANK-01: the row renderSidebarCursor() last scrolled to, so it only scrolls
+  // when the cursor MOVES rather than on every render. Cleared whenever the
+  // cursor is dismissed so re-entering keyboard nav scrolls to the cursor again.
+  var _lastCursorScrollId = null;
 
   /* ── Tab constructor ──────────────────────────────────────── */
   function makeTab(opts) {
@@ -868,6 +872,122 @@
     }
   }
 
+  /* ── JANK-01/02: render coalescing + sidebar scroll preservation ──
+     Selecting a file used to run render() up to THREE times for one click:
+     dropTransientTab → _doCloseTab → render, then openDoc → activateTab →
+     render, then TVNative.openInto → render. Each one replaces #tv-root's
+     entire innerHTML (chrome + tab strip + sidebar + the whole rendered
+     markdown), so a single click cost three full teardowns and three layout
+     passes — the visible stutter, and three chances for the sidebar to flash
+     an intermediate state (see the QA D4 note in tv-native.js).
+
+     batchRender(fn) makes that ONE render. It is deliberately SYNCHRONOUS —
+     by the time it returns the DOM is already up to date — because callers
+     all over this file read the DOM straight after render(). Nothing is
+     deferred to a microtask or rAF, so no existing ordering assumption moves.
+
+     The one exception is code that reads the DOM *between* two batched
+     renders: inside a batch that DOM is still the pre-render one. There is
+     exactly one such caller (_doActivateTab scrolling the active tab pill
+     into view); it now latches _pendingTabScrollId and render() flushes it. */
+  var _renderSuspend = 0;
+  var _renderQueued = false;
+  var _pendingTabScrollId = null;
+
+  function batchRender(fn) {
+    _renderSuspend++;
+    try {
+      return fn();
+    } finally {
+      _renderSuspend--;
+      // Never let a throw inside fn strand the shell in a suspended state:
+      // the decrement and the flush both live in finally.
+      if (_renderSuspend <= 0) {
+        _renderSuspend = 0;
+        if (_renderQueued) {
+          _renderQueued = false;
+          render();
+        }
+      }
+    }
+  }
+
+  // JANK-02: true while the live DOM still matches state — i.e. no render() has
+  // been deferred since the batch opened.
+  //
+  // Two places read a scroll offset back OUT of the DOM (_doActivateTab saving
+  // the outgoing tab, saveSession capturing a mid-scroll position) and both
+  // assume the DOM shows the tab that state says is active. Inside a batch that
+  // stops being true the moment something defers a render: _doCloseTab moves
+  // state.activeId to a neighbour while .tv-scroll still holds the closed tab's
+  // content, so an unguarded read stamps the wrong document's offset onto the
+  // wrong tab and breaks per-tab scroll (DR-03).
+  //
+  // Note this is _renderQueued, NOT _renderSuspend. Merely being inside a batch
+  // is harmless — the DOM is still current until the first deferred render, and
+  // that first window is exactly where the legitimate "save the outgoing tab's
+  // live scroll" read happens.
+  function domMatchesState() {
+    return !_renderQueued;
+  }
+
+  // JANK-01: the sidebar's own scroll offset. render() replaces the whole DOM,
+  // so .tv-side-scroll was recreated at scrollTop 0 every time — scroll the file
+  // list down, click a file, and the list snapped back to the top. The content
+  // pane has been preserved since DR-03; the sidebar never was. Captured from
+  // the live node immediately before the innerHTML swap and reapplied
+  // immediately after, so the restore lands before paint.
+  var _sidebarScrollTop = 0;
+
+  // JANK-01 (QA round 2): the sidebar has MORE THAN ONE scroller. DR-41 caps a
+  // tree over 50 rows with .tv-folder-body.capped { max-height:60vh; overflow-y:auto },
+  // so for any folder of real size the element the user scrolls is that body,
+  // not .tv-side-scroll — which then never overflows and sits at 0 forever.
+  // Preserving only .tv-side-scroll therefore fixed nothing for exactly the
+  // folders where it matters most. Keyed by folder path (stable across renders,
+  // unlike DOM order) so several open trees each keep their own offset.
+  var _folderBodyScroll = {};
+
+  // An element inside a display:none ancestor (⌘B collapses the sidebar via
+  // .tv-sidebar.collapsed) reports scrollTop 0, and a collapsed folder body is
+  // simply absent. Reading either unconditionally would wipe the saved offset
+  // and drop the user at the top when the panel comes back. clientHeight is 0
+  // in exactly those cases and non-zero whenever the element is really on screen.
+  function hasLayout(el) {
+    return !!el && !!el.clientHeight;
+  }
+
+  function captureSidebarScroll(root) {
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+    var el = root.querySelector('.tv-side-scroll');
+    if (hasLayout(el)) _sidebarScrollTop = el.scrollTop || 0;
+
+    var bodies = root.querySelectorAll('[data-folder-body]');
+    for (var i = 0; i < bodies.length; i++) {
+      var b = bodies[i];
+      if (!hasLayout(b)) continue;
+      // An UNCAPPED body has no overflow and always reads 0 — harmless to store,
+      // and it keeps the map correct if the same tree later crosses the 50-row
+      // cap and becomes a scroller.
+      _folderBodyScroll[b.getAttribute('data-folder-body')] = b.scrollTop || 0;
+    }
+  }
+
+  function restoreSidebarScroll(root) {
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+    // The browser clamps to scrollHeight on its own when a list got shorter
+    // (folder collapsed, tree closed), so no manual clamp is needed anywhere here.
+    var el = root.querySelector('.tv-side-scroll');
+    if (el && _sidebarScrollTop) el.scrollTop = _sidebarScrollTop;
+
+    var bodies = root.querySelectorAll('[data-folder-body]');
+    for (var i = 0; i < bodies.length; i++) {
+      var b = bodies[i];
+      var saved = _folderBodyScroll[b.getAttribute('data-folder-body')];
+      if (saved) b.scrollTop = saved;
+    }
+  }
+
   /* ── F-19 / ISS-005: build one folder's nested tree section ── */
   // Delegates the tree build + collapse logic to the pure window.TVTree module
   // (js/tv-tree.js) so it stays unit-testable; this function only renders the
@@ -912,7 +1032,12 @@
     );
 
     if (!head.collapsed) {
-      html += '<div class="tv-folder-body' + (capped ? ' capped' : '') + '">';
+      // JANK-01: data-folder-body keys this element for scroll preservation.
+      // DR-41's .capped gives it its OWN overflow-y, so past 50 rows THIS is the
+      // element the user actually scrolls — not .tv-side-scroll. Keyed by folder
+      // path so several open trees each keep their own offset across renders.
+      html += '<div class="tv-folder-body' + (capped ? ' capped' : '') + '"' +
+        ' data-folder-body="' + esc(head.path) + '">';
       bodyNodes.forEach(function (n) {
         html += (n.kind === 'folder')
           ? buildTreeFolderRow(n)
@@ -1379,10 +1504,13 @@
     // the keys never matched. Two guards, in order:
     //   1. already open  → just activate (and honour a pending pin),
     //   2. read in flight → drop the duplicate read entirely.
+    // JANK-02: activateTab and pinTab each render; batched they cost one.
     var already = _tabIdByNativePath(tfPath);
     if (already) {
-      activateTab(already);
-      if (_pendingPinPath === tfPath) { _pendingPinPath = null; pinTab(already); }
+      batchRender(function () {
+        activateTab(already);
+        if (_pendingPinPath === tfPath) { _pendingPinPath = null; pinTab(already); }
+      });
       return;
     }
     if (_openingPaths[tfPath]) return;
@@ -1391,23 +1519,28 @@
     window.__TAURI__.core.invoke('read_md_file', { path: tfPath })
       .then(function (doc) {
         delete _openingPaths[tfPath];
-        if (window.TVNative && typeof TVNative.openInto === 'function') {
-          TVNative.openInto(doc, { transient: !!transient });
-        } else if (doc && doc.name) {
-          var pdir = tfPath.replace(/\/[^/]+$/, '') || '/';
-          var tid = openDoc({ name: doc.name, source: doc.content, path: pdir, transient: !!transient });
-          if (tid) {
-            var t = state.tabs.find(function (x) { return x.id === tid; });
-            if (t) t.nativePath = doc.path || tfPath;
+        // JANK-02: openInto → openDoc (close preview + activate) and openInto's
+        // own trailing re-render, plus a possible pinTab below, all collapse
+        // into the single repaint emitted when this batch unwinds.
+        batchRender(function () {
+          if (window.TVNative && typeof TVNative.openInto === 'function') {
+            TVNative.openInto(doc, { transient: !!transient });
+          } else if (doc && doc.name) {
+            var pdir = tfPath.replace(/\/[^/]+$/, '') || '/';
+            var tid = openDoc({ name: doc.name, source: doc.content, path: pdir, transient: !!transient });
+            if (tid) {
+              var t = state.tabs.find(function (x) { return x.id === tid; });
+              if (t) t.nativePath = doc.path || tfPath;
+            }
           }
-        }
-        // SBH-03: a double-click that beat this read to the finish latched its
-        // intent — apply it now that the tab exists, and clear the latch.
-        if (_pendingPinPath && (_pendingPinPath === tfPath || _pendingPinPath === doc.path)) {
-          var pinId = _tabIdByNativePath(_pendingPinPath) || _tabIdByNativePath(tfPath);
-          _pendingPinPath = null;
-          if (pinId) pinTab(pinId);
-        }
+          // SBH-03: a double-click that beat this read to the finish latched its
+          // intent — apply it now that the tab exists, and clear the latch.
+          if (_pendingPinPath && (_pendingPinPath === tfPath || _pendingPinPath === doc.path)) {
+            var pinId = _tabIdByNativePath(_pendingPinPath) || _tabIdByNativePath(tfPath);
+            _pendingPinPath = null;
+            if (pinId) pinTab(pinId);
+          }
+        });
       })
       .catch(function (err) {
         // Always clear the in-flight guard, or a file that failed once could
@@ -2228,6 +2361,18 @@
     var root = document.getElementById('tv-root');
     if (!root) return;
 
+    // JANK-02: inside batchRender() — record that a repaint is owed and let the
+    // batch emit exactly one at the end. Must be the first thing render() does,
+    // before any of the overlay teardown below runs.
+    if (_renderSuspend > 0) {
+      _renderQueued = true;
+      return;
+    }
+
+    // JANK-01: read the sidebar's live scroll offset before the DOM that owns
+    // it is thrown away.
+    captureSidebarScroll(root);
+
     // S-02/S-08: reset overlay state before replacing DOM
     // (overlay elements are about to be detached; reset their _open flags
     //  so subsequent ⌘K / ⌘⇧F still work correctly)
@@ -2289,6 +2434,11 @@
     // SBH-01: apply the tree indent + rail depth via CSSOM. MUST happen here,
     // right after innerHTML and before paint — see applyTreeDepths().
     applyTreeDepths(root);
+
+    // JANK-01: put the file list back where the user left it. Runs after
+    // applyTreeDepths so row padding (and therefore any wrap-driven height) is
+    // already final and scrollTop is measured against the final scrollHeight.
+    restoreSidebarScroll(root);
 
     // Restore scroll position (DR-03)
     var newScroll = root.querySelector('[data-scroll]');
@@ -2401,6 +2551,19 @@
     // UX-10: Reapply keyboard cursor highlight after every render (innerHTML rebuild
     // wipes class state). Only runs when sbKbd.active is true.
     renderSidebarCursor();
+
+    // JANK-02 (Bug B): bring the newly-active tab pill into view. _doActivateTab
+    // used to do this inline right after its own render() call, which no longer
+    // works once that render can be deferred to the end of a batch — the query
+    // would hit the pre-render DOM. Latching the id and flushing it here keeps
+    // the behaviour identical (it still only fires on an activate) and correct
+    // under batching. block:'nearest' cannot scroll the sidebar or the document:
+    // the pill lives in the horizontally-scrolling tab strip.
+    if (_pendingTabScrollId) {
+      var pillEl = root.querySelector('[data-tab-id="' + _pendingTabScrollId + '"]');
+      _pendingTabScrollId = null;
+      if (pillEl) pillEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
   }
 
   // UX-10 / DR-108: Renders the sidebar keyboard cursor highlight using .kbd-cursor class
@@ -2419,7 +2582,15 @@
     opts.forEach(function (el) { el.classList.remove('kbd-cursor'); });
     listbox.removeAttribute('aria-activedescendant');
 
-    if (!sbKbd.active || !sbKbd.id) return;
+    if (!sbKbd.active || !sbKbd.id) {
+      // JANK-01: cursor dismissed (Escape, wheel, ⌘B, overlay, edit mode, click
+      // in the content pane). Forget where we last scrolled so re-entering
+      // keyboard navigation scrolls to the cursor again. Every site that clears
+      // sbKbd.active calls straight back into here, so this is the one place
+      // that needs it.
+      _lastCursorScrollId = null;
+      return;
+    }
 
     // DR-108 site (b): find-target loop — match against both data attrs
     var target = null;
@@ -2440,7 +2611,19 @@
     if (target) {
       target.classList.add('kbd-cursor');
       listbox.setAttribute('aria-activedescendant', target.id);
-      target.scrollIntoView({ block: 'nearest' });
+      // JANK-01 (QA round 2): scroll ONLY when the cursor actually moved.
+      // renderSidebarCursor() runs at the end of every render, after
+      // restoreSidebarScroll(), so an unconditional scrollIntoView here meant
+      // the armed cursor re-asserted its own position on every repaint and
+      // dragged the file list away from where the user left it — including on
+      // renders that had nothing to do with keyboard navigation. Worse, the
+      // list then moved BETWEEN the two clicks of a double-click, so click #2
+      // landed on a different row and pinned the wrong file.
+      // Arrow/Home/End all change sbKbd.id, so keyboard nav still scrolls.
+      if (sbKbd.id !== _lastCursorScrollId) {
+        _lastCursorScrollId = sbKbd.id;
+        target.scrollIntoView({ block: 'nearest' });
+      }
     }
   }
 
@@ -3394,8 +3577,21 @@
     // can navigate immediately via arrow keys. Guard: only when sidebar is open.
     var listboxEl = tvEl.querySelector('#tv-sidebar-listbox');
     if (listboxEl) {
+      // JANK-01 (QA round 2): DR-107 is about the TAB KEY seeding the cursor —
+      // but #tv-sidebar-listbox is .tv-side-scroll, which carries tabindex="0",
+      // so a plain mouse click inside the file list also focuses it and used to
+      // arm the cursor at whatever stale row it last held. The next render then
+      // yanked the list to that row. Swallow focus that came from a pointer;
+      // the flag is cleared on the next macrotask, and focus fires synchronously
+      // inside pointerdown's default action, so a real Tab focus never sees it.
+      var _sbPointerFocus = false;
+      listboxEl.addEventListener('pointerdown', function () {
+        _sbPointerFocus = true;
+        setTimeout(function () { _sbPointerFocus = false; }, 0);
+      });
       listboxEl.addEventListener('focus', function () {
         if (!state.sidebarOpen) return;
+        if (_sbPointerFocus) { _sbPointerFocus = false; return; }
         var firstOpt = listboxEl.querySelector('[data-sidebar-item],[data-sidebar-tab]');
         if (!firstOpt) return;
         // Restore last-used position if it is still in the DOM; otherwise seed to first
@@ -3884,24 +4080,31 @@
   function openDoc(opts) {
     if (!opts || !opts.name) return null;
 
-    // Deduplicate: if a tab with same key already exists, just activate it
-    var key = tabKey(opts);
-    for (var i = 0; i < state.tabs.length; i++) {
-      if (tabKey(state.tabs[i]) === key) {
-        activateTab(state.tabs[i].id);
-        return state.tabs[i].id;
+    // JANK-02: a transient open runs dropTransientTab (→ _doCloseTab → render)
+    // and then activateTab (→ render). Batched, the caller sees one repaint
+    // instead of watching the outgoing preview tab's layout land on screen
+    // before the incoming one replaces it. Still fully synchronous: openDoc
+    // returns with the DOM already painted, as every caller assumes.
+    return batchRender(function () {
+      // Deduplicate: if a tab with same key already exists, just activate it
+      var key = tabKey(opts);
+      for (var i = 0; i < state.tabs.length; i++) {
+        if (tabKey(state.tabs[i]) === key) {
+          activateTab(state.tabs[i].id);
+          return state.tabs[i].id;
+        }
       }
-    }
 
-    // SBH-03: a transient (preview) open REPLACES the current preview tab
-    // rather than stacking beside it. Dropped BEFORE the new tab is pushed so
-    // the strip never momentarily shows two previews.
-    if (opts.transient) dropTransientTab();
+      // SBH-03: a transient (preview) open REPLACES the current preview tab
+      // rather than stacking beside it. Dropped BEFORE the new tab is pushed so
+      // the strip never momentarily shows two previews.
+      if (opts.transient) dropTransientTab();
 
-    var tab = makeTab(opts);
-    state.tabs.push(tab);
-    activateTab(tab.id);
-    return tab.id;
+      var tab = makeTab(opts);
+      state.tabs.push(tab);
+      activateTab(tab.id);
+      return tab.id;
+    });
   }
 
   /* ── SBH-03: transient (preview) tab helpers ────────────────── */
@@ -4217,24 +4420,26 @@
     }
 
     // Save outgoing tab's current scroll (E-04: must happen before activeId changes)
-    var scrollEl = document.querySelector('[data-scroll]');
+    // JANK-02: skip when a batched render is already owed — .tv-scroll then holds
+    // some other tab's content and would overwrite `outgoing` with its offset.
+    var scrollEl = domMatchesState() ? document.querySelector('[data-scroll]') : null;
     if (scrollEl && outgoing) {
       outgoing.scrollTop = scrollEl.scrollTop;
     }
 
     state.activeId = id;
     state.mode = 'reading';
+
+    // Bug B: scroll the newly-active tab pill into view so it is never hidden
+    // behind the strip's overflow. JANK-02: latched rather than done inline
+    // after render(), because under batchRender() this render() may be deferred
+    // to the end of the batch — the pill does not exist yet at this point.
+    // render() consumes the latch once it has actually painted.
+    _pendingTabScrollId = id;
+
     render();
     // F6: scroll restore is handled inside render() via the [data-scroll] restore block
     // (covers all render paths); duplicate restore here has been removed.
-
-    // Bug B: after render(), scroll the newly-active tab pill into view so it is
-    // never hidden behind the strip's overflow. block:'nearest' prevents vertical
-    // scroll of the document; inline:'nearest' handles horizontal strip scroll.
-    var activeTabEl = document.querySelector('[data-tab-id="' + id + '"]');
-    if (activeTabEl) {
-      activeTabEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    }
 
     // E-06: include prevId so tv-live.js can remove the outgoing tab's live UI
     tvEmit('tabchange', { id: id, prevId: prevId || null, tab: getActiveTab() });
@@ -5112,7 +5317,12 @@
     if (state.sessionRestoring) return;
 
     // Capture live scrollTop for the active tab from the DOM (may be mid-scroll)
-    var scrollEl = document.querySelector('[data-scroll]');
+    // JANK-02: only while the DOM still matches state. Mid-batch (_doCloseTab or
+    // openDoc has already moved state.activeId but the repaint is still owed)
+    // .tv-scroll belongs to a different tab, and reading it would persist a
+    // freshly opened file at the previous file's scroll offset. The tab's own
+    // scrollTop is already authoritative in that window.
+    var scrollEl = domMatchesState() ? document.querySelector('[data-scroll]') : null;
     var activeTab = getActiveTab();
     if (scrollEl && activeTab) {
       activeTab.scrollTop = scrollEl.scrollTop;
@@ -5529,6 +5739,11 @@
   window.TV = {
     state: state,
     render: render,
+    // JANK-02: run fn with render() coalesced — any number of render() calls
+    // inside fn produce exactly ONE repaint, emitted synchronously before batch
+    // returns. Callers may still read the DOM after batch() returns, but not
+    // between two render() calls inside fn. Returns fn's return value.
+    batch: batchRender,
     openDoc: openDoc,
     openErrorTab: openErrorTab,
     openUntitledTab: openUntitledTab,

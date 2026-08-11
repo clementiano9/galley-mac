@@ -448,22 +448,45 @@ html, body, #tv-root {
   background: var(--tv-text-muted) !important;
 }
 
-/* Sidebar scroll — hidden at rest, revealed on hover */
-.tv-side-scroll { scrollbar-width: none; }
-.tv-side-scroll::-webkit-scrollbar { width: 0; height: 0; display: none; }
+/* Sidebar scroll — hidden at rest, revealed on hover (unchanged design intent).
+   The ONLY thing JANK-03 changed is that the reveal is now a COLOUR change at a
+   FIXED width, never a width/display change.
+
+   Why the width mattered: the original rule grew the scrollbar 0 → 4px on
+   :hover, and because styling ::-webkit-scrollbar opts WebKit out of overlay
+   scrollbars, that 4px comes out of the CONTENT box — so every row in the file
+   list reflowed (backgrounds shrank, long names re-ellipsised) the instant the
+   pointer entered the sidebar, i.e. on the way to clicking a file. Measured
+   fix: hover now changes one row band and zero gutter pixels.
+
+   On the reveal itself, measured on the built app: with macOS scrollbars left
+   at the default "Automatically based on mouse or trackpad" (AppleShowScrollBars
+   unset), the thumb is an OVERLAY scrollbar that WebKit fades out when scrolling
+   stops — it paints during an active scroll (measured peak 77 ≈ rgba(255,255,255,.22)
+   over bg 25, at exactly this 4px width) and is invisible at rest and on hover
+   no matter what these rules say. scrollbar-width/scrollbar-color do not opt out
+   of that. So under the default setting the reveal is unreachable and the native
+   auto-hide wins — which is the right macOS feel anyway. Under
+   AppleShowScrollBars = Always the scrollbar is non-overlay and these rules do
+   apply, which is why hover-reveal is kept rather than replaced by an
+   always-visible thumb: it honours the design where it can take effect and costs
+   nothing where it cannot.
+
+   Rule: never toggle scrollbar WIDTH or DISPLAY on :hover anywhere in here. */
+.tv-side-scroll { scrollbar-width: thin; scrollbar-color: transparent transparent; }
+.tv-side-scroll::-webkit-scrollbar { width: 4px; height: 0; }
+.tv-side-scroll::-webkit-scrollbar-track { background: transparent; }
+.tv-side-scroll::-webkit-scrollbar-thumb {
+  background: transparent !important;
+  border-radius: 4px;
+}
 .tv-side-scroll:hover,
 .tv-side-scroll:focus-within {
-  scrollbar-width: thin;
   scrollbar-color: var(--tv-scrollthumb) transparent;
 }
-.tv-side-scroll:hover::-webkit-scrollbar,
-.tv-side-scroll:focus-within::-webkit-scrollbar { width: 4px; display: block; }
-.tv-side-scroll:hover::-webkit-scrollbar-track,
-.tv-side-scroll:focus-within::-webkit-scrollbar-track { background: transparent; }
 .tv-side-scroll:hover::-webkit-scrollbar-thumb,
 .tv-side-scroll:focus-within::-webkit-scrollbar-thumb {
   background: var(--tv-scrollthumb) !important;
-  border-radius: 4px;
 }
 
 /* Palette list scroll — hidden at rest, revealed on hover */

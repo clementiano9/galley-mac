@@ -57,6 +57,13 @@ window.TV.state = {
 ```js
 TV.state                         // the object above
 TV.render()                      // full repaint of current state into #tv-root; preserves scroll
+                                 // (content pane per DR-03, AND the sidebar list — JANK-01)
+TV.batch(fn) -> fn's return      // JANK-02: coalesce renders. Any number of render() calls
+                                 // inside fn produce ONE repaint, emitted synchronously
+                                 // before batch() returns — so reading the DOM after
+                                 // batch() is safe, reading it BETWEEN two render() calls
+                                 // inside fn is not (it is still the pre-render DOM).
+                                 // Nesting is counted. Wrap any multi-mutation sequence.
 TV.openDoc({name, source, path?, fileHandle?, live?}) -> id   // add tab (dedupe by path/name) & activate
 TV.activateTab(id)               // switch active tab (saves outgoing scrollTop, restores incoming)
 TV.closeTab(id)

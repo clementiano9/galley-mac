@@ -121,7 +121,22 @@
     if (!doc || !doc.name) return;
     var tv = getTV();
     if (!tv) return;
+    // JANK-02: openDoc renders (twice, when it has to drop a preview tab) and
+    // the QA D4 fix below renders again — three full DOM teardowns per opened
+    // file, which is the sidebar stutter. TV.batch collapses them into one
+    // repaint, emitted synchronously before batch() returns, and as a bonus the
+    // D4 window closes entirely: nativePath is assigned before anything paints.
+    // Nesting is counted, so wrapping here is safe even when the caller
+    // (_openTreeFilePath) has already opened a batch. Older shells without
+    // TV.batch fall through to the previous multi-render behaviour.
+    if (typeof tv.batch === 'function') {
+      tv.batch(function () { _openInto(tv, doc, opts); });
+    } else {
+      _openInto(tv, doc, opts);
+    }
+  }
 
+  function _openInto(tv, doc, opts) {
     // E-12: use the real parent dir so sidebar groups by directory, not 'opened'
     var dirPath = parentDir(doc.path);
 
@@ -309,7 +324,16 @@
     if (!available) return Promise.resolve();
     return invoke('pick_md_files')
       .then(function (docs) {
-        (docs || []).forEach(function (doc) { openInto(doc); });
+        // JANK-02: ⌘O with a multi-file selection otherwise repaints once per
+        // file — N documents parsed and thrown away before the last one lands.
+        // One outer batch makes it a single repaint; openInto's own nested
+        // batch is counted, not re-entrant.
+        var tv = getTV();
+        var openAll = function () {
+          (docs || []).forEach(function (doc) { openInto(doc); });
+        };
+        if (tv && typeof tv.batch === 'function') tv.batch(openAll);
+        else openAll();
       })
       .catch(function (err) {
         // User cancel returns null/error — treat silently
