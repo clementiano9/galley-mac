@@ -113,7 +113,11 @@
   //   doc = { name: string, path: string, content: string }
   //   E-12: set path to the real parent directory.
   //   E-13: intentionally do NOT set fileHandle — native tabs use nativePath only.
-  function openInto(doc) {
+  // SBH-03: `opts.transient` marks a PREVIEW open (single-click in the sidebar
+  // tree) — openDoc replaces the existing preview tab instead of stacking a new
+  // one. Optional and defaulting to false, so every existing caller keeps its
+  // current pinned behavior and openDoc's one-opts-object signature is intact.
+  function openInto(doc, opts) {
     if (!doc || !doc.name) return;
     var tv = getTV();
     if (!tv) return;
@@ -125,6 +129,7 @@
       name: doc.name,
       source: doc.content,
       path: dirPath,
+      transient: !!(opts && opts.transient),
       // fileHandle intentionally omitted — E-13: native path used instead.
       // Native tabs NEVER have fileHandle set; nativePath is assigned below.
     });
@@ -154,6 +159,16 @@
     if (tab && tab.id && window.TVLive && typeof TVLive.start === 'function') {
       TVLive.start(tab.id);
     }
+
+    // QA D4: openDoc() renders BEFORE the bridge can assign nativePath (the
+    // contract requires assigning it after openDoc returns), so that first
+    // paint saw a tab with no nativePath. buildSidebar suppresses a tab from
+    // the grouped "open files" list only when its nativePath is a known
+    // tree file — so for one frame the file rendered TWICE: once in the folder
+    // tree and once as a duplicate grouped section, with the active highlight
+    // on the wrong row. It only healed on the next unrelated re-render.
+    // Re-render once the tab is fully populated.
+    if (tab && typeof tv.render === 'function') tv.render();
   }
 
   /* ── drag-drop handler ───────────────────────────────────── */
@@ -316,20 +331,27 @@
   }
 
   /* ── public: openFolder (F-03) ──────────────────────────── */
-  // Invokes pick_folder Rust command → opens all docs, then derives the folder
-  // path and calls window.TV.registerFolder(tree) so the sidebar tree appears (F-19).
+  // Invokes pick_folder → { path, files }, then reads the dir tree from
+  // res.path and registers it so the sidebar nested section appears — even when
+  // every .md lives in subfolders (res.files empty but res.path set). B1 fix:
+  // cancel-vs-empty is decided by res.path being NON-EMPTY (a real pick), never
+  // by files.length.
+  //
+  // SBH-03 (Sidebar hierarchy · Fix 3): opening a folder opens NO tabs. Mounting
+  // a folder is a NAVIGATION act; opening a document is a READING act. Fanning
+  // res.files out into tabs made a 40-document folder a 40-tab strip — a second,
+  // worse copy of the sidebar, with every tab costing a render and a ⌘1–9 slot.
+  // res.files is still returned by Rust and still used to seed the tree.
   function openFolder() {
     if (!available) return Promise.resolve();
     return invoke('pick_folder')
-      .then(function (docs) {
-        if (!docs || !docs.length) return; // user cancelled or empty folder
-        docs.forEach(function (doc) { openInto(doc); });
+      .then(function (res) {
+        var folderPath = res && res.path;
+        if (!folderPath) return; // empty path → user cancelled
 
-        // F-19: derive folder path from the first doc's parent dir and register
-        // the tree with the frontend so the sidebar section appears.
-        var folderPath = parentDir(docs[0].path);
-        if (!folderPath) return;
-
+        // F-19: register the tree from the CHOSEN dir path (not a doc's parent),
+        // so a folder whose md files are only in subfolders still gets a sidebar
+        // section instead of silently no-op'ing.
         readDirTree(folderPath).then(function (tree) {
           if (tree && window.TV && typeof window.TV.registerFolder === 'function') {
             window.TV.registerFolder(tree);
@@ -341,6 +363,36 @@
       .catch(function (err) {
         if (err) console.warn('[TVNative] openFolder cancelled or failed', err);
       });
+  }
+
+  /* ── public: reopenFolder (ISS-FOLDER) ───────────────────── */
+  // Reopen a KNOWN folder path WITHOUT the native picker (we already have the
+  // path, e.g. from a Recent entry). Mirrors the real openFolder() flow: read
+  // the DirTree and register it so the sidebar nested section appears. Returns
+  // a Promise that REJECTS if the tree can't be read (folder moved/deleted) so
+  // the caller can surface a notice and drop the dead Recent entry. A visible
+  // toast is shown on read failure too.
+  //
+  // SBH-03 (Fix 3): like openFolder(), this opens NO tabs — it keeps parity
+  // with the picker path, which no longer fans top-level files out either.
+  function reopenFolder(absFolderPath) {
+    if (!available) return Promise.reject(new Error('native bridge unavailable'));
+    if (!absFolderPath) return Promise.reject(new Error('no folder path'));
+    return readDirTree(absFolderPath).then(function (tree) {
+      if (!tree) {
+        showToast('Could not open folder — it may have moved or been deleted');
+        return Promise.reject(new Error('read_dir_tree returned null'));
+      }
+      // Register the tree so the sidebar folder section renders.
+      if (window.TV && typeof window.TV.registerFolder === 'function') {
+        window.TV.registerFolder(tree);
+      }
+      return tree;
+    }, function (err) {
+      showToast('Could not open folder — it may have moved or been deleted');
+      console.warn('[TVNative] reopenFolder read_dir_tree failed', absFolderPath, err);
+      return Promise.reject(err);
+    });
   }
 
   /* ── public: saveTab ─────────────────────────────────────── */
@@ -611,6 +663,7 @@
     startWatch: startWatch,
     stopWatch: stopWatch,
     unwatchFolder: unwatchFolder,      // ISS-005: stop a folder-root watch on close
+    reopenFolder: reopenFolder,        // ISS-FOLDER: reopen a known folder (no dialog)
     revealInFinder: revealInFinder,    // F-10/F-16
     classifyReadError: classifyReadError,
     showToast: showToast,      // exposed so tv-app.js handleSave can surface errors

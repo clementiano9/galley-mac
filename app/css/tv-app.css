@@ -120,6 +120,11 @@ html, body, #tv-root {
   height: 2px; background: var(--tv-accent) !important;
 }
 .tv-tab .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* SBH-03 (Fix 3): the transient (preview) tab. A single click on a tree file
+   opens here and the next single click REPLACES it, so browsing a folder never
+   grows the strip past one tab. Italic is the standing cue that the tab is not
+   kept; double-clicking the file or the tab pins it (upright), as does editing. */
+.tv-tab.transient .name { font-style: italic; }
 .tv-tab .tv-close {
   width: 20px; height: 20px; border-radius: 4px;
   margin: -2px;
@@ -306,15 +311,70 @@ html, body, #tv-root {
 }
 .tv-tree-row.folder .ic { color: var(--tv-text-muted) !important; opacity: .7; }
 .tv-tree-row.file { padding-left: 26px; }
+
+/* ── SBH-01 (Sidebar hierarchy · Fix 1): depth is a number ──────
+   Every tree row carries --tv-depth (root head = 0, +1 per level) and an
+   inline padding-left of PAD 8 + depth*STEP 14, with file rows clearing the
+   16px chevron GUTTER so a file's doc icon aligns under the folder icon at
+   the same depth.
+
+   Guide rails: one 1px line per ANCESTOR level, aligned to that ancestor's
+   chevron — x = 8 + i*14 + 5, i.e. 13px, 27px, 41px … Painted as a repeating
+   gradient (period 14px, line occupying [13,14)) clipped to depth*14px rather
+   than absolutely-positioned rail elements: inline left/top attributes are
+   dropped under the Tauri CSP, and this needs no extra DOM per level.
+   Transparent 1px borders replace the row's 1px margins so the rails paint
+   through the gap between rows and read as continuous vertical lines.
+   Rows without --tv-depth (Recent, "Open") fall back to 0 → no rails. */
+.tv-tree-row.subfolder,
+.tv-tree-row.file {
+  margin: 0;
+  border-top: 1px solid transparent;
+  border-bottom: 1px solid transparent;
+  background-origin: border-box;
+  background-repeat: no-repeat;
+  background-image: repeating-linear-gradient(
+    to right,
+    transparent 0 13px,
+    var(--tv-border) 13px 14px
+  );
+  background-size: calc(var(--tv-depth, 0) * 14px) 100%;
+}
+/* Subfolder rows are tree items, not section labels: 13px at tree weight,
+   matching the design system's TreeRow (--tv-fw-tree 550). The uppercase
+   .tv-tree-row.folder treatment below applies only to the legacy grouped
+   open-tab header, which is not part of the nested tree. */
+.tv-tree-row.subfolder { font-weight: 550; }
+
 /* UX-26 / UX-SB1: selection cue — filled tint + semibold weight.
-   (Left accent border removed per user request 2026-06-10.) */
+   (Left accent border removed per user request 2026-06-10.)
+   SBH-01: background-COLOR, never the `background` shorthand — the shorthand
+   would reset background-image and erase the depth guide rails. */
 .tv-tree-row.active {
-  background: var(--tv-accent-weak) !important;
+  background-color: var(--tv-accent-weak) !important;
   color: var(--tv-accent-text) !important;
   font-weight: 600;
 }
 .tv-tree-row.active .ic { color: var(--tv-accent-text) !important; }
-.tv-tree-row:hover:not(.active) { background: var(--tv-bg-hover) !important; }
+.tv-tree-row:hover:not(.active) { background-color: var(--tv-bg-hover) !important; }
+
+/* SBH-02 (Fix 2): reveal-in-place flash. When an already-open folder is
+   re-opened we expand down to it instead of mounting a second root, then
+   flash the row once so the eye lands on it. Colour-only, and the row is
+   also scrolled into view + reported in the status line, so no information
+   lives in the animation alone (URD-10 / DR-10). */
+.tv-tree-row.tv-flash,
+.tv-folder-head.tv-flash {
+  animation: tv-sbflash 1.4s cubic-bezier(.2,.9,.3,1);
+}
+@keyframes tv-sbflash {
+  0%, 60% { background-color: var(--tv-accent-weak); }
+  100%    { background-color: transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tv-tree-row.tv-flash,
+  .tv-folder-head.tv-flash { animation: none; background-color: var(--tv-accent-weak); }
+}
 /* UX-10 / DR-108: Keyboard cursor highlight — visible in both light and dark themes,
    on both active and inactive rows. Uses outline so it does not affect layout.
    Distinct from .active (which uses accent-weak background + accent border).
@@ -1629,7 +1689,8 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
 }
 .tv-tree-row.recent .ic { opacity: .7; }
 .tv-tree-row.recent:hover:not(.active) {
-  background: var(--tv-bg-hover) !important;
+  /* SBH-01: background-COLOR — the shorthand would erase the depth rails. */
+  background-color: var(--tv-bg-hover) !important;
   color: var(--tv-text-secondary) !important;
 }
 /* DR-83: filename truncates before the timestamp is ever clipped */
@@ -2008,7 +2069,6 @@ input:focus-visible,
 .tv-folder-head:hover { background: var(--tv-bg-hover) !important; }
 .tv-folder-head .ic { color: var(--tv-text-muted) !important; display: inline-flex; flex: 0 0 auto; }
 .tv-folder-head .fname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
-.tv-folder-head .fh-spacer { flex: 1; min-width: 4px; }
 
 /* Collapse chevron ----------------------------------------- */
 .tv-chev {
@@ -2028,9 +2088,9 @@ input:focus-visible,
 .folder-x {
   width: 18px; height: 18px; border-radius: 4px; margin-left: 4px;
   display: inline-flex; align-items: center; justify-content: center;
-  color: var(--tv-text-muted) !important; opacity: 0; flex: 0 0 auto;
+  color: var(--tv-text-muted) !important; opacity: .7; flex: 0 0 auto;
   transition: opacity .12s, background .12s;
-  border: 0; background: transparent; cursor: default;
+  border: 0; background: transparent; cursor: pointer;
   -webkit-user-select: none; user-select: none;
 }
 .tv-folder-head:hover .folder-x { opacity: 1; }
@@ -2044,14 +2104,37 @@ input:focus-visible,
 .tv-folder-body.capped::-webkit-scrollbar-thumb { background: var(--tv-scrollthumb) !important; border-radius: 4px; }
 
 /* Subfolder row -------------------------------------------- */
+/* SBH-01: padding-left is deliberately NOT set here — applyTreeDepths() owns
+   the left indent for every depth-annotated row (8 + depth*14). A hardcoded
+   22px here was the depth-as-a-boolean the design calls DEFECT 1, and it is
+   what the flat native tree fell back to. */
 .tv-tree-row.subfolder {
-  padding: 4px 8px 4px 22px; font-weight: 550;
+  padding-top: 4px; padding-right: 8px; padding-bottom: 4px;
+  font-weight: 550;
   color: var(--tv-text-secondary) !important; gap: 6px;
 }
-.tv-tree-row.subfolder .tv-chev { margin-left: -14px; }
 
-/* Nested (1-level deep) file rows -------------------------- */
-.tv-tree-row.file.nested { padding-left: 42px; }
+/* SBH-01 (QA D2): the old A1 single ::before rail (16px step, one rail per row)
+   was REPLACED by the depth-keyed gradient rails in the SBH-01 block above —
+   one rail per ANCESTOR level on a 14px step. Both rendered at once for a
+   while, giving every row a pair of misaligned lines ~3px apart, with the
+   ::before copy broken at each row boundary (it is bounded by the padding box
+   and so misses the transparent 1px borders the gradient paints through).
+   Do not reintroduce a ::before rail here. */
+
+/* A4 / B2: empty-folder placeholder + truncation indicator. Muted, italic,
+   non-interactive footer rows inside a folder body. No role=option → the
+   keyboard cursor never lands on them. */
+.tv-tree-empty,
+.tv-tree-truncated {
+  padding-left: 26px;
+  color: var(--tv-text-muted);
+  font-style: italic;
+}
+
+/* SBH-01: the `.nested` one-level alias (padding-left: 42px) is GONE — it was
+   the third arm of the boolean indent (isFolder ? 22 : nested ? 42 : 26). The
+   renderer no longer emits the class; depth is a number now. */
 
 /* File name ellipsis --------------------------------------- */
 .tv-tree-row .tname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
@@ -2068,18 +2151,9 @@ input:focus-visible,
 /* Live mini-bolt ------------------------------------------- */
 .tv-tree-row .mini-bolt { flex: 0 0 auto; color: var(--tv-live) !important; display: inline-flex; margin-left: auto; }
 
-/* Deep-files bucket ---------------------------------------- */
-.deep-bucket { color: var(--tv-text-secondary) !important; }
-.deep-bucket .ic-ell { color: var(--tv-text-muted) !important; display: inline-flex; flex: 0 0 auto; }
-.deep-bucket .db-label { white-space: nowrap; }
-.deep-bucket .db-count {
-  margin-left: auto; flex: 0 0 auto;
-  font-size: 10.5px; font-weight: 600; font-variant-numeric: tabular-nums;
-  color: var(--tv-text-muted) !important;
-  background: var(--tv-bg-sel) !important; border-radius: 9px; padding: 1px 7px;
-}
-.deep-bucket:hover .db-count { color: var(--tv-text-secondary) !important; }
-.tv-tree-row.deep-file .tname { flex: 0 1 auto; min-width: 0; }
+/* A6: the deep-files "More files" bucket was dropped (recursive nesting renders
+   subfolders as collapsible children at full depth instead). Its .deep-bucket /
+   .deep-file CSS was unreferenced by any JS/HTML and has been removed. */
 
 /* Folder section separator between multiple folders -------- */
 .tv-folder-sep { height: 6px; flex: 0 0 6px; }

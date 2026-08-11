@@ -50,6 +50,20 @@ pub struct SubfolderEntry {
     pub files: Vec<DirEntry>,
 }
 
+/// Return shape for pick_folder (B1 · folder-nesting fix).
+///
+/// Carries BOTH the chosen directory `path` AND its top-level files, so the JS
+/// layer can distinguish a user CANCEL (empty `path`) from a real-but-empty
+/// folder (non-empty `path`, empty `files`) — the latter happens when every .md
+/// lives in subfolders. Field name is the single word `path` on purpose: lib.rs
+/// has no `rename_all`, so a multi-word field would serialize verbatim and break
+/// JS access.
+#[derive(Debug, Clone, Serialize)]
+pub struct FolderPick {
+    pub path: String,
+    pub files: Vec<FileDoc>,
+}
+
 /// Return shape for read_dir_tree (F-19, DR-33–DR-41).
 ///
 /// - `path`       — the absolute folder path that was scanned.
@@ -69,6 +83,10 @@ pub struct DirTree {
     pub files: Vec<DirEntry>,
     pub subfolders: Vec<SubfolderEntry>,
     pub deep: Vec<DeepEntry>,
+    /// B2: true when the scanner dropped any matching file/subfolder because a cap
+    /// (MAX_TOTAL / MAX_DIRECT / MAX_SUBFOLDERS / MAX_SUB_FILES / MAX_DEEP) was hit.
+    /// Drives the sidebar's "Some items not shown" footer row.
+    pub truncated: bool,
 }
 
 /// A file nested more than one level below the scanned root.
@@ -161,7 +179,7 @@ async fn pick_md_files(app: tauri::AppHandle) -> Result<Vec<FileDoc>, String> {
 /// Per-file read errors are skipped, matching the pick_md_files behaviour.
 /// (F-03)
 #[tauri::command]
-async fn pick_folder(app: tauri::AppHandle) -> Result<Vec<FileDoc>, String> {
+async fn pick_folder(app: tauri::AppHandle) -> Result<FolderPick, String> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
 
     app.dialog()
@@ -174,7 +192,15 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Vec<FileDoc>, String> {
 
     let fp = match maybe_path {
         Some(p) => p,
-        None => return Ok(vec![]), // user cancelled
+        // B1: user cancelled → EMPTY path signals cancel (the JS branch keys on
+        // res.path being non-empty, NOT on files.length, so a real-but-empty
+        // folder still opens its sidebar tree).
+        None => {
+            return Ok(FolderPick {
+                path: String::new(),
+                files: vec![],
+            })
+        }
     };
 
     let dir_str = fp.to_string();
@@ -218,7 +244,13 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<Vec<FileDoc>, String> {
         }
     }
 
-    Ok(docs)
+    // B1: return the chosen dir path + its top-level files. `files` may be empty
+    // (all .md live in subfolders); the non-empty `path` tells JS this was a real
+    // pick, so the sidebar tree still renders via readDirTree(res.path).
+    Ok(FolderPick {
+        path: dir_str,
+        files: docs,
+    })
 }
 
 /// Read a single file by absolute path (drag-drop, live re-read).
@@ -467,6 +499,10 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
     const MAX_SUBFOLDERS: usize = 10;
     const MAX_SUB_FILES: usize = 50;
     const MAX_DEEP: usize = 50;
+    // QA D5: how many levels BELOW a subfolder the deep walk descends. 1 was the
+    // old hardcoded behavior (and could not represent the design's depth-4 case);
+    // 6 covers real note trees while still bounding a pathological hierarchy.
+    const MAX_DEPTH: usize = 6;
 
     let root = PathBuf::from(&path);
 
@@ -491,10 +527,99 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
         }
     }
 
+    // SBH-01 (QA D5): recursively collect matching files below a subfolder into
+    // the flat `deep` list, tagging each with its FULL relative prefix
+    // ("research/sources/inner/"). The old code walked exactly one level below a
+    // subfolder and pushed only `is_file()` entries, so a directory at depth 3
+    // was never opened and never counted — files below it vanished from the UI
+    // with `truncated` still false, i.e. silently. The JS side already splits an
+    // arbitrary-depth `from` prefix, so nesting renders at any depth.
+    //
+    // Bounded three ways: MAX_DEPTH levels, the shared MAX_TOTAL visit budget,
+    // and MAX_DEEP collected entries. Hitting ANY of them sets `truncated`, so
+    // the sidebar's "Some items not shown" footer tells the truth.
+    #[allow(clippy::too_many_arguments)]
+    fn collect_deep(
+        dir: &std::path::Path,
+        prefix: &str,
+        depth: usize,
+        max_depth: usize,
+        max_total: usize,
+        max_deep: usize,
+        deep: &mut Vec<DeepEntry>,
+        total_visited: &mut usize,
+        truncated: &mut bool,
+    ) {
+        if depth > max_depth {
+            *truncated = true;
+            return;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(iter) => iter,
+            Err(e) => {
+                eprintln!(
+                    "read_dir_tree: skipping unreadable deep dir '{}': {}",
+                    dir.display(),
+                    e
+                );
+                return;
+            }
+        };
+        for result in entries {
+            if *total_visited >= max_total || deep.len() >= max_deep {
+                *truncated = true;
+                return;
+            }
+            let entry = match result {
+                Ok(e) => e,
+                Err(e) => {
+                    eprintln!("read_dir_tree: skipping unreadable deep entry: {}", e);
+                    continue;
+                }
+            };
+            *total_visited += 1;
+
+            let p = entry.path();
+            if p.is_file() {
+                if is_matching(&p) {
+                    deep.push(DeepEntry {
+                        name: p
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_default(),
+                        path: p.to_string_lossy().to_string(),
+                        from: prefix.to_string(),
+                    });
+                }
+            } else if p.is_dir() {
+                let name = p
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                let child_prefix = format!("{}{}/", prefix, name);
+                collect_deep(
+                    &p,
+                    &child_prefix,
+                    depth + 1,
+                    max_depth,
+                    max_total,
+                    max_deep,
+                    deep,
+                    total_visited,
+                    truncated,
+                );
+            }
+        }
+    }
+
     let mut files: Vec<DirEntry> = Vec::new();
     let mut subfolders: Vec<SubfolderEntry> = Vec::new();
     let mut deep: Vec<DeepEntry> = Vec::new();
     let mut total_visited: usize = 0;
+    // B2: flips to true at EVERY cap-drop site (the three MAX_TOTAL breaks, the
+    // MAX_SUBFOLDERS continue, and the two silent push-guards MAX_DIRECT /
+    // MAX_SUB_FILES / MAX_DEEP). Surfaced on DirTree.truncated → sidebar footer.
+    let mut truncated = false;
 
     // Read the root directory entries.
     let root_entries = std::fs::read_dir(&root)
@@ -506,6 +631,7 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
                 "read_dir_tree: hit entry cap ({}) scanning '{}'",
                 MAX_TOTAL, path
             );
+            truncated = true; // B2 cap-site 1/6 (root MAX_TOTAL)
             break;
         }
         let entry = match entry_result {
@@ -521,8 +647,12 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
 
         if entry_path.is_file() {
             // Depth-0 matching file.
-            if is_matching(&entry_path) && files.len() < MAX_DIRECT {
-                files.push(make_entry(&entry_path));
+            if is_matching(&entry_path) {
+                if files.len() < MAX_DIRECT {
+                    files.push(make_entry(&entry_path));
+                } else {
+                    truncated = true; // B2 cap-site 2/6 (MAX_DIRECT push-guard)
+                }
             }
         } else if entry_path.is_dir() {
             // Depth-1 subdirectory: collect its matching files and recurse deeper.
@@ -531,6 +661,7 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
                     "read_dir_tree: subfolder cap ({}) reached in '{}'",
                     MAX_SUBFOLDERS, path
                 );
+                truncated = true; // B2 cap-site 3/6 (MAX_SUBFOLDERS continue)
                 continue;
             }
 
@@ -556,6 +687,7 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
 
             for sub_result in sub_entries {
                 if total_visited >= MAX_TOTAL {
+                    truncated = true; // B2 cap-site 4/6 (sub-loop MAX_TOTAL)
                     break;
                 }
                 let sub_entry = match sub_result {
@@ -575,58 +707,33 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
 
                 if sub_path.is_file() {
                     // Depth-1 matching file → belongs to this subfolder.
-                    if is_matching(&sub_path) && sub_files.len() < MAX_SUB_FILES {
-                        sub_files.push(make_entry(&sub_path));
+                    if is_matching(&sub_path) {
+                        if sub_files.len() < MAX_SUB_FILES {
+                            sub_files.push(make_entry(&sub_path));
+                        } else {
+                            truncated = true; // B2 cap-site 5/6 (MAX_SUB_FILES push-guard)
+                        }
                     }
                 } else if sub_path.is_dir() {
                     // Depth-2+ — recurse to collect deep entries (flat list).
-                    let deep_prefix = format!("{}/", sub_name);
+                    // QA D5: this now descends to MAX_DEPTH levels instead of
+                    // exactly one, and flags `truncated` when it stops early.
                     let deeper_name = sub_path
                         .file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default();
-
-                    let deeper_entries = match std::fs::read_dir(&sub_path) {
-                        Ok(iter) => iter,
-                        Err(e) => {
-                            eprintln!(
-                                "read_dir_tree: skipping unreadable deep dir '{}': {}",
-                                sub_path.display(),
-                                e
-                            );
-                            continue;
-                        }
-                    };
-
-                    for deeper_result in deeper_entries {
-                        if total_visited >= MAX_TOTAL || deep.len() >= MAX_DEEP {
-                            break;
-                        }
-                        let deeper_entry = match deeper_result {
-                            Ok(e) => e,
-                            Err(e) => {
-                                eprintln!(
-                                    "read_dir_tree: skipping unreadable deep entry: {}",
-                                    e
-                                );
-                                continue;
-                            }
-                        };
-                        total_visited += 1;
-
-                        let deeper_path = deeper_entry.path();
-                        if deeper_path.is_file() && is_matching(&deeper_path) {
-                            let from = format!("{}{}/", deep_prefix, deeper_name);
-                            deep.push(DeepEntry {
-                                name: deeper_path
-                                    .file_name()
-                                    .map(|n| n.to_string_lossy().to_string())
-                                    .unwrap_or_default(),
-                                path: deeper_path.to_string_lossy().to_string(),
-                                from,
-                            });
-                        }
-                    }
+                    let deep_prefix = format!("{}/{}/", sub_name, deeper_name);
+                    collect_deep(
+                        &sub_path,
+                        &deep_prefix,
+                        1,
+                        MAX_DEPTH,
+                        MAX_TOTAL,
+                        MAX_DEEP,
+                        &mut deep,
+                        &mut total_visited,
+                        &mut truncated,
+                    );
                 }
             }
 
@@ -645,6 +752,7 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
         files,
         subfolders,
         deep,
+        truncated, // B2: any cap-drop above flipped this
     })
 }
 
@@ -1062,6 +1170,76 @@ mod tests {
         assert_eq!(tree.deep.len(), 1, "one deep file");
         assert_eq!(tree.deep[0].name, "d.md");
         assert_eq!(tree.deep[0].from, "sub/deeper/", "deep `from` prefix");
+
+        // B2: a tiny tree well under every cap is NOT truncated.
+        assert!(!tree.truncated, "small tree is not truncated");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // QA D5: the deep walk used to stop exactly one level below a subfolder, so
+    // a directory at depth 3 was never opened — its files vanished from the UI
+    // with `truncated` still false (a SILENT drop). It now recurses to
+    // MAX_DEPTH, tagging each file with its full relative `from` prefix.
+    #[test]
+    fn read_dir_tree_recurses_past_depth_three() {
+        let mut base = std::env::temp_dir();
+        base.push(format!("tv_rdt_deep_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        // research/sources/inner/  — the design's depth-4 case.
+        let inner = base.join("research").join("sources").join("inner");
+        fs::create_dir_all(&inner).unwrap();
+        fs::write(base.join("charter.md"), "x").unwrap();
+        fs::write(base.join("research").join("stream-1.md"), "x").unwrap();
+        fs::write(base.join("research").join("sources").join("derived-wans.md"), "x").unwrap();
+        fs::write(inner.join("refs.md"), "x").unwrap();
+        // One level deeper still, to prove it is recursion and not a second
+        // hardcoded level.
+        let deeper_still = inner.join("evenmore");
+        fs::create_dir_all(&deeper_still).unwrap();
+        fs::write(deeper_still.join("way-down.md"), "x").unwrap();
+
+        let tree = read_dir_tree(base.to_string_lossy().to_string()).expect("read_dir_tree ok");
+
+        let find = |n: &str| tree.deep.iter().find(|d| d.name == n).cloned();
+
+        let sources = find("derived-wans.md").expect("depth-3 file collected");
+        assert_eq!(sources.from, "research/sources/", "depth-3 `from`");
+
+        let refs = find("refs.md").expect("depth-4 file collected (was silently dropped)");
+        assert_eq!(refs.from, "research/sources/inner/", "depth-4 `from`");
+
+        let way_down = find("way-down.md").expect("depth-5 file collected");
+        assert_eq!(
+            way_down.from, "research/sources/inner/evenmore/",
+            "depth-5 `from` keeps the full chain"
+        );
+
+        // Nothing here trips a cap, so the truncation footer must stay off.
+        assert!(!tree.truncated, "well under every cap → not truncated");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // B2: the MAX_DIRECT push-guard is the trickiest cap to wire (a silent
+    // `len() < CAP` guard, not a break). Writing >50 top-level .md files must
+    // flip DirTree.truncated even though the loop never breaks.
+    #[test]
+    fn read_dir_tree_marks_truncated_over_max_direct() {
+        let mut base = std::env::temp_dir();
+        base.push(format!("tv_rdt_trunc_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        // 60 matching top-level files > MAX_DIRECT (50) but < MAX_TOTAL (200),
+        // so the only cap hit is the MAX_DIRECT push-guard.
+        for i in 0..60 {
+            fs::write(base.join(format!("f{:02}.md", i)), "x").unwrap();
+        }
+
+        let tree = read_dir_tree(base.to_string_lossy().to_string()).expect("read_dir_tree ok");
+
+        assert_eq!(tree.files.len(), 50, "files capped at MAX_DIRECT");
+        assert!(tree.truncated, "exceeding MAX_DIRECT flips truncated");
 
         let _ = fs::remove_dir_all(&base);
     }

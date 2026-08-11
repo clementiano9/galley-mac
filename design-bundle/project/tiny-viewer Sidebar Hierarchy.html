@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="en" data-theme="dark" data-accent="blue">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>tiny-viewer — Sidebar hierarchy</title>
+<link rel="stylesheet" href="_ds/tiny-viewer-design-system-99677a1e-3559-40fa-bddd-0c956ad28f48/tokens/typography.css">
+<link rel="stylesheet" href="_ds/tiny-viewer-design-system-99677a1e-3559-40fa-bddd-0c956ad28f48/tokens/spacing.css">
+<link rel="stylesheet" href="_ds/tiny-viewer-design-system-99677a1e-3559-40fa-bddd-0c956ad28f48/tokens/colors.css">
+<link rel="stylesheet" href="_ds/tiny-viewer-design-system-99677a1e-3559-40fa-bddd-0c956ad28f48/tokens/accents.css">
+<link rel="stylesheet" href="_ds/tiny-viewer-design-system-99677a1e-3559-40fa-bddd-0c956ad28f48/tokens/elevation.css">
+<link rel="stylesheet" href="_ds/tiny-viewer-design-system-99677a1e-3559-40fa-bddd-0c956ad28f48/styles.css">
+<style>
+*{box-sizing:border-box}html,body{margin:0}
+body{background:var(--tv-bg-primary);color:var(--tv-text-primary);font-family:var(--tv-font-ui);-webkit-font-smoothing:antialiased}
+a{color:var(--tv-accent-text);text-decoration:none}a:hover{text-decoration:underline}
+.hd{position:sticky;top:0;z-index:40;display:flex;align-items:center;gap:16px;padding:14px 32px;background:var(--tv-bg-chrome);border-bottom:1px solid var(--tv-border)}
+.hd .nm{font-size:14px;font-weight:700;letter-spacing:-.2px}
+.hd .nm span{font-weight:450;color:var(--tv-text-muted);margin-left:9px}
+.hd .sp{flex:1}
+.seg{display:flex;background:var(--tv-bg-sel);border-radius:9px;padding:2px}
+.seg button{appearance:none;-webkit-appearance:none;border:0;background:transparent;font:500 12.5px var(--tv-font-ui);color:var(--tv-text-secondary);padding:5px 12px;border-radius:7px;cursor:pointer}
+.seg button.on{background:var(--tv-bg-surface);color:var(--tv-text-primary);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.sws{display:flex;gap:6px}
+.sw{appearance:none;-webkit-appearance:none;width:24px;height:24px;border-radius:7px;padding:0;border:2px solid transparent;cursor:pointer}
+.sw.on{border-color:var(--tv-text-primary)}
+.sw.blue{background:#2d68d8}.sw.graphite{background:#586071}.sw.warm{background:#c26a3a}
+.cap{font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--tv-text-muted)}
+.wrap{max-width:1080px;margin:0 auto;padding:0 32px 120px}
+.intro{padding:44px 0 30px;border-bottom:1px solid var(--tv-border)}
+.intro h1{font-size:var(--tv-fs-h1);font-weight:var(--tv-fw-bold);letter-spacing:var(--tv-ls-h1);margin:0 0 12px}
+.intro p{font-size:16px;line-height:1.7;color:var(--tv-text-secondary);max-width:680px;margin:0 0 24px;text-wrap:pretty}
+.defects{display:grid;grid-template-columns:repeat(3,1fr);gap:12px}
+.dfc{border:1px solid var(--tv-border);border-radius:var(--tv-radius-md);background:var(--tv-bg-surface);padding:14px 16px}
+.dfc .n{font-family:var(--tv-font-mono);font-size:11px;color:var(--tv-danger);font-weight:600;margin-bottom:6px}
+.dfc h4{margin:0 0 5px;font-size:13.5px;font-weight:var(--tv-fw-semibold)}
+.dfc p{margin:0;font-size:12.5px;line-height:1.55;color:var(--tv-text-secondary)}
+section.s{padding:42px 0 8px;border-bottom:1px solid var(--tv-border)}
+section.s:last-of-type{border-bottom:0}
+.s>h2{font-size:var(--tv-fs-h2);font-weight:var(--tv-fw-heading);letter-spacing:var(--tv-ls-h2);margin:0 0 6px}
+.s>.sub{font-size:14px;color:var(--tv-text-secondary);margin:0 0 22px;max-width:680px;text-wrap:pretty}
+.rule{display:flex;gap:10px;align-items:flex-start;font-size:13.5px;line-height:1.6;color:var(--tv-text-secondary);margin:0 0 10px;max-width:700px}
+.rule b{color:var(--tv-text-primary);font-weight:var(--tv-fw-semibold)}
+.rule .mk{flex:0 0 auto;width:16px;height:16px;border-radius:50%;margin-top:2px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;background:var(--tv-accent-weak);color:var(--tv-accent-text)}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:18px;align-items:start}
+.panel{border:1px solid var(--tv-border);border-radius:var(--tv-radius-md);overflow:hidden;background:var(--tv-bg-sidebar)}
+.panel .ph{display:flex;align-items:center;gap:8px;padding:9px 12px;border-bottom:1px solid var(--tv-border);background:var(--tv-bg-chrome)}
+.panel .ph .t{font-size:11px;font-weight:600;letter-spacing:.5px;text-transform:uppercase}
+.panel .ph .bad{color:var(--tv-danger)}.panel .ph .good{color:var(--tv-accent-text)}
+.panel .pb{padding:8px 6px}
+.note{font-size:12px;color:var(--tv-text-muted);margin-top:10px;line-height:1.55}
+.row{position:relative;display:flex;align-items:center;gap:7px;padding:5px var(--tv-s2);margin:1px 0;font-size:13px;border-radius:var(--tv-radius-sm);cursor:default;color:var(--tv-text-secondary)}
+.row:hover{background:var(--tv-bg-hover)}
+.row.act{background:var(--tv-accent-weak);color:var(--tv-accent-text)}
+.row.opn{font-weight:var(--tv-fw-semibold);color:var(--tv-text-primary)}
+.row.fol{font-weight:var(--tv-fw-tree)}
+.row .ic{display:inline-flex;flex:0 0 auto;color:var(--tv-text-muted)}
+.row.act .ic{color:var(--tv-accent-text)}
+.row .nmx{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .chev{display:inline-flex;width:10px;flex:0 0 auto;color:var(--tv-text-muted);transition:transform var(--tv-dur-fast)}
+.row .chev.op{transform:rotate(90deg)}
+.rail{position:absolute;top:-1px;bottom:-1px;width:1px;background:var(--tv-border);pointer-events:none}
+.row.flash{animation:fl 1.4s var(--tv-ease-out)}
+@keyframes fl{0%,60%{background:var(--tv-accent-weak)}100%{background:transparent}}
+.roothd{display:flex;align-items:center;gap:6px;padding:5px var(--tv-s2);margin:1px 0;border-radius:var(--tv-radius-sm);font-size:13px;font-weight:var(--tv-fw-semibold);color:var(--tv-text-primary);cursor:default}
+.roothd:hover{background:var(--tv-bg-hover)}
+.roothd .ic{display:inline-flex;color:var(--tv-text-muted);flex:0 0 auto}
+.roothd .x{margin-left:auto;color:var(--tv-text-muted);display:inline-flex;opacity:.5}
+.crumb{font-size:11px;color:var(--tv-text-muted);margin-left:8px;font-family:var(--tv-font-mono)}
+.strip{display:flex;align-items:stretch;height:38px;background:var(--tv-bg-chrome);padding:0 6px;overflow-x:auto;border-bottom:1px solid var(--tv-border)}
+.tb{display:flex;align-items:center;gap:7px;padding:0 12px;max-width:190px;flex:0 0 auto;font-size:12.5px;font-weight:450;color:var(--tv-text-secondary);position:relative;cursor:default;border-radius:7px 7px 0 0}
+.tb:hover{background:var(--tv-bg-hover)}
+.tb.on{background:var(--tv-bg-primary);color:var(--tv-text-primary)}
+.tb.on::after{content:"";position:absolute;left:9px;right:9px;top:0;height:2px;border-radius:0 0 2px 2px;background:var(--tv-accent)}
+.tb.tr .nmx{font-style:italic}
+.tb .nmx{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.demo{display:grid;grid-template-columns:264px 1fr;border:1px solid var(--tv-border);border-radius:var(--tv-radius-md);overflow:hidden;background:var(--tv-bg-primary);min-height:430px}
+.demo .sbx{background:var(--tv-bg-sidebar);border-right:1px solid var(--tv-border);padding:8px 6px;overflow-y:auto;max-height:470px}
+.demo .main{display:flex;flex-direction:column;min-width:0}
+.demo .doc{flex:1;padding:26px 30px;color:var(--tv-text-secondary);font-size:13.5px;line-height:1.7}
+.demo .doc h3{margin:0 0 10px;font-size:20px;font-weight:var(--tv-fw-heading);color:var(--tv-text-primary);letter-spacing:-.3px}
+.ctl{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 14px;align-items:center}
+.tally{font-size:12px;color:var(--tv-text-muted);font-family:var(--tv-font-mono)}
+.tally b{color:var(--tv-text-primary)}
+#err{padding:28px 32px;color:var(--tv-danger);font-family:var(--tv-font-mono);font-size:12.5px;white-space:pre-wrap}
+@media (max-width:900px){.two,.defects{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div id="err"></div>
+<div id="root"></div>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="_ds/tiny-viewer-design-system-99677a1e-3559-40fa-bddd-0c956ad28f48/_ds_bundle.js"></script>
+<script type="text/babel">
+const DS = window.TinyViewerDesignSystem_99677a || {};
+const Button = DS.Button, Kbd = DS.Kbd;
+
+const PAD = 8, STEP = 14, GUTTER = 16;
+const Doc = () => <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3"><path d="M4 1.8h5l3 3v9.4c0 .3-.2.5-.5.5H4c-.3 0-.5-.2-.5-.5V2.3c0-.3.2-.5.5-.5Z"/><path d="M9 1.8v3.2h3"/></svg>;
+const Fold = () => <svg width="15" height="15" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.3"><path d="M1.8 4.2c0-.6.4-1 1-1h3l1.4 1.4h6c.6 0 1 .4 1 1v6c0 .6-.4 1-1 1H2.8c-.6 0-1-.4-1-1V4.2Z"/></svg>;
+const Chev = () => <svg width="10" height="10" viewBox="0 0 10 10" fill="currentColor"><path d="M3.4 2 6.6 5 3.4 8z"/></svg>;
+const Xg = () => <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><path d="M3 3l6 6M9 3l-6 6"/></svg>;
+
+const Rails = ({ d }) => Array.from({ length: d }, (_, i) => (
+  <span key={i} className="rail" style={{ left: PAD + i * STEP + 5 }} />
+));
+
+/* One depth-correct row. */
+function Row({ name, folder, depth = 0, expanded, active, open, flash, onClick, onDoubleClick }) {
+  const cls = "row" + (folder ? " fol" : "") + (active ? " act" : "") + (open && !active ? " opn" : "") + (flash ? " flash" : "");
+  return (
+    <div className={cls} onClick={onClick} onDoubleClick={onDoubleClick}
+         style={{ paddingLeft: PAD + depth * STEP + (folder ? 0 : GUTTER) }}>
+      <Rails d={depth} />
+      {folder && <span className={"chev" + (expanded ? " op" : "")}><Chev /></span>}
+      <span className="ic">{folder ? <Fold /> : <Doc />}</span>
+      <span className="nmx">{name}</span>
+    </div>
+  );
+}
+
+/* ── sample tree, mirroring the reported case ───────────────── */
+const TREE = {
+  id: "ux", name: "ux-steps", folder: true, path: "~/ai-prompt-enhancer/.claude/ux-steps",
+  children: [
+    { id: "f1", name: "step-3-problem-definition.md" },
+    { id: "f2", name: "step-2-waad-urd.md" },
+    { id: "res", name: "research", folder: true, path: "~/ai-prompt-enhancer/.claude/ux-steps/research", children: [
+      { id: "f3", name: "stream-1-academic-industry.md" },
+      { id: "f4", name: "stream-2-competitors-wtp.md" },
+      { id: "f5", name: "freshness-2026-capability.md" },
+      { id: "src", name: "sources", folder: true, path: "~/ai-prompt-enhancer/.claude/ux-steps/research/sources", children: [
+        { id: "f6", name: "derived-wans.md" },
+        { id: "f7", name: "URL-registry.md" },
+      ] },
+      { id: "f8", name: "stream-8-coverage-gaps-2026-07.md" },
+    ] },
+    { id: "f9", name: "charter.md" },
+  ],
+};
+const OTHER = { id: "lg", name: "LongGame", folder: true, path: "~/LongGame", children: [
+  { id: "g1", name: "README.md" }, { id: "g2", name: "SETUP.md" },
+  { id: "goals", name: "goals", folder: true, path: "~/LongGame/goals", children: [
+    { id: "g3", name: "state.md" }, { id: "g4", name: "log.md" },
+  ] },
+] };
+
+/* ── FIX 1 · before / after ─────────────────────────────────── */
+function BeforeTree() {
+  const F = (n) => <div className="row" style={{ paddingLeft: 26 }}><span className="ic"><Doc /></span><span className="nmx">{n}</span></div>;
+  const D = (n) => <div className="row fol" style={{ paddingLeft: 22 }}><span className="chev op"><Chev /></span><span className="ic"><Fold /></span><span className="nmx">{n}</span></div>;
+  return (
+    <div className="pb">
+      <div className="roothd"><span className="chev op"><Chev /></span><span className="ic"><Fold /></span><span>ux-steps</span><span className="x"><Xg /></span></div>
+      {F("step-3-problem-definition.md")}{F("step-2-waad-urd.md")}
+      {D("research")}
+      {F("stream-1-academic-industry.md")}{F("stream-2-competitors-wtp.md")}{F("freshness-2026-capability.md")}
+      {D("sources")}
+      {F("derived-wans.md")}{F("URL-registry.md")}
+      <div style={{ height: 8 }} />
+      <div className="roothd"><span className="ic"><Fold /></span><span style={{ fontSize: 11, letterSpacing: ".5px", textTransform: "uppercase" }}>research</span><span className="crumb">…mpt-enhancer/.claude/ux-steps</span></div>
+      {F("stream-8-coverage-gaps-2026-07.md")}
+    </div>
+  );
+}
+
+function StaticNode({ node, depth }) {
+  const [open, setOpen] = React.useState(true);
+  if (!node.folder) return <Row name={node.name} depth={depth} />;
+  return (
+    <React.Fragment>
+      <Row name={node.name} folder depth={depth} expanded={open} onClick={() => setOpen((v) => !v)} />
+      {open && node.children.map((c) => <StaticNode key={c.id} node={c} depth={depth + 1} />)}
+    </React.Fragment>
+  );
+}
+
+function AfterTree() {
+  return (
+    <div className="pb">
+      <div className="roothd"><span className="chev op"><Chev /></span><span className="ic"><Fold /></span><span>ux-steps</span><span className="x"><Xg /></span></div>
+      {TREE.children.map((c) => <StaticNode key={c.id} node={c} depth={1} />)}
+    </div>
+  );
+}
+
+/* ── live sidebar: containment + transient tabs ─────────────── */
+const find = (node, id) => node.id === id ? node : (node.children || []).reduce((a, c) => a || find(c, id), null);
+const pathsOf = (node, acc = []) => { acc.push(node); (node.children || []).forEach((c) => c.folder && pathsOf(c, acc)); return acc; };
+const ancestorsTo = (node, id, chain = []) => {
+  if (node.id === id) return chain;
+  for (const c of node.children || []) {
+    if (c.folder) { const r = ancestorsTo(c, id, chain.concat(node.id)); if (r) return r; }
+    else if (c.id === id) return chain.concat(node.id);
+  }
+  return null;
+};
+
+function LiveDemo() {
+  const [roots, setRoots] = React.useState([TREE]);
+  const [expanded, setExpanded] = React.useState({ ux: true, res: true });
+  const [tabs, setTabs] = React.useState([]);           // [{id,name,pinned}]
+  const [active, setActive] = React.useState(null);
+  const [flash, setFlash] = React.useState(null);
+  const [msg, setMsg] = React.useState(null);
+
+  React.useEffect(() => { if (!msg) return; const t = setTimeout(() => setMsg(null), 4200); return () => clearTimeout(t); }, [msg]);
+  React.useEffect(() => { if (!flash) return; const t = setTimeout(() => setFlash(null), 1500); return () => clearTimeout(t); }, [flash]);
+
+  const openFolder = (node) => {
+    // already a root?
+    if (roots.some((r) => r.id === node.id)) { setFlash(node.id); setMsg(node.name + " is already open"); return; }
+    // descendant of an open root → reveal in place, never a second root
+    for (const r of roots) {
+      const chain = ancestorsTo(r, node.id);
+      if (chain) {
+        setExpanded((e) => { const n = { ...e }; chain.concat(node.id).forEach((id) => { n[id] = true; }); return n; });
+        setFlash(node.id);
+        setMsg(node.name + " is already in " + r.name);
+        return;
+      }
+    }
+    // ancestor of open roots → absorb them
+    const absorbed = roots.filter((r) => ancestorsTo(node, r.id));
+    setRoots((rs) => [node].concat(rs.filter((r) => !absorbed.some((a) => a.id === r.id))));
+    setExpanded((e) => ({ ...e, [node.id]: true }));
+    setMsg(absorbed.length ? node.name + " opened — " + absorbed.map((a) => a.name).join(", ") + " folded in" : node.name + " opened");
+  };
+
+  const openFile = (f, pin) => {
+    setActive(f.id);
+    setTabs((ts) => {
+      const hit = ts.find((t) => t.id === f.id);
+      if (hit) return pin ? ts.map((t) => (t.id === f.id ? { ...t, pinned: true } : t)) : ts;
+      const next = ts.filter((t) => t.pinned);        // transient tab is replaced, not stacked
+      return next.concat({ id: f.id, name: f.name, pinned: !!pin });
+    });
+  };
+
+  const Node = ({ node, depth }) => {
+    if (!node.folder) {
+      const t = tabs.find((x) => x.id === node.id);
+      return <Row name={node.name} depth={depth} open={!!t} active={active === node.id} flash={flash === node.id}
+                  onClick={() => openFile(node, false)} onDoubleClick={() => openFile(node, true)} />;
+    }
+    const op = !!expanded[node.id];
+    return (
+      <React.Fragment>
+        <Row name={node.name} folder depth={depth} expanded={op} flash={flash === node.id}
+             onClick={() => setExpanded((e) => ({ ...e, [node.id]: !e[node.id] }))} />
+        {op && node.children.map((c) => <Node key={c.id} node={c} depth={depth + 1} />)}
+      </React.Fragment>
+    );
+  };
+
+  const openable = [TREE, find(TREE, "res"), find(TREE, "src"), OTHER];
+  const cur = tabs.find((t) => t.id === active);
+
+  return (
+    <React.Fragment>
+      <div className="ctl">
+        <span className="cap">Open folder</span>
+        {openable.map((n) => <Button key={n.id} onClick={() => openFolder(n)}>{n.path.replace("~/ai-prompt-enhancer/.claude/", "…/")}</Button>)}
+        <Button onClick={() => { setRoots([TREE]); setExpanded({ ux: true, res: true }); setTabs([]); setActive(null); setMsg(null); }}>Reset</Button>
+      </div>
+      <div className="demo">
+        <div className="sbx">
+          {roots.map((r) => (
+            <React.Fragment key={r.id}>
+              <div className="roothd" onClick={() => setExpanded((e) => ({ ...e, [r.id]: !e[r.id] }))}>
+                <span className={"chev" + (expanded[r.id] ? " op" : "")}><Chev /></span>
+                <span className="ic"><Fold /></span><span>{r.name}</span>
+                <span className="x" onClick={(e) => { e.stopPropagation(); setRoots((rs) => rs.filter((x) => x.id !== r.id)); }}><Xg /></span>
+              </div>
+              {expanded[r.id] && r.children.map((c) => <Node key={c.id} node={c} depth={1} />)}
+              <div style={{ height: 6 }} />
+            </React.Fragment>
+          ))}
+        </div>
+        <div className="main">
+          <div className="strip">
+            {tabs.length === 0
+              ? <span style={{ alignSelf: "center", padding: "0 12px", fontSize: 12, color: "var(--tv-text-muted)" }}>No tabs — opening a folder opened none</span>
+              : tabs.map((t) => (
+                  <div key={t.id} className={"tb" + (active === t.id ? " on" : "") + (t.pinned ? "" : " tr")}
+                       onClick={() => setActive(t.id)} onDoubleClick={() => setTabs((ts) => ts.map((x) => x.id === t.id ? { ...x, pinned: true } : x))}>
+                    <span className="nmx">{t.name}</span>
+                  </div>
+                ))}
+          </div>
+          <div className="doc">
+            {cur ? <React.Fragment><h3>{cur.name}</h3><p>{cur.pinned ? "Pinned tab — stays until closed." : "Transient tab — the next single click replaces it. Double-click the file or the tab to keep it."}</p></React.Fragment>
+                 : <p style={{ color: "var(--tv-text-muted)" }}>Single-click a file to preview it · double-click to pin it</p>}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "0 14px", height: 32, borderTop: "1px solid var(--tv-border)", background: "var(--tv-bg-chrome)" }}>
+            <span className="tally">roots <b>{roots.length}</b> · tabs <b>{tabs.length}</b> · pinned <b>{tabs.filter((t) => t.pinned).length}</b></span>
+            {msg && <span style={{ marginLeft: "auto", fontSize: 12, color: "var(--tv-text-secondary)" }}>{msg}</span>}
+          </div>
+        </div>
+      </div>
+    </React.Fragment>
+  );
+}
+
+function App() {
+  const [theme, setTheme] = React.useState(() => localStorage.getItem("tvsb-theme") || "dark");
+  const [accent, setAccent] = React.useState(() => localStorage.getItem("tvsb-accent") || "blue");
+  React.useEffect(() => { document.documentElement.setAttribute("data-theme", theme); localStorage.setItem("tvsb-theme", theme); }, [theme]);
+  React.useEffect(() => { document.documentElement.setAttribute("data-accent", accent); localStorage.setItem("tvsb-accent", accent); }, [accent]);
+  return (
+    <React.Fragment>
+      <div className="hd">
+        <span className="nm">tiny&#8209;viewer<span>Sidebar hierarchy</span></span>
+        <span className="sp" />
+        <span className="cap">Theme</span>
+        <div className="seg">
+          <button className={theme === "light" ? "on" : ""} onClick={() => setTheme("light")}>Light</button>
+          <button className={theme === "dark" ? "on" : ""} onClick={() => setTheme("dark")}>Dark</button>
+        </div>
+        <span className="cap">Accent</span>
+        <div className="sws">{["blue", "graphite", "warm"].map((a) => <button key={a} title={a} className={"sw " + a + (accent === a ? " on" : "")} onClick={() => setAccent(a)} />)}</div>
+      </div>
+
+      <div className="wrap">
+        <div className="intro">
+          <h1>Sidebar hierarchy</h1>
+          <p>Three defects in the current sidebar compound into one problem: you cannot tell what belongs
+             to what. Each has a single rule that fixes it, and the three rules are independent.</p>
+          <div className="defects">
+            <div className="dfc"><div className="n">DEFECT 1</div><h4>Depth is a boolean</h4>
+              <p>Indent is <code>isFolder ? 22 : nested ? 42 : 26</code>. Every folder header sits at 22px whatever its depth, so subfolders read as siblings of their parent's files.</p></div>
+            <div className="dfc"><div className="n">DEFECT 2</div><h4>A child can mount as a root</h4>
+              <p>Opening a folder already inside an open tree adds a second root section for it — the same folder appears twice, once with a breadcrumb affix left over from the dropped “More files” bucket.</p></div>
+            <div className="dfc"><div className="n">DEFECT 3</div><h4>Opening a folder opens every file</h4>
+              <p>A folder of 40 documents becomes 40 tabs. The tab strip stops being a working set and becomes a second, worse copy of the sidebar.</p></div>
+          </div>
+        </div>
+
+        <section className="s">
+          <h2>Fix 1 — depth is a number</h2>
+          <p className="sub">Children of a folder at depth <i>d</i> are depth <i>d</i>+1, recursively, with no floor and no
+             special case for the first level. Each level indents 14px and draws a 1px guide rail aligned to its
+             ancestor's chevron, so the parent of any row is readable even with several sibling folders expanded.</p>
+          <div className="two">
+            <div className="panel"><div className="ph"><span className="t bad">Now</span><span style={{ fontSize: 12, color: "var(--tv-text-muted)" }}>flat — everything looks like a sibling</span></div><BeforeTree /></div>
+            <div className="panel"><div className="ph"><span className="t good">Fixed</span><span style={{ fontSize: 12, color: "var(--tv-text-muted)" }}>recursive — depth is visible</span></div><AfterTree /></div>
+          </div>
+          <p className="note">Both panels hold the same folder. On the left, <code>sources</code> and its two files look like they sit beside{" "}
+             <code>research</code>'s files; on the right they are plainly three levels down. Click any folder row to collapse it — nesting holds at every depth.</p>
+        </section>
+
+        <section className="s">
+          <h2>Fix 2 — one root per tree</h2>
+          <p className="sub">A folder is mounted once. Opening one that already lives inside an open tree reveals it there
+             instead of adding a second root, so the same path can never appear twice.</p>
+          <div className="rule"><span className="mk">1</span><span><b>Descendant of an open root</b> — do not mount. Expand the ancestors down to it, scroll it into view and flash it once. Report it: <i>research is already in ux-steps</i>.</span></div>
+          <div className="rule"><span className="mk">2</span><span><b>Ancestor of open roots</b> — mount it and fold those roots into it, where they now appear as children.</span></div>
+          <div className="rule"><span className="mk">3</span><span><b>Unrelated</b> — mount as a new root section, most recent first.</span></div>
+          <div className="rule"><span className="mk">4</span><span><b>No breadcrumb affix on rows.</b> A path prefix existed only to disambiguate the flat “More files” bucket. That bucket is gone; nesting carries the location now.</span></div>
+        </section>
+
+        <section className="s">
+          <h2>Fix 3 — opening a folder opens no tabs</h2>
+          <p className="sub">Yes, it is bad UX — a tab per file makes the strip a duplicate of the tree, and every tab
+             costs a render and a slot in ⌘1–9. Mounting a folder is a <i>navigation</i> act; opening a document is
+             a <i>reading</i> act. Keep them separate.</p>
+          <div className="rule"><span className="mk">1</span><span><b>Open folder</b> → mounts the tree. Zero tabs.</span></div>
+          <div className="rule"><span className="mk">2</span><span><b>Single click a file</b> → opens in the <i>transient</i> tab, shown in italic. The next single click replaces it, so browsing a folder never grows the strip past one.</span></div>
+          <div className="rule"><span className="mk">3</span><span><b>Double click</b> the file or its tab → pins it. Pinned tabs are upright and persist. Editing a file pins it automatically.</span></div>
+          <p className="note">The strip then holds what you chose to keep, not what happened to be on disk. Browsing thirty files still costs one tab.</p>
+        </section>
+
+        <section className="s">
+          <h2>All three, live</h2>
+          <p className="sub">Open the nested folders in any order and watch the root count stay at one. Single-click files to
+             preview, double-click to pin.</p>
+          <LiveDemo />
+        </section>
+      </div>
+    </React.Fragment>
+  );
+}
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>

@@ -151,6 +151,7 @@
 | DR-35 | Clicking an unopened row opens it as a new tab in ≤ file-read time, with no additional picker. | URD-04, URD-05 | Must |
 | DR-36 | The folder section is collapsible (click header to toggle) and defaults to expanded. | URD-08 | Should |
 | DR-37 | Subfolders containing .md files appear as a single secondary indent level; deeper nesting is flattened. | URD-08 | Should |
+| DR-37 (superseded · folder-nesting fix) | Recursive nesting is KEPT: subfolders render as collapsible children at full depth (per-row depth-keyed guide rails, ≥14px step), not a single flattened level; the deep-file "More files" bucket is dropped; and closing a folder now closes that folder's open files. | URD-08 | Should |
 | DR-38 | Multiple opened folders each render as their own collapsible section, ordered most-recently-opened first. | URD-04 | Should |
 | DR-39 | The folder list displays no non-.md files. | URD-07 | Must |
 | DR-40 | The folder list supports no file operations (rename/delete/move) — display and navigation only. | URD-07, URD-08 | Must |

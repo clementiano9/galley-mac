@@ -304,6 +304,11 @@
       liveActive: false,
       // Browser-style new-tab page (⌘T) — no document, renders the NTP.
       untitled: !!opts.untitled,
+      // SBH-03: transient = the single "preview" tab. A single click on a
+      // sidebar tree file opens here and the next single click REPLACES it, so
+      // browsing a folder never grows the strip past one tab. Double-clicking
+      // the file or its tab pins it; so does editing. Pinned tabs persist.
+      transient: !!opts.transient,
       // F-06/F-16: error tab state. null = normal; 'not-found' = file moved/
       // deleted (renders "Locate file…" recovery); 'binary' = non-UTF-8 file
       // (renders "cannot be rendered" + "Show in Finder"). buildViewer() routes
@@ -332,21 +337,27 @@
   }
 
   /* ────────────────────────────────────────────────────────────
-     RECENT FILES — localStorage persistence (E-02)
-     Stores absolute native paths with open timestamps; capped at 10.
-     Canonical on-disk shape: [{ path: <abs>, ts: <epoch-ms> }].
-     Back-compat: legacy entries were bare path strings (string[]);
-     loadRecentEntries() silently migrates them to {path, ts:0}
-     (ts:0 → no/blank relative-time label in the launcher panel).
-     loadRecentPaths() still returns a plain string[] so every
-     existing consumer (sidebar Recent, empty-state, native bridge)
-     keeps working unchanged.
+     RECENT — localStorage persistence (E-02)
+     Stores absolute native paths (FILES and FOLDERS) with open
+     timestamps; capped per-type so files/folders never evict each
+     other. Canonical on-disk shape:
+       [{ path:<abs>, ts:<epoch-ms>, type:'file'|'folder', scrollTop?:<num> }]
+     ISS-FOLDER: type distinguishes recent files from recent folders;
+     dedup keys on (path, type). Back-compat: legacy entries were bare
+     path strings (string[]) OR typeless objects; loadRecentEntries()
+     migrates them to {path, ts, type:'file'} in memory (no on-disk
+     migration write). loadRecentPaths() returns a plain string[] of
+     FILE paths only (folders excluded — those consumers read_md_file).
    ──────────────────────────────────────────────────────────── */
   var RECENT_KEY = 'tv-recent-files';
   var RECENT_MAX = 20; // DR-52: MRU capped at 20
 
-  // Returns [{ path, ts, scrollTop? }] with legacy string entries migrated in place.
-  // F-17: entries now optionally carry scrollTop (number) for scroll persistence.
+  // Returns [{ path, ts, scrollTop?, type }] with legacy string entries migrated.
+  // F-17: entries optionally carry scrollTop (number) for scroll persistence.
+  // ISS-FOLDER: entries now carry type 'file'|'folder'. Legacy/missing type
+  // defaults to 'file' (no migration write) so old stores keep working; the
+  // type MUST be preserved on the object branch or recent folders silently
+  // become files on the next load.
   function loadRecentEntries() {
     try {
       var raw = localStorage.getItem(RECENT_KEY);
@@ -357,14 +368,16 @@
       for (var i = 0; i < parsed.length; i++) {
         var e = parsed[i];
         if (typeof e === 'string') {
-          // legacy string[] format — no timestamp or scroll recorded
-          if (e) out.push({ path: e, ts: 0, scrollTop: 0 });
+          // legacy string[] format — no timestamp/scroll/type recorded
+          if (e) out.push({ path: e, ts: 0, scrollTop: 0, type: 'file' });
         } else if (e && typeof e === 'object' && e.path) {
           out.push({
             path: e.path,
             ts: (typeof e.ts === 'number' ? e.ts : 0),
             // F-17: pass through scrollTop if present; default to 0
             scrollTop: (typeof e.scrollTop === 'number' ? e.scrollTop : 0),
+            // ISS-FOLDER: preserve type; back-compat default to 'file'
+            type: (e.type === 'folder' ? 'folder' : 'file'),
           });
         }
       }
@@ -374,11 +387,14 @@
     }
   }
 
-  // Legacy/string accessor — derives plain paths from the entries so
-  // older call sites (sidebar Recent rows, empty-state recents,
-  // tv-native bridge) keep functioning without change.
+  // Legacy/string accessor — derives plain FILE paths from the entries so
+  // older call sites (tv-native bridge, the exported TV.loadRecentPaths) keep
+  // functioning. ISS-FOLDER: folder entries are excluded — these consumers
+  // open paths as files via read_md_file, which would fail on a directory.
   function loadRecentPaths() {
-    return loadRecentEntries().map(function (e) { return e.path; });
+    return loadRecentEntries()
+      .filter(function (e) { return e.type !== 'folder'; })
+      .map(function (e) { return e.path; });
   }
 
   function saveRecentPath(absolutePath) {
@@ -392,11 +408,59 @@
         break;
       }
     }
-    // Dedupe: drop any existing entry for this path (keeps move-to-front)
-    list = list.filter(function (e) { return e.path !== absolutePath; });
-    // Prepend with a fresh timestamp, scroll offset, and cap
-    list.unshift({ path: absolutePath, ts: Date.now(), scrollTop: savedScrollTop });
-    if (list.length > RECENT_MAX) list.length = RECENT_MAX;
+    // Dedupe by (path, type): drop any existing FILE entry for this path
+    // (keeps move-to-front). A folder entry at the same path is independent
+    // and must survive — folders and files never evict each other.
+    list = list.filter(function (e) {
+      return !(e.path === absolutePath && e.type !== 'folder');
+    });
+    // Prepend with a fresh timestamp, scroll offset, type, and cap
+    list.unshift({ path: absolutePath, ts: Date.now(), scrollTop: savedScrollTop, type: 'file' });
+    list = capRecent(list);
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+    } catch (e) { /* storage full or private mode — ignore */ }
+  }
+
+  // ISS-FOLDER: record an opened/closed FOLDER in Recent. Folders carry no
+  // scrollTop. Deduped by (path, type) so a folder never evicts the file entry
+  // at the same path (and vice-versa). Caps each type independently so a burst
+  // of one kind can't crowd the other out of the on-disk store.
+  function saveRecentFolder(absolutePath) {
+    if (!absolutePath) return;
+    var list = loadRecentEntries();
+    list = list.filter(function (e) {
+      return !(e.path === absolutePath && e.type === 'folder');
+    });
+    list.unshift({ path: absolutePath, ts: Date.now(), type: 'folder' });
+    list = capRecent(list);
+    try {
+      localStorage.setItem(RECENT_KEY, JSON.stringify(list));
+    } catch (e) { /* storage full or private mode — ignore */ }
+  }
+
+  // Cap the recent store per type so files and folders never evict one another.
+  // Preserves MRU order within each type. Returns a fresh, re-interleaved list
+  // (original relative order is irrelevant on disk — render() re-sorts/caps).
+  function capRecent(list) {
+    var files = [], folders = [];
+    for (var i = 0; i < list.length; i++) {
+      var e = list[i];
+      if (e.type === 'folder') { if (folders.length < RECENT_MAX) folders.push(e); }
+      else { if (files.length < RECENT_MAX) files.push(e); }
+    }
+    return files.concat(folders);
+  }
+
+  // ISS-FOLDER: drop a single Recent entry by (path, type). Used when a recent
+  // folder is reopened (success → remove) or found dead (read failed → remove).
+  // type defaults to 'folder' since that is the only current caller.
+  function removeRecentEntry(absolutePath, type) {
+    if (!absolutePath) return;
+    type = type || 'folder';
+    var list = loadRecentEntries().filter(function (e) {
+      return !(e.path === absolutePath && (e.type || 'file') === type);
+    });
     try {
       localStorage.setItem(RECENT_KEY, JSON.stringify(list));
     } catch (e) { /* storage full or private mode — ignore */ }
@@ -485,7 +549,9 @@
         lead = '<span class="tv-dot"></span>';
       }
       var isActive = t.id === state.activeId;
-      var cls = 'tv-tab' + (isActive ? ' active' : '');
+      // SBH-03: the transient (preview) tab renders italic — the standing cue
+      // that it is not kept and the next single click will replace it.
+      var cls = 'tv-tab' + (isActive ? ' active' : '') + (t.transient ? ' transient' : '');
       return (
         '<div class="' + cls + '"' +
           ' role="tab"' +
@@ -541,31 +607,209 @@
     return String(p).replace(/\/+$/, '').split('/').pop() || p;
   }
 
+  /* ── SBH-02: one root per tree (Sidebar hierarchy · Fix 2) ────
+     The containment DECISION is pure and lives in window.TVTree
+     (planFolderOpen / chainKeysTo, unit-tested in tv-sidebar-hierarchy.test.js);
+     this file only executes the plan against state + the DOM. */
+
+  // Clear the collapse flags along the chain from an open root down to one of
+  // its descendant folders, so revealing that folder actually shows its row.
+  // `chain` comes from TVTree.chainKeysTo — keys identical to the ones
+  // buildTreeNodes emits. The root head is separately namespaced
+  // ('root:' + the tree's raw path); the bare path is cleared too, for safety.
+  function expandAncestorsTo(rootTreePath, chain) {
+    delete state.folderCollapsed['root:' + rootTreePath];
+    delete state.folderCollapsed[rootTreePath];
+    (chain || []).forEach(function (key) { delete state.folderCollapsed[key]; });
+  }
+
+  // Render, then scroll the named sidebar row into view and flash it once so
+  // the eye lands on the folder that was revealed rather than mounted. The
+  // message is also spoken via a toast — the flash alone never carries the
+  // information (URD-10 / DR-10). `itemKey` is a data-sidebar-item value.
+  function revealSidebarRow(itemKey, message) {
+    render();
+    if (message && window.TVNative && typeof TVNative.showToast === 'function') {
+      TVNative.showToast(message);
+    }
+    var raf = window.requestAnimationFrame || function (fn) { return setTimeout(fn, 16); };
+    raf(function () {
+      var rows = document.querySelectorAll('.tv-sidebar [data-sidebar-item]');
+      var el = null;
+      for (var i = 0; i < rows.length; i++) {
+        if (rows[i].getAttribute('data-sidebar-item') === itemKey) { el = rows[i]; break; }
+      }
+      if (!el) return;
+      if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
+      el.classList.add('tv-flash');
+      setTimeout(function () { el.classList.remove('tv-flash'); }, 1500);
+    });
+  }
+
   // Register (add or replace) a folder tree object in state.openFolders.
   // [YOU expose] as TV.registerFolder — called by Native's openFolder flow
   // after Native.readDirTree resolves.
+  //
+  // SBH-02: a folder is mounted ONCE. Opening one that already lives inside an
+  // open tree reveals it there instead of adding a second root, so the same
+  // path can never appear twice:
+  //   1. Descendant of an open root — do not mount. Expand the ancestors down
+  //      to it, scroll it into view, flash it, and report where it lives.
+  //   2. Ancestor of open roots — mount it and fold those roots into it, where
+  //      they now appear as children.
+  //   3. Unrelated — mount as a new root section. Appended last; buildSidebar
+  //      renders the list reversed, so the most recent shows first.
   function registerFolder(tree) {
     if (!tree || !tree.path) return;
-    // Remove any existing entry for this path (de-dup), then append (MRU last).
-    state.openFolders = state.openFolders.filter(function (f) { return f.path !== tree.path; });
+    var TVTree = window.TVTree;
+
+    // Without TVTree there is no containment logic to apply — fall back to the
+    // plain de-dup-and-append so a missing module degrades rather than throws.
+    if (!TVTree || typeof TVTree.planFolderOpen !== 'function') {
+      state.openFolders = state.openFolders.filter(function (f) { return f.path !== tree.path; });
+      state.openFolders.push(tree);
+      render();
+      return;
+    }
+
+    var openPaths = state.openFolders.map(function (f) { return f.path; });
+    var plan = TVTree.planFolderOpen(openPaths, tree.path);
+    var name = pathBasename(TVTree.normFolderPath(tree.path));
+
+    // Already mounted as a root: refresh the tree object IN PLACE (disk
+    // contents may have changed) so it keeps its slot in the MRU order, then
+    // reveal it rather than stacking a duplicate section.
+    if (plan.action === 'refresh') {
+      for (var i = 0; i < state.openFolders.length; i++) {
+        if (state.openFolders[i].path === plan.rootPath) { state.openFolders[i] = tree; break; }
+      }
+      delete state.folderCollapsed['root:' + plan.rootPath];
+      revealSidebarRow('folder:' + tree.path, name + ' is already open');
+      return;
+    }
+
+    // Case 1 — descendant of an open root: reveal in place, never a 2nd root.
+    if (plan.action === 'reveal') {
+      expandAncestorsTo(plan.rootPath, plan.chain);
+      revealSidebarRow(
+        'subfolder:' + plan.chain[plan.chain.length - 1],
+        name + ' is already in ' + pathBasename(TVTree.normFolderPath(plan.rootPath))
+      );
+      return;
+    }
+
+    // Case 2 — ancestor of open roots: fold those roots in as children.
+    // Their SUBFOLDER collapse keys stay valid (full paths, unchanged under the
+    // new root), so each one's expand/collapse state survives the fold-in. Only
+    // the namespaced head keys are now meaningless — drop those so a folder
+    // never reappears pre-collapsed if it is later opened as a root again.
+    var absorbed = plan.absorbed || [];
+    if (absorbed.length) {
+      state.openFolders = state.openFolders.filter(function (f) {
+        return absorbed.indexOf(f.path) === -1;
+      });
+      absorbed.forEach(function (p) { delete state.folderCollapsed['root:' + p]; });
+    }
+
+    // Case 3 (and the tail of case 2) — mount as a root section.
     state.openFolders.push(tree);
     render();
+    if (absorbed.length && window.TVNative && typeof TVNative.showToast === 'function') {
+      TVNative.showToast(
+        name + ' opened — ' +
+        absorbed.map(function (p) { return pathBasename(TVTree.normFolderPath(p)); }).join(', ') +
+        ' folded in'
+      );
+    }
   }
 
-  // Close a folder by path: remove its tree section and collapse keys, and stop
-  // any native watch keyed to the folder root. Open tabs keep their own per-file
-  // watches (keyed by file path), so closing a folder never closes a tab (ISS-005 AC#2).
+  // Close a folder by path. ISS-FOLDER (chosen behavior): closing a folder
+  // closes ALL of that folder's open files too (so they never re-group as a
+  // muted phantom section), records the folder in Recent, and removes the tree.
+  //
+  // CRITICAL ORDERING: the dirty confirm is async and runs FIRST; ALL mutation
+  // (tab close, folder removal, prune, unwatch, recent, render) happens ONLY
+  // after it resolves — never synchronously before, or state desyncs from the
+  // dialog outcome. Exactly ONE batched dialog is shown, never one per tab.
   function closeFolder(path) {
-    state.openFolders = state.openFolders.filter(function (f) { return f.path !== path; });
-    // Clean up collapse keys for this folder (root + any nested descendants).
-    state.folderCollapsed = window.TVTree
-      ? window.TVTree.pruneCollapsed(state.folderCollapsed, path)
-      : state.folderCollapsed;
-    if (window.TVNative && typeof TVNative.unwatchFolder === 'function') {
-      TVNative.unwatchFolder(path);
+    if (!path) return;
+
+    // 1) Collect the folder's tabs to close: EXACT tree-file membership UNION
+    //    open files under the root (covers files beyond the native scan cap that
+    //    the tree never lists). Deduped by tab id.
+    var folderTree = null;
+    for (var fi = 0; fi < state.openFolders.length; fi++) {
+      if (state.openFolders[fi].path === path) { folderTree = state.openFolders[fi]; break; }
     }
-    state.folderCtx = null;
-    render();
+    var treeFiles = {};
+    if (folderTree && window.TVTree && typeof TVTree.collectTreeFilePaths === 'function') {
+      TVTree.collectTreeFilePaths(folderTree).forEach(function (p) { treeFiles[p] = true; });
+    }
+    var prefix = path.replace(/\/+$/, '') + '/';
+    var collected = [];
+    var seenIds = {};
+    state.tabs.forEach(function (t) {
+      var np = t.nativePath;
+      if (!np) return;
+      var inTree = !!treeFiles[np];
+      var underRoot = (np === path) || (np.indexOf(prefix) === 0);
+      if ((inTree || underRoot) && !seenIds[t.id]) {
+        seenIds[t.id] = true;
+        collected.push(t);
+      }
+    });
+
+    var anyDirty = collected.some(function (t) { return t.dirty; });
+
+    // 2) Dirty check → ONE batched confirm. Cancel aborts the ENTIRE close.
+    function proceed() {
+      // 3) Close every collected tab via the SILENT inner close (skips the
+      //    per-tab dirty dialog). Recompute idx per id (splice shifts indices).
+      collected.forEach(function (t) {
+        var nativePath = t.nativePath;
+        var idx = state.tabs.findIndex(function (x) { return x.id === t.id; });
+        if (idx === -1) return; // already gone
+        // Explicitly release the native per-file watch. _doCloseTab → TVLive.stop
+        // only unwatches when a live watchState exists; if the watch was started
+        // but never tracked (or already stopped) that early-returns, so call
+        // stopWatch directly to avoid a Rust FSEvents watcher leak.
+        if (nativePath && window.TVNative && typeof TVNative.stopWatch === 'function') {
+          TVNative.stopWatch({ nativePath: nativePath });
+        }
+        _doCloseTab(t.id, idx);
+      });
+
+      // 4) Remove the folder + collapse keys, stop the root watch, record it in
+      //    Recent, clear any open folder context menu, and render ONCE.
+      state.openFolders = state.openFolders.filter(function (f) { return f.path !== path; });
+      state.folderCollapsed = window.TVTree
+        ? window.TVTree.pruneCollapsed(state.folderCollapsed, path)
+        : state.folderCollapsed;
+      if (window.TVNative && typeof TVNative.unwatchFolder === 'function') {
+        TVNative.unwatchFolder(path);
+      }
+      saveRecentFolder(path);
+      state.folderCtx = null;
+      render();
+    }
+
+    if (anyDirty) {
+      var n = collected.filter(function (t) { return t.dirty; }).length;
+      var msg = 'You have unsaved changes in ' + n + ' file' + (n === 1 ? '' : 's') +
+        '. Close them anyway?';
+      if (window.__TAURI__ && window.__TAURI__.dialog && typeof window.__TAURI__.dialog.ask === 'function') {
+        window.__TAURI__.dialog.ask(msg, { title: 'Unsaved Changes', kind: 'warning' })
+          .then(function (confirmed) { if (confirmed) proceed(); })
+          .catch(function () { if (window.confirm(msg)) proceed(); });
+      } else if (typeof window.confirm === 'function') {
+        if (window.confirm(msg)) proceed();
+      } else {
+        proceed();
+      }
+      return; // mutation deferred until the dialog resolves
+    }
+
+    proceed();
   }
 
   // Toggle the collapse state for a key (folder root path or a nested subfolder key)
@@ -586,13 +830,51 @@
     return 'sbitem-' + s.replace(/[^\w-]/g, '_').slice(0, 40) + '-' + (h >>> 0).toString(36);
   }
 
+  /* ── SBH-01: tree indent geometry (Sidebar hierarchy · Fix 1) ──
+     Depth is a NUMBER, not a boolean. The geometry itself lives in
+     TVTree.treeIndent (pure + unit-tested); this thin wrapper keeps the
+     renderer working if tv-tree.js ever fails to load. The matching guide
+     rails are drawn in CSS off the --tv-depth custom property each row
+     carries — see the SBH-01 block in css/tv-app.css. */
+  function treeIndent(depth, isFolder) {
+    if (window.TVTree && typeof TVTree.treeIndent === 'function') {
+      return TVTree.treeIndent(depth, isFolder);
+    }
+    return 8 + (depth || 0) * 14 + (isFolder ? 0 : 16);
+  }
+
+  // SBH-01 (QA D1): apply per-row tree geometry through the CSSOM.
+  //
+  // The renderer builds the sidebar as an innerHTML string, and a style=""
+  // attribute inside that string does NOT take effect in WKWebView — the native
+  // build silently fell back to the stylesheet defaults, so EVERY file row sat
+  // at 26px and every subfolder at 22px (a flat tree), and the depth rail
+  // resolved against the `var(--tv-depth, 1)` fallback so only one rail drew.
+  // Setting the same properties on the live element works natively — the
+  // sidebar-width line above relies on exactly that.
+  //
+  // Runs synchronously after innerHTML and before paint, so there is no flash
+  // of un-indented rows. Rows carry data-tv-depth / data-tv-kind.
+  function applyTreeDepths(root) {
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+    var rows = root.querySelectorAll('[data-tv-depth]');
+    for (var i = 0; i < rows.length; i++) {
+      var el = rows[i];
+      var depth = parseInt(el.getAttribute('data-tv-depth'), 10);
+      if (isNaN(depth)) continue;
+      var isFolder = el.getAttribute('data-tv-kind') === 'folder';
+      el.style.setProperty('--tv-depth', String(depth));
+      el.style.paddingLeft = treeIndent(depth, isFolder) + 'px';
+    }
+  }
+
   /* ── F-19 / ISS-005: build one folder's nested tree section ── */
   // Delegates the tree build + collapse logic to the pure window.TVTree module
   // (js/tv-tree.js) so it stays unit-testable; this function only renders the
-  // depth-annotated nodes it returns. Indentation is per-depth (depth 0 head,
-  // depth 1 = 26px file / 22px folder, +16px per level deeper). DR-108 a11y
-  // attributes (role=option, aria-selected, data-sidebar-item, id) go on every
-  // row so the sidebar keyboard cursor can target tree items.
+  // depth-annotated nodes it returns. Indentation is per-depth via
+  // treeIndent() above. DR-108 a11y attributes (role=option, aria-selected,
+  // data-sidebar-item, id) go on every row so the sidebar keyboard cursor can
+  // target tree items.
   function buildFolderSection(tree) {
     var icons = window.TV_ICONS || {};
     var TVTree = window.TVTree;
@@ -614,12 +896,15 @@
         ' role="option"' +
         ' aria-selected="false"' +
         ' data-sidebar-item="' + esc(fhKey) + '"' +
-        ' data-folder-toggle="' + esc(head.path) + '"' +
+        // A3: toggle the NAMESPACED head collapse key ('root:' + path) so it can
+        // never collide with a subfolder keyed by a bare path. The click / Arrow /
+        // Enter handlers read this attribute opaquely → they flip the right key.
+        // data-sidebar-item (folder:) and the id stay unchanged for the DR-108 cursor.
+        ' data-folder-toggle="' + esc('root:' + head.path) + '"' +
         ' data-folder-ctx-target="' + esc(head.path) + '">' +
         '<span class="tv-chev' + (head.collapsed ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
         '<span class="ic">' + (icons.folder || '') + '</span>' +
         '<span class="fname" title="' + esc(head.path) + '">' + esc(pathBasename(head.path)) + '</span>' +
-        '<span class="fh-spacer"></span>' +
         '<button class="folder-x" data-folder-close="' + esc(head.path) + '" title="Close folder" type="button">' +
           (icons.close || '') +
         '</button>' +
@@ -633,6 +918,18 @@
           ? buildTreeFolderRow(n)
           : buildTreeFileRow(n);
       });
+      // A4: empty-folder placeholder. A muted, NON-interactive row (no
+      // role=option / data-sidebar-item / id) so the DR-108 keyboard cursor
+      // skips it. Shown only when the expanded tree has no files/subfolders.
+      if (bodyNodes.length === 0) {
+        html += '<div class="tv-tree-empty">No markdown files</div>';
+      }
+      // B2: truncation indicator. The native scanner caps how many entries it
+      // visits; when it dropped any matching item it sets tree.truncated. Render
+      // a muted, NON-interactive footer row (cursor skips it, same as A4).
+      if (tree.truncated) {
+        html += '<div class="tv-tree-truncated">Some items not shown</div>';
+      }
       html += '</div>';
     }
 
@@ -652,10 +949,17 @@
         ' aria-selected="false"' +
         ' data-sidebar-item="' + esc(sfKey) + '"' +
         ' data-folder-toggle="' + esc(n.key) + '"' +
-        ' style="padding-left:' + (n.depth * 16 + 6) + 'px">' +
+        // SBH-01: depth travels as a DATA attribute; the geometry is applied via
+        // CSSOM in applyTreeDepths() after innerHTML. A style="" attribute set
+        // inside an innerHTML string does NOT take effect in WKWebView, which
+        // silently flattened the whole tree in the native build (QA D1).
+        ' data-tv-depth="' + n.depth + '" data-tv-kind="folder">' +
         '<span class="tv-chev' + (n.collapsed ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
         '<span class="ic">' + (icons.folder || '') + '</span>' +
-        '<span>' + esc(n.name) + '</span>' +
+        // QA D6: .tname, like file rows and the folder head's .fname — without a
+        // class the name span had no ellipsis rule, so a long subfolder name
+        // overflowed instead of truncating the way every sibling row does.
+        '<span class="tname" title="' + esc(n.name) + '">' + esc(n.name) + '</span>' +
       '</div>'
     );
   }
@@ -690,7 +994,8 @@
         ' role="option"' +
         ' aria-selected="' + (isActive ? 'true' : 'false') + '"' +
         (tfrKey ? ' data-sidebar-item="' + esc(tfrKey) + '"' : '') +
-        ' style="padding-left:' + (n.depth * 16 + 10) + 'px"' +
+        // SBH-01: see buildTreeFolderRow — depth is applied via CSSOM, not here.
+        ' data-tv-depth="' + n.depth + '" data-tv-kind="file"' +
         (filePath ? ' data-tree-file-path="' + esc(filePath) + '"' : '') +
         (openTab ? ' data-tree-tab-id="' + esc(openTab.id) + '"' : '') +
         (titleAttr ? ' ' + titleAttr : '') + '>' +
@@ -1061,22 +1366,54 @@
   }
 
   // Open a file path from the sidebar tree / recents (read → openInto → tab).
-  function _openTreeFilePath(tfPath) {
+  // SBH-03: `transient` opens the file in the single preview tab (a plain
+  // single click in the tree). Omitted/false pins it — every pre-existing
+  // caller (context menu "Open", keyboard Enter) keeps its current behavior.
+  function _openTreeFilePath(tfPath, transient) {
     if (!tfPath || !window.TVNative || !TVNative.available) return;
+
+    // SBH-03 (QA D3): a double-click fires TWO clicks, so this ran twice for
+    // one gesture and opened the file twice. openDoc's own dedup could not
+    // catch it: once the bridge assigns tab.nativePath the existing tab keys as
+    // 'native:<path>' while the incoming opts still key as '<dir>/<name>', so
+    // the keys never matched. Two guards, in order:
+    //   1. already open  → just activate (and honour a pending pin),
+    //   2. read in flight → drop the duplicate read entirely.
+    var already = _tabIdByNativePath(tfPath);
+    if (already) {
+      activateTab(already);
+      if (_pendingPinPath === tfPath) { _pendingPinPath = null; pinTab(already); }
+      return;
+    }
+    if (_openingPaths[tfPath]) return;
+    _openingPaths[tfPath] = true;
+
     window.__TAURI__.core.invoke('read_md_file', { path: tfPath })
       .then(function (doc) {
+        delete _openingPaths[tfPath];
         if (window.TVNative && typeof TVNative.openInto === 'function') {
-          TVNative.openInto(doc);
+          TVNative.openInto(doc, { transient: !!transient });
         } else if (doc && doc.name) {
           var pdir = tfPath.replace(/\/[^/]+$/, '') || '/';
-          var tid = openDoc({ name: doc.name, source: doc.content, path: pdir });
+          var tid = openDoc({ name: doc.name, source: doc.content, path: pdir, transient: !!transient });
           if (tid) {
             var t = state.tabs.find(function (x) { return x.id === tid; });
             if (t) t.nativePath = doc.path || tfPath;
           }
         }
+        // SBH-03: a double-click that beat this read to the finish latched its
+        // intent — apply it now that the tab exists, and clear the latch.
+        if (_pendingPinPath && (_pendingPinPath === tfPath || _pendingPinPath === doc.path)) {
+          var pinId = _tabIdByNativePath(_pendingPinPath) || _tabIdByNativePath(tfPath);
+          _pendingPinPath = null;
+          if (pinId) pinTab(pinId);
+        }
       })
       .catch(function (err) {
+        // Always clear the in-flight guard, or a file that failed once could
+        // never be retried.
+        delete _openingPaths[tfPath];
+        if (_pendingPinPath === tfPath) _pendingPinPath = null;
         console.warn('[TV] tree file open failed', tfPath, err);
         var kind = (window.TVNative && typeof TVNative.classifyReadError === 'function')
           ? TVNative.classifyReadError(err) : 'not-found';
@@ -1228,12 +1565,29 @@
     var folderPaths = {};
     state.openFolders.forEach(function (f) { folderPaths[f.path] = true; });
 
+    // Exact set of every file path that some open folder tree renders. A tab
+    // already shown inside a tree (e.g. a SUBFOLDER file opened by clicking it,
+    // whose tab.path is the subfolder — NOT an open-folder root) must NOT also
+    // re-group below as a phantom muted "folder" section. We test the tab's
+    // exact nativePath against tree-file membership — NOT a path-prefix match,
+    // which would wrongly hide files under the root but beyond the native scan
+    // cap (lib.rs read_dir_tree capping), i.e. open files the tree never lists.
+    var treeFilePaths = {};
+    if (window.TVTree && typeof TVTree.collectTreeFilePaths === 'function') {
+      state.openFolders.forEach(function (f) {
+        TVTree.collectTreeFilePaths(f).forEach(function (p) { treeFilePaths[p] = true; });
+      });
+    }
+
     // Group tabs that have a .path (folder association) vs ungrouped
     var groups = {};
     var ungrouped = [];
     state.tabs.forEach(function (t) {
-      // Skip tabs whose nativePath is covered by an open folder tree — they
-      // show up inside the folder section already (DR-34 is-open highlight).
+      // Skip tabs already shown inside a folder tree — matched by EXACT file
+      // path (covers subfolder files whose tab.path is the subfolder, not the
+      // open-folder root) — they render in the tree with the DR-34 is-open
+      // highlight; grouping them too would double-render the phantom section.
+      if (t.nativePath && treeFilePaths[t.nativePath]) return;
       if (t.path && !folderPaths[t.path]) {
         (groups[t.path] = groups[t.path] || []).push(t);
       } else if (!t.path) {
@@ -1241,14 +1595,22 @@
       }
     });
 
-    // F-02: Recent section — closed files from localStorage not currently open
+    // F-02 + ISS-FOLDER: Recent section — recent FILES not currently open as a
+    // tab, plus recent FOLDERS not currently open in the tree. Independent caps
+    // (8 files, 8 folders) so neither kind crowds the other out of the list.
     var openNativePaths = {};
     state.tabs.forEach(function (t) {
       if (t.nativePath) openNativePaths[t.nativePath] = true;
     });
-    var closedRecent = loadRecentEntries().filter(function (entry) {
-      return !openNativePaths[entry.path];
+    var openFolderPaths = {};
+    state.openFolders.forEach(function (f) { if (f.path) openFolderPaths[f.path] = true; });
+    var recentAll = loadRecentEntries();
+    var closedRecent = recentAll.filter(function (entry) {
+      return entry.type !== 'folder' && !openNativePaths[entry.path];
     }).slice(0, 8); // DR-82: cap at 8
+    var closedRecentFolders = recentAll.filter(function (entry) {
+      return entry.type === 'folder' && !openFolderPaths[entry.path];
+    }).slice(0, 8);
 
     // UX-10: Build rows with ARIA listbox/option roles.
     var rows = '';
@@ -1272,21 +1634,14 @@
 
     Object.keys(groups).forEach(function (path) {
       var folderBasename = path.split('/').filter(Boolean).pop() || path;
-      var folderParent = (function () {
-        var segs = path.split('/').filter(Boolean);
-        if (segs.length <= 1) return '';
-        segs.pop();
-        var parent = '/' + segs.join('/');
-        parent = parent.replace(/^\/(Users|home)\/[^/]+/, '~');
-        var MAX = 30;
-        if (parent.length > MAX) parent = '…' + parent.slice(parent.length - (MAX - 1));
-        return parent;
-      }());
+      // SBH-02 (Fix 2, rule 4): NO breadcrumb affix on rows. The muted parent-
+      // path suffix existed only to disambiguate the flat "More files" bucket;
+      // that bucket is gone and nesting carries the location now. The full path
+      // still resolves on hover via title=, so nothing is lost.
       rows += (
         '<div class="tv-tree-row folder" role="group" aria-label="' + esc(path) + '" title="' + esc(path) + '">' +
           ic('folder') +
           '<span class="folder-name">' + esc(folderBasename) + '</span>' +
-          (folderParent ? '<span class="folder-path">' + esc(folderParent) + '</span>' : '') +
         '</div>'
       );
       groups[path].forEach(function (t) {
@@ -1332,9 +1687,32 @@
       });
     }
 
-    if (closedRecent.length) {
+    if (closedRecent.length || closedRecentFolders.length) {
       rows += '<div class="tv-side-divider"></div>';
       rows += '<div class="tv-side-label tv-side-recent-label">Recent</div>';
+      // ISS-FOLDER: recent FOLDERS first (folder icon + distinct
+      // data-recent-folder attr + recent-folder: sidebar-item key so the
+      // shared [data-recent-path] click handler never catches them, and the
+      // keyboard-cursor Enter branch reopens the folder instead of opening it
+      // as a file). DR-108 a11y attrs on every row for cursor participation.
+      closedRecentFolders.forEach(function (entry) {
+        var fname = entry.path.split('/').filter(Boolean).pop() || entry.path;
+        var ftsLabel = (entry.ts > 0) ? relativeTime(entry.ts) : '';
+        var rfKey = 'recent-folder:' + entry.path;
+        rows += (
+          '<div class="tv-tree-row file recent recent-folder"' +
+            ' id="' + sbItemId(rfKey) + '"' +
+            ' role="option"' +
+            ' aria-selected="false"' +
+            ' data-sidebar-item="' + esc(rfKey) + '"' +
+            ' data-recent-folder="' + esc(entry.path) + '"' +
+            ' title="' + esc(entry.path) + '">' +
+            ic('folder') +
+            '<span class="tv-recent-name">' + esc(fname) + '</span>' +
+            (ftsLabel ? '<span class="tv-recent-ts">' + esc(ftsLabel) + '</span>' : '') +
+          '</div>'
+        );
+      });
       closedRecent.forEach(function (entry) {
         var name = entry.path.split('/').pop() || entry.path;
         var tsLabel = (entry.ts > 0) ? relativeTime(entry.ts) : '';
@@ -1394,12 +1772,33 @@
   function buildViewer() {
     var tab = getActiveTab();
     if (!tab) {
-      // Build recent list for empty state (U-09)
-      var recentPaths = loadRecentPaths();
+      // Build recent list for empty state (U-09).
+      // ISS-FOLDER: render recent FOLDERS (folder icon + distinct
+      // data-recent-folder attr so the shared [data-recent-path] click handler
+      // never catches them) first, then recent FILES (data-recent-path).
+      var recentEntriesES = loadRecentEntries();
+      var recentFoldersES = recentEntriesES.filter(function (e) { return e.type === 'folder'; }).slice(0, 8);
+      var recentFilesES = recentEntriesES.filter(function (e) { return e.type !== 'folder'; }).slice(0, 8);
       var recentHtml = '';
-      if (recentPaths.length) {
+      if (recentFoldersES.length || recentFilesES.length) {
         recentHtml = '<div class="tv-empty-recent">';
-        recentPaths.slice(0, 8).forEach(function (p) {
+        recentFoldersES.forEach(function (e) {
+          var p = e.path;
+          var name = p.split('/').filter(Boolean).pop() || p;
+          // No inline icon here: .tv-recent-row is a COLUMN flex (index.html
+          // inline CSS), so an SVG would stack on its own line. The distinct
+          // recent-folder class + full path make it read as a folder; the
+          // name carries a trailing "/" cue to disambiguate from a file row.
+          recentHtml += (
+            '<div class="tv-recent-row recent-folder" data-recent-folder="' + esc(p) + '"' +
+              ' role="button" tabindex="0">' +
+              '<span class="tv-recent-name">' + esc(name) + '/</span>' +
+              '<span class="tv-recent-path">' + esc(p) + '</span>' +
+            '</div>'
+          );
+        });
+        recentFilesES.forEach(function (e) {
+          var p = e.path;
           var name = p.split('/').pop() || p;
           recentHtml += (
             '<div class="tv-recent-row" data-recent-path="' + esc(p) + '"' +
@@ -1624,15 +2023,43 @@
       '</div>'
     );
 
-    // ── RECENT section: timestamped recents not currently open as a tab ──
+    // ── RECENT section: timestamped recents not currently open ──
+    // ISS-FOLDER: recent FOLDERS render first with the folder icon and a
+    // distinct data-ntp-folder-path attr so the click handler reopens them as a
+    // folder (not as a file via data-ntp-path → read_md_file, which would fail
+    // on a directory). data-ntp-folder-path is distinct from data-ntp-folder
+    // (the parent-folder scoring source used by the fuzzy matcher).
     var openNativePaths = {};
     state.tabs.forEach(function (t) {
       if (t.nativePath) openNativePaths[t.nativePath] = true;
     });
-    var recentEntries = loadRecentEntries().filter(function (e) {
-      return !openNativePaths[e.path];
+    var openFolderPathsNtp = {};
+    state.openFolders.forEach(function (f) { if (f.path) openFolderPathsNtp[f.path] = true; });
+    var recentAllNtp = loadRecentEntries();
+    var recentFolderEntries = recentAllNtp.filter(function (e) {
+      return e.type === 'folder' && !openFolderPathsNtp[e.path];
     }).slice(0, 8);
-    var recentRows = recentEntries.map(function (e) {
+    var recentEntries = recentAllNtp.filter(function (e) {
+      return e.type !== 'folder' && !openNativePaths[e.path];
+    }).slice(0, 8);
+    var recentFolderRows = recentFolderEntries.map(function (e) {
+      var p = e.path;
+      var name = p.split('/').filter(Boolean).pop() || p;
+      var folder = parentFolderName(p);
+      var when = relativeTime(e.ts);
+      return (
+        '<div class="tv-ntp-row" role="option" aria-selected="false"' +
+          ' data-ntp-folder-path="' + esc(p) + '"' +
+          ' data-ntp-name="' + esc(name) + '"' +
+          ' data-ntp-folder="' + esc(folder) + '"' +
+          ' title="' + esc(p) + '">' +
+          '<span class="ic tv-ntp-ic">' + folderIc + '</span>' +
+          '<span class="tv-ntp-name">' + esc(name) + '</span>' +
+          (when ? '<span class="tv-ntp-meta">' + esc(when) + '</span>' : '') +
+        '</div>'
+      );
+    }).join('');
+    var recentRows = recentFolderRows + recentEntries.map(function (e) {
       var p = e.path;
       var name = p.split('/').pop() || p;
       var folder = parentFolderName(p);
@@ -1858,6 +2285,10 @@
     if (tvRootEl) {
       tvRootEl.style.setProperty('--tv-sidebar-w', state.sidebarWidth + 'px');
     }
+
+    // SBH-01: apply the tree indent + rail depth via CSSOM. MUST happen here,
+    // right after innerHTML and before paint — see applyTreeDepths().
+    applyTreeDepths(root);
 
     // Restore scroll position (DR-03)
     var newScroll = root.querySelector('[data-scroll]');
@@ -2655,6 +3086,13 @@
         if (untitled && untitled.id !== openId) closeTab(untitled.id);
         return;
       }
+      // ISS-FOLDER: recent-folder row → reopen the folder (top-level docs +
+      // tree), not as a file. Drop the entry from Recent on success.
+      var nfPath = row.getAttribute('data-ntp-folder-path');
+      if (nfPath) {
+        reopenRecentFolder(nfPath);
+        return;
+      }
       var path = row.getAttribute('data-ntp-path');
       if (path) {
         openRecentIntoUntitled(path);
@@ -3031,6 +3469,16 @@
         }
       }
 
+      // ISS-FOLDER: recent FOLDER row click (sidebar + empty-state) → reopen the
+      // folder (top-level docs + tree). Distinct attr from data-recent-path so
+      // this branch must come first; the file branch below never sees it.
+      var recentFolderRow = e.target.closest('[data-recent-folder]');
+      if (recentFolderRow) {
+        var rfPath = recentFolderRow.getAttribute('data-recent-folder');
+        if (rfPath) reopenRecentFolder(rfPath);
+        return;
+      }
+
       // F-02: sidebar recent row click → reopen closed file
       var recentRow = e.target.closest('[data-recent-path]');
       if (recentRow) {
@@ -3098,6 +3546,12 @@
           var ntpUntitled = findUntitledTab();
           activateTab(ntpOpenId);
           if (ntpUntitled && ntpUntitled.id !== ntpOpenId) closeTab(ntpUntitled.id);
+          return;
+        }
+        // ISS-FOLDER: recent-folder NTP row → reopen the folder (not as a file).
+        var ntpFolderPath = ntpRow.getAttribute('data-ntp-folder-path');
+        if (ntpFolderPath) {
+          reopenRecentFolder(ntpFolderPath);
           return;
         }
         var ntpPath = ntpRow.getAttribute('data-ntp-path');
@@ -3256,7 +3710,11 @@
         return;
       }
 
-      // F-19 TASK 2: folder tree file row click — open or activate
+      // F-19 TASK 2: folder tree file row click — open or activate.
+      // SBH-03 (Fix 3): a SINGLE click is a preview — it opens into the one
+      // transient tab, which the next single click replaces. Double-click pins
+      // (see the dblclick handler below). A file that is already open just
+      // activates, keeping whatever pinned/transient state it already had.
       var treeFileRow = e.target.closest('[data-tree-file-path]');
       if (treeFileRow) {
         var tfPath = treeFileRow.getAttribute('data-tree-file-path');
@@ -3265,9 +3723,32 @@
         if (existingTabId) {
           activateTab(existingTabId);
         } else {
-          _openTreeFilePath(tfPath);
+          _openTreeFilePath(tfPath, true);
         }
         return;
+      }
+    });
+
+    // SBH-03 (Fix 3): double-click a tree file row, or a tab, to PIN it —
+    // the tab goes upright and persists until closed. The preceding single
+    // click has already opened/activated the file, so this only flips the flag.
+    tvEl.addEventListener('dblclick', function (e) {
+      var dblTab = e.target.closest('[data-tab-id]');
+      if (dblTab) {
+        pinTab(dblTab.getAttribute('data-tab-id'));
+        return;
+      }
+      var dblFileRow = e.target.closest('[data-tree-file-path]');
+      if (dblFileRow) {
+        var dblPath = dblFileRow.getAttribute('data-tree-file-path');
+        // Prefer the row's own tab id, then a live lookup by path. On a FIRST
+        // open neither exists yet: the preceding single click kicked off an
+        // async read_md_file that has not resolved, so the tab is still being
+        // created. Latch the intent instead of dropping it — _openTreeFilePath
+        // applies it the moment the tab lands.
+        var dblTabId = dblFileRow.getAttribute('data-tree-tab-id') || _tabIdByNativePath(dblPath);
+        if (dblTabId) pinTab(dblTabId);
+        else _pendingPinPath = dblPath;
       }
     });
 
@@ -3338,6 +3819,18 @@
           fileRow.getAttribute('data-tree-tab-id') || null);
         return;
       }
+      // ISS-FOLDER: recent FOLDER row right-click. The file context menu
+      // (openFileCtx) assumes a single file (Reveal/Copy-Path/Open-as-file), so
+      // it must NOT fire for a folder. Reveal the folder in Finder (the one
+      // action that cleanly applies to a closed recent folder); suppress the
+      // native WebKit menu. Must precede the data-recent-path branch.
+      var recentFolderRowCtx = e.target.closest('[data-recent-folder]');
+      if (recentFolderRowCtx) {
+        e.preventDefault();
+        var rfCtxPath = recentFolderRowCtx.getAttribute('data-recent-folder');
+        if (rfCtxPath) revealInFinder(rfCtxPath);
+        return;
+      }
       var recentRow = e.target.closest('[data-recent-path]');
       if (recentRow) {
         e.preventDefault();
@@ -3400,10 +3893,73 @@
       }
     }
 
+    // SBH-03: a transient (preview) open REPLACES the current preview tab
+    // rather than stacking beside it. Dropped BEFORE the new tab is pushed so
+    // the strip never momentarily shows two previews.
+    if (opts.transient) dropTransientTab();
+
     var tab = makeTab(opts);
     state.tabs.push(tab);
     activateTab(tab.id);
     return tab.id;
+  }
+
+  /* ── SBH-03: transient (preview) tab helpers ────────────────── */
+
+  // Close the current transient tab, if any. Silent by design: a transient tab
+  // can never be dirty, because the first edit pins it (see setMode) — so there
+  // is nothing to prompt about. The native per-file watch is released
+  // explicitly, mirroring closeFolder: _doCloseTab → TVLive.stop only unwatches
+  // when a live watchState exists, which would otherwise leak an FSEvents watcher.
+  function dropTransientTab(exceptId) {
+    for (var i = 0; i < state.tabs.length; i++) {
+      var t = state.tabs[i];
+      if (t.transient && t.id !== exceptId) {
+        if (t.nativePath && window.TVNative && typeof TVNative.stopWatch === 'function') {
+          TVNative.stopWatch({ nativePath: t.nativePath });
+        }
+        _doCloseTab(t.id, i);
+        return t.id;
+      }
+    }
+    return null;
+  }
+
+  // Native path → tab id, or null. Used by the pin paths, which are handed a
+  // file path by the DOM but must act on a tab.
+  function _tabIdByNativePath(p) {
+    if (!p) return null;
+    for (var i = 0; i < state.tabs.length; i++) {
+      if (state.tabs[i].nativePath === p) return state.tabs[i].id;
+    }
+    return null;
+  }
+
+  // Set when a double-click landed before the file's async read resolved, so
+  // the tab did not exist yet to pin. _openTreeFilePath consumes it once the
+  // tab lands. Holds at most one path — a newer double-click supersedes it.
+  var _pendingPinPath = null;
+
+  // SBH-03 (QA D3): paths with a read_md_file call in flight. A double-click
+  // fires two clicks; without this the second read lands after the first tab
+  // exists and opens the same file a second time.
+  var _openingPaths = {};
+
+  // Pin a tab: it stops being the replaceable preview and persists until
+  // closed. Triggered by double-clicking the file row or its tab, and
+  // automatically on entering edit mode. No-op (and no render) when the tab is
+  // already pinned, so repeat double-clicks stay cheap.
+  function pinTab(tabId) {
+    if (!tabId) return false;
+    for (var i = 0; i < state.tabs.length; i++) {
+      if (state.tabs[i].id === tabId) {
+        if (!state.tabs[i].transient) return false;
+        state.tabs[i].transient = false;
+        render();
+        return true;
+      }
+    }
+    return false;
   }
 
   // F-06/F-16: open (or reuse) a tab in an error state for a path that could
@@ -3467,6 +4023,33 @@
     state.tabs.push(tab);
     activateTab(tab.id);
     return tab.id;
+  }
+
+  // ISS-FOLDER: reopen a folder recorded in Recent. Mirrors a REAL folder open
+  // (top-level docs as tabs AND the registered tree — tree-only reopen is lossy)
+  // WITHOUT the native picker, since the path is already known. On success the
+  // entry is removed from Recent (it's now open). If the folder can't be read
+  // (moved/deleted) the native helper shows a VISIBLE toast and rejects; we then
+  // drop the dead entry and re-render so it disappears from the launcher/sidebar.
+  function reopenRecentFolder(path) {
+    if (!path) return;
+    if (window.TVNative && typeof TVNative.reopenFolder === 'function') {
+      TVNative.reopenFolder(path)
+        .then(function () {
+          removeRecentEntry(path, 'folder'); // now open → no longer "recent"
+          render();
+        })
+        .catch(function () {
+          // Toast already surfaced by TVNative.reopenFolder. Drop the dead entry.
+          removeRecentEntry(path, 'folder');
+          render();
+        });
+      return;
+    }
+    // No native bridge (plain browser) — nothing we can do but surface a notice.
+    if (window.TVNative && typeof TVNative.showToast === 'function') {
+      TVNative.showToast('Reopening folders requires the desktop app');
+    }
   }
 
   // Fill the untitled tab IN PLACE from an already-read document. `doc` is the
@@ -3722,6 +4305,10 @@
     if (m === 'edit') {
       var t = getActiveTab();
       if (t && t.untitled) return;
+      // SBH-03: editing a file pins it. A preview you have started changing is
+      // no longer disposable — without this the next single click in the tree
+      // would silently replace a tab holding unsaved edits.
+      if (t && t.transient) t.transient = false;
     }
     state.mode = m;
     render();
@@ -3992,9 +4579,22 @@
   /* ── F-03: Open Folder ────────────────────────────────────── */
   function openFolder() {
     if (!window.__TAURI__) return;
+    // F-19 / ISS-005: delegate to TVNative.openFolder, which opens the docs AND
+    // registers the folder tree on state.openFolders so the sidebar renders the
+    // nested tree + close-folder button (buildFolderSection). Without this the
+    // files only ever show as a flat grouped-by-path list (no folder head, no ×).
+    if (window.TVNative && typeof TVNative.openFolder === 'function') {
+      TVNative.openFolder();
+      return;
+    }
+    // B1: pick_folder now returns { path, files } (FolderPick). Branch cancel
+    // vs real pick on res.path being NON-EMPTY (NOT files.length) so a folder
+    // whose md files live only in subfolders still opens. Iterate res.files.
     window.__TAURI__.core.invoke('pick_folder')
-      .then(function (docs) {
-        if (!docs || !docs.length) return;
+      .then(function (res) {
+        var folderPath = res && res.path;
+        if (!folderPath) return; // empty path → cancelled
+        var docs = (res && res.files) || [];
         docs.forEach(function (doc) {
           if (window.TVNative && typeof TVNative.openInto === 'function') {
             TVNative.openInto(doc);
@@ -4007,6 +4607,15 @@
             }
           }
         });
+        // Register the sidebar tree from the CHOSEN path so a subfolders-only
+        // folder still gets a section (parity with TVNative.openFolder).
+        if (window.TVNative && typeof TVNative.readDirTree === 'function') {
+          TVNative.readDirTree(folderPath).then(function (tree) {
+            if (tree) registerFolder(tree);
+          }).catch(function (err) {
+            console.warn('[TV] readDirTree failed after pick_folder', folderPath, err);
+          });
+        }
       })
       .catch(function (err) {
         // User cancelled or error
@@ -4119,8 +4728,7 @@
       var itemKey = curEl.getAttribute('data-sidebar-item') || '';
       var toggleKey = curEl.getAttribute('data-folder-toggle');
       var isFolderRow = (itemKey.indexOf('folder:') === 0 ||
-                         itemKey.indexOf('subfolder:') === 0 ||
-                         itemKey.indexOf('deep:') === 0);
+                         itemKey.indexOf('subfolder:') === 0);
       if (isFolderRow && toggleKey) {
         var isCollapsed = !!state.folderCollapsed[toggleKey];
         if (e.key === 'ArrowLeft') {
@@ -4178,10 +4786,9 @@
 
       var sidebarItem = cursorEl.getAttribute('data-sidebar-item') || '';
 
-      // (1) Folder / subfolder / deep-bucket toggle
+      // (1) Folder / subfolder toggle
       if (sidebarItem.indexOf('folder:') === 0 ||
-          sidebarItem.indexOf('subfolder:') === 0 ||
-          sidebarItem.indexOf('deep:') === 0) {
+          sidebarItem.indexOf('subfolder:') === 0) {
         var ftoggleKey = cursorEl.getAttribute('data-folder-toggle');
         if (ftoggleKey) {
           toggleFolderCollapse(ftoggleKey);
@@ -4200,6 +4807,14 @@
           _openTreeFilePath(tfPath);
         }
         requestAnimationFrame(function () { renderSidebarCursor(); });
+        return;
+      }
+
+      // (3a) Recent FOLDER row (recent-folder:<path>) — reopen the folder, not
+      // open-as-file. Checked before the recent: file branch (distinct prefix).
+      if (sidebarItem.indexOf('recent-folder:') === 0) {
+        var rfKbdPath = cursorEl.getAttribute('data-recent-folder');
+        if (rfKbdPath) reopenRecentFolder(rfKbdPath);
         return;
       }
 
