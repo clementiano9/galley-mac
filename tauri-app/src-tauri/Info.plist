@@ -1,0 +1,95 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Merged into the generated bundle Info.plist by Tauri at build time.
+
+  Why this file exists: tauri.conf.json's `fileAssociations` only emits
+  CFBundleTypeExtensions ("md", "markdown"). Modern Launch Services dispatches
+  on UTIs, not extensions — a .md file reports
+  kMDItemContentType = net.daringfireball.markdown — so an extension-only
+  declaration leaves the app a non-candidate for that type. The practical
+  result was that Xcode (which does declare the UTI) won every time and
+  reclaimed .md after any "Open With" change.
+
+  So this declares LSItemContentTypes explicitly and imports the type, which
+  makes tiny-viewer a real candidate handler that a default-app binding can
+  stick to. CFBundleDocumentTypes is replaced wholesale rather than merged,
+  so the plain-text entry from fileAssociations is restated here — deliberately
+  left as Viewer/Alternate so installing this app never quietly takes over .txt.
+-->
+<plist version="1.0">
+<dict>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Markdown Document</string>
+            <!-- Editor, not Viewer: the app really does edit (⌘E) and save (⌘S),
+                 and Launch Services ranks editors above viewers when picking a
+                 default handler. -->
+            <key>CFBundleTypeRole</key>
+            <string>Editor</string>
+            <key>LSHandlerRank</key>
+            <string>Owner</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>net.daringfireball.markdown</string>
+            </array>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>md</string>
+                <string>markdown</string>
+                <string>mdown</string>
+                <string>mkd</string>
+                <string>mdwn</string>
+            </array>
+        </dict>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>Plain Text Document</string>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+            <key>LSItemContentTypes</key>
+            <array>
+                <string>public.plain-text</string>
+            </array>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>txt</string>
+            </array>
+        </dict>
+    </array>
+    <!-- Importing (not exporting) the type: net.daringfireball.markdown is a
+         third-party UTI this app adopts, it does not define it. -->
+    <key>UTImportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>net.daringfireball.markdown</string>
+            <key>UTTypeDescription</key>
+            <string>Markdown Document</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.plain-text</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>md</string>
+                    <string>markdown</string>
+                    <string>mdown</string>
+                    <string>mkd</string>
+                    <string>mdwn</string>
+                </array>
+                <key>public.mime-type</key>
+                <array>
+                    <string>text/markdown</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+</dict>
+</plist>

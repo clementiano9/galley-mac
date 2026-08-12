@@ -137,6 +137,27 @@
   }
 
   function _openInto(tv, doc, opts) {
+    // Already open? Activate it instead of stacking a duplicate tab.
+    //
+    // openDoc's own dedup cannot catch this: tabKey() returns 'native:<path>'
+    // for an existing tab (the bridge assigns nativePath after openDoc returns)
+    // but '<dir>/<name>' for the incoming opts, so the keys never match. Every
+    // Finder double-click / "Open With" on a file that was already open added
+    // another tab for the same document — very visible now that the app is a
+    // default .md handler. Same root cause as the sidebar tree's D3 fix.
+    //
+    // Activate-only is deliberate: the file is live-watched (TVLive.start
+    // below), so an on-disk change is already reflected, and re-reading here
+    // would risk clobbering unsaved edits in a dirty tab (DR-06).
+    if (doc.path && tv.state && Array.isArray(tv.state.tabs)) {
+      for (var e = 0; e < tv.state.tabs.length; e++) {
+        if (tv.state.tabs[e].nativePath === doc.path) {
+          if (typeof tv.activateTab === 'function') tv.activateTab(tv.state.tabs[e].id);
+          return;
+        }
+      }
+    }
+
     // E-12: use the real parent dir so sidebar groups by directory, not 'opened'
     var dirPath = parentDir(doc.path);
 
@@ -579,8 +600,7 @@
     // RunEvent::Opened { urls }. DR-56: call enqueueExternalOpen() so App-core
     // buffers paths during session restore and drains after; fall back to the
     // previous direct-open behavior if enqueueExternalOpen is absent (older build).
-    listen('open-files', function (e) {
-      var paths = e.payload;
+    function handleOpenPaths(paths) {
       if (!Array.isArray(paths) || !paths.length) return;
 
       // DR-56: filter to markdown extensions first (same guard as before).
@@ -610,9 +630,29 @@
             console.error('[TVNative] open-files read_md_file failed', path, err);
           });
       });
+    }
+
+    listen('open-files', function (e) {
+      handleOpenPaths(e.payload);
     }).catch(function (err) {
       console.error('[TVNative] failed to register open-files listener', err);
     });
+
+    // U-18 (cold-start fix): a double-click / "Open With" on a COLD app delivers
+    // RunEvent::Opened long before the listener above exists, and Tauri's emit
+    // does not buffer — so the file was silently dropped and the app came up
+    // showing only its restored session. Rust now buffers those paths; drain
+    // them here, through the same handler, so the cold path behaves exactly like
+    // the warm one. This call also flips Rust's "frontend ready" flag, after
+    // which opens emit live — so a file is never both drained and emitted.
+    // Ordering matters: register the listener FIRST, then drain, or an open
+    // landing between the two would be lost by both.
+    invoke('take_pending_opens')
+      .then(function (paths) { handleOpenPaths(paths); })
+      .catch(function (err) {
+        // Older shell without the command — the warm path still works.
+        console.warn('[TVNative] take_pending_opens unavailable', err);
+      });
 
     // U-02: wire View > Appearance submenu events (DR-11–DR-14).
     // Rust emits event names matching the menu item ids:

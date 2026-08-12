@@ -15,6 +15,26 @@ use tauri_plugin_dialog::DialogExt;
 /// Holds one watcher per watched path.
 pub struct WatcherState(pub Mutex<HashMap<String, RecommendedWatcher>>);
 
+/// U-18 (cold-start fix): files macOS asked us to open before the frontend was
+/// listening.
+///
+/// `RunEvent::Opened` arrives during launch — for a double-click or "Open With"
+/// on a *cold* app that is well before index.html has run tv-native.js and
+/// registered its `open-files` listener. `Emitter::emit` does not buffer, so the
+/// event went nowhere and the app came up showing only its restored session,
+/// silently ignoring the file the user actually double-clicked. (Opening a file
+/// while the app was already running always worked — the listener existed by
+/// then.)
+///
+/// So: buffer until the frontend says it is ready, then hand the paths over on
+/// request. `ready` flips on the first `take_pending_opens` call, after which
+/// `RunEvent::Opened` emits live instead of buffering — which is why the same
+/// path never arrives twice.
+pub struct PendingOpens {
+    pub paths: Mutex<Vec<String>>,
+    pub ready: std::sync::atomic::AtomicBool,
+}
+
 /// Holds the three Appearance CheckMenuItems so on_menu_event can update
 /// the checkmarks without a second menu lookup (U-02 / DR-14).
 pub struct AppearanceMenuState {
@@ -285,6 +305,21 @@ fn reveal_in_finder(path: String) -> Result<(), String> {
 #[tauri::command]
 fn print_page(window: tauri::WebviewWindow) -> Result<(), String> {
     window.print().map_err(|e| format!("print error: {}", e))
+}
+
+/// U-18 (cold-start fix): hand the frontend any files macOS asked us to open
+/// before it was listening, and mark it ready so later opens emit live.
+///
+/// Called once from tv-native.js during init. Draining and flagging in the same
+/// call is deliberate — it closes the window in which a `RunEvent::Opened`
+/// could be buffered *and* emitted, which would open the file twice.
+#[tauri::command]
+fn take_pending_opens(state: tauri::State<PendingOpens>) -> Vec<String> {
+    state
+        .ready
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let mut paths = state.paths.lock().unwrap();
+    std::mem::take(&mut *paths)
 }
 
 /// Native save-as dialog; writes content; returns Some(FileDoc) or None if cancelled.
@@ -1003,6 +1038,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(WatcherState(Mutex::new(HashMap::new())))
+        .manage(PendingOpens {
+            paths: Mutex::new(Vec::new()),
+            ready: std::sync::atomic::AtomicBool::new(false),
+        })
         .invoke_handler(tauri::generate_handler![
             pick_md_files,
             pick_folder,
@@ -1012,6 +1051,7 @@ pub fn run() {
             save_md_file_as,
             reveal_in_finder,
             print_page,
+            take_pending_opens,
             watch_file,
             unwatch_file,
         ])
@@ -1121,8 +1161,21 @@ pub fn run() {
                     .collect();
 
                 if !paths.is_empty() {
-                    if let Err(e) = app_handle.emit("open-files", &paths) {
-                        eprintln!("RunEvent::Opened emit error: {}", e);
+                    // U-18 (cold-start fix): on a double-click / "Open With" of a
+                    // COLD app this fires long before tv-native.js has registered
+                    // its listener, and emit() does not buffer — the file was
+                    // silently dropped and only the restored session came up.
+                    // Buffer until the frontend drains via take_pending_opens();
+                    // once it has, emit live as before (the warm path, which
+                    // always worked). ready is only ever set by that drain, so a
+                    // path is never both buffered and emitted.
+                    let pending = app_handle.state::<PendingOpens>();
+                    if pending.ready.load(std::sync::atomic::Ordering::SeqCst) {
+                        if let Err(e) = app_handle.emit("open-files", &paths) {
+                            eprintln!("RunEvent::Opened emit error: {}", e);
+                        }
+                    } else {
+                        pending.paths.lock().unwrap().extend(paths);
                     }
                 }
             }
