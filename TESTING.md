@@ -48,32 +48,7 @@ cd tauri-app && bun run tauri build
 
 Quit Galley before rebuilding, then replace your copy in `/Applications`.
 
-## What is worth poking at
-
-This build is the end of a polish pass, so the interesting parts are the ones that
-changed. Rough tour:
-
-- **Tabs.** Open a dozen files. Scroll the tab strip sideways, then click a tab that is
-  already visible: nothing should move. Selecting a tab that is off-screen should
-  scroll it into view. The ⌄ button beside `+` lists every open file and each row
-  closes with its ✕.
-- **⌘K** for the command palette — it is fuzzy, so `shma` should find `schema.md`.
-  **⌘⇧F** searches across every open tab; clicking a hit should land on it and
-  highlight it. **⌘F** finds within the document.
-- **Editing.** Double-click any paragraph, or ⌘E. **Esc discards your edits** and
-  toasts that ⌘Z restores them; ⌘S saves; ⌘E leaves edit mode keeping them.
-- **Quitting with unsaved work.** Edit something, do not save, press ⌘Q. You should
-  get a Save All / Discard / Cancel sheet rather than losing the edit.
-- **Menus.** Window, File ▸ Open Recent, File ▸ Print, Edit ▸ Find ▸ Find Next.
-- **Dark mode**, the ⌘⇧O folder sidebar, drag-and-drop onto the window, and a document
-  containing a `----` rule, a table, images and a mermaid diagram.
-
 ## Reporting something
 
 Useful: what you did, what happened, what you expected, your macOS version
-(`sw_vers -productVersion`), and a screenshot. If the app hangs, `Activity Monitor →
-Galley → Sample Process` captures what it was doing and is worth attaching.
-
-Known and already on the list: marking a file unsaved nudges the tabs to its right by
-a hair, and the ⌄ button can flicker while you resize the window through one narrow
-width. No need to report those two.
+(`sw_vers -productVersion`), and a screenshot.
