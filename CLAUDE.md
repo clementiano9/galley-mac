@@ -12,13 +12,24 @@ browser**. Hard platform constraints drive the architecture: idle RAM < 80 MB
 
 ## Two-tree layout (the big picture)
 
-- **`app/`** — the entire UI. Source of truth. Vanilla files loaded directly by a
-  `<script>`/`<link>` list in `index.html`; no bundler, no transpile. The same files
-  run standalone in a browser for quick iteration.
-- **`tauri-app/`** — the native shell. `src-tauri/tauri.conf.json` sets
-  `frontendDist: "../../app"`, so the Rust app serves `app/` verbatim — there is **no
-  copy step**. Editing `app/` changes the running native app on reload.
-- **`design-bundle/`** — the pixel-perfect design reference the UI is matched against.
+The repo root holds exactly two code trees. They are not duplicates — one is the UI,
+the other is the macOS shell that hosts it, and neither contains any of the other's
+files.
+
+- **`app/`** — the entire UI, and the source of truth for it. Vanilla files loaded
+  directly by a `<script>`/`<link>` list in `index.html`; no bundler, no transpile.
+  The same files run standalone in a browser for quick iteration.
+- **`tauri-app/`** — the native shell, and **no UI code at all**. `src-tauri/src/lib.rs`
+  is the Rust side (commands, FSEvents watcher, menu bar); `src-tauri/tauri.conf.json`
+  sets `frontendDist: "../../app"`, so the Rust app serves `app/` verbatim — there is
+  **no copy step**. Editing `app/` changes the running native app on reload.
+
+**`frontendDist` has a sharp edge:** every file under `app/` is embedded into the
+shipped binary. Only things the running app needs belong there. Process artifacts —
+UX-pipeline steps, QA reports, feature-gap specs, the design bundle, screenshots —
+live in **`.claude/docs/`** instead; see `.claude/docs/README.md` for the map. The
+root is otherwise just `README.md` (product overview, build/install, dev + test
+commands) and `CLAUDE.md`. README images go in `.github/media/`, never in `app/`.
 
 The frontend detects its host at runtime: under Tauri `window.__TAURI__` exists
 (`withGlobalTauri: true`, no imports), so native file open/save/watch route through
