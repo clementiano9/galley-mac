@@ -8,7 +8,7 @@
 
 ## Title & Scope
 
-Add full keyboard navigation and ARIA semantics to the tiny-viewer sidebar so that every file row, folder header, and Recent row reachable by mouse is equally reachable by keyboard. The implementation must honour the **WKWebView focus constraint** (see *Decision* below): no programmatic `element.focus()` calls on non-form elements. The sidebar already has `role="listbox"` / `role="option"` structure and an `sbKbd` cursor model in the codebase; this spec closes the remaining gaps: no keyboard entry point, folder-toggle (Left/Right) keys, Recent-row participation, folder-section rows from `buildFolderSection`, and formal Esc-to-content behaviour.
+Add full keyboard navigation and ARIA semantics to the Galley sidebar so that every file row, folder header, and Recent row reachable by mouse is equally reachable by keyboard. The implementation must honour the **WKWebView focus constraint** (see *Decision* below): no programmatic `element.focus()` calls on non-form elements. The sidebar already has `role="listbox"` / `role="option"` structure and an `sbKbd` cursor model in the codebase; this spec closes the remaining gaps: no keyboard entry point, folder-toggle (Left/Right) keys, Recent-row participation, folder-section rows from `buildFolderSection`, and formal Esc-to-content behaviour.
 
 **Scope boundary:** keyboard nav for open-file rows, folder-tree file rows (DR-33–41 / F-19), and Recent rows (DR-87 / F-02). Out of scope: the pinned search box, the folder-context menu, the resizer handle, and any screen-reader live regions beyond `aria-activedescendant`.
 

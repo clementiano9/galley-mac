@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-tiny-viewer is a **native macOS markdown viewer** for AI power users. The shipped
+Galley is a **native macOS markdown viewer** for AI power users. The shipped
 product is a Tauri v2 app (Rust shell + system WKWebView) — **not Electron, not a
 browser**. Hard platform constraints drive the architecture: idle RAM < 80 MB
 (measured ~34 MB), FSEvents live-watch, native NSOpenPanel file access. The UI is
@@ -62,7 +62,7 @@ change.
 ```bash
 # Run the native app (primary). cargo must be on PATH:
 cd tauri-app && PATH="$HOME/.cargo/bin:$PATH" bun run tauri dev      # live dev window
-cd tauri-app && PATH="$HOME/.cargo/bin:$PATH" bun run tauri build    # → src-tauri/target/release/bundle/macos/tiny-viewer.app
+cd tauri-app && PATH="$HOME/.cargo/bin:$PATH" bun run tauri build    # → src-tauri/target/release/bundle/macos/Galley.app
 
 # Run in a browser (dev fallback — must be over HTTP, not file://):
 cd app && python3 -m http.server 8777   # open http://localhost:8777/index.html

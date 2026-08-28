@@ -12,7 +12,7 @@
   reclaimed .md after any "Open With" change.
 
   So this declares LSItemContentTypes explicitly and imports the type, which
-  makes tiny-viewer a real candidate handler that a default-app binding can
+  makes Galley a real candidate handler that a default-app binding can
   stick to. CFBundleDocumentTypes is replaced wholesale rather than merged,
   so the plain-text entry from fileAssociations is restated here — deliberately
   left as Viewer/Alternate so installing this app never quietly takes over .txt.

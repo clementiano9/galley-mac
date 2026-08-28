@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · live-watch RUNTIME test harness (DR-65–71)
+   Galley · live-watch RUNTIME test harness (DR-65–71)
    Run: node app/js/tv-live.runtime.test.js
 
    Unlike tv-round5.test.js (grep/substring assertions), this harness
@@ -1004,7 +1004,7 @@ var DR68_LATENCY = { firstHideAtMs: null };
    REPORT
    ═══════════════════════════════════════════════════════════ */
 console.log('\n══════════════════════════════════════════════════════');
-console.log(' tiny-viewer live-watch RUNTIME test harness (DR-65–71)');
+console.log(' Galley live-watch RUNTIME test harness (DR-65–71)');
 console.log('══════════════════════════════════════════════════════\n');
 
 var order = ['LOAD', 'DR-65-OPEN', 'DR-65-BOLT', 'DR-66', 'DR-67', 'DR-68', 'DR-70', 'DR-71', 'L-04'];

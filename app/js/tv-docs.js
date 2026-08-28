@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · seed documents
+   Galley · seed documents
    E-02: All dummy seed data removed for production.
    Demo content is only loaded when ?demo=1 is present in the URL.
    ─────────────────────────────────────────────────────────── */
@@ -23,7 +23,7 @@
 
   /* ── Demo-only content (gate: ?demo=1) ───────────────────── */
 
-  var WELCOME = '# Welcome to tiny-viewer\n\n' +
+  var WELCOME = '# Welcome to Galley\n\n' +
     'A lightweight markdown viewer for AI power users. The document **is** the\n' +
     'interface — chrome stays out of your way until you call it.\n\n' +
     '## Try it\n\n' +
@@ -46,7 +46,7 @@
     'graph LR\n' +
     '  A[Disk] --> B[Reader] --> C[Renderer] --> D[Viewer]\n' +
     '```\n\n' +
-    '> Files live on disk. tiny-viewer is a lens, not a database — zero import,\n' +
+    '> Files live on disk. Galley is a lens, not a database — zero import,\n' +
     '> zero sync, nothing written you didn\'t ask for.';
 
   var SCHEMA = '# Database Schema\n\n' +

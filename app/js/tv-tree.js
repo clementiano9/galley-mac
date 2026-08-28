@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · sidebar folder-tree logic  (ISS-005)
+   Galley · sidebar folder-tree logic  (ISS-005)
    window.TVTree — pure, DOM-free helpers that turn a native
    DirTree into an ordered, depth-annotated list of render nodes
    and manage per-folder collapse state.

@@ -7,7 +7,7 @@ onto the window.
 
 Regular paragraph with **bold**, *italic*, `inline code`, and a [link](https://example.com).
 
-> A blockquote. Files live on disk — tiny-viewer is a lens, not a database.
+> A blockquote. Files live on disk — Galley is a lens, not a database.
 
 ## Task list
 

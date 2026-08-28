@@ -162,7 +162,7 @@ if (anchor) {
 
 **Evidence**:
 - `tv-native.js:213-215`: `.catch(function(err){ if (err) console.warn('[TVNative] saveTab (save_md_file) failed', err); })`
-- `tv-app.js:671-675`: `.catch(function(err){ console.warn('[tiny-viewer] native save failed:', err); setMode('reading'); })`
+- `tv-app.js:671-675`: `.catch(function(err){ console.warn('[Galley] native save failed:', err); setMode('reading'); })`
 - No call to `showToast()` or any user-facing error in either catch block
 
 **Fix**: In `TVNative.saveTab()` and `handleSave()` catch handlers, call `showToast()` with a descriptive message:

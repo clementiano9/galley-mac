@@ -1,4 +1,4 @@
-# Feature Gap Analysis — tiny-viewer
+# Feature Gap Analysis — Galley
 **Analyst**: feat-req (QA dept)
 **Date**: 2026-06-08
 **Scope**: Every feature/capability called for by the spec (step-3, step-5 IA, step-6 wireframes, Visual Spec, Mockups) vs. what exists in the current codebase. Only gaps grounded in project documents are listed. Bugs already tracked in QA-REPORT.md are excluded unless they cause a feature to be fully absent.

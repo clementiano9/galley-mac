@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · shared icon set
+   Galley · shared icon set
    window.TV_ICONS — inline SVG strings keyed by name.
    Use stroke="currentColor"/fill="currentColor" so icons inherit
    the surrounding text colour and re-skin with theme/accent.

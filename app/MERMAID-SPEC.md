@@ -1,4 +1,4 @@
-# Mermaid Diagram Visual Spec — tiny-viewer
+# Mermaid Diagram Visual Spec — Galley
 
 ## 1. Border Direction
 

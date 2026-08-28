@@ -1,6 +1,6 @@
-# tiny-viewer (frontend)
+# Galley (frontend)
 
-This `app/` folder is the **UI layer** of tiny-viewer — pure vanilla HTML/CSS/JS,
+This `app/` folder is the **UI layer** of Galley — pure vanilla HTML/CSS/JS,
 no framework, no build step. It is the WebKit frontend for the **native macOS app**
 (`../tauri-app/`, built with Tauri v2 — Rust shell + system WKWebView). The same
 files also run standalone in a browser for quick iteration.
@@ -16,7 +16,7 @@ files also run standalone in a browser for quick iteration.
 cd ../tauri-app
 bun install            # first time only
 bun run tauri dev      # live dev window
-bun run tauri build    # produces src-tauri/target/release/bundle/macos/tiny-viewer.app
+bun run tauri build    # produces src-tauri/target/release/bundle/macos/Galley.app
 ```
 
 Requires the Rust toolchain (`rustup`) + Xcode. The bundled app launches at ~34MB.

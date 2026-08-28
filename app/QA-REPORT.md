@@ -1,4 +1,4 @@
-# QA Report — tiny-viewer Production Readiness Audit
+# QA Report — Galley Production Readiness Audit
 
 **Audited by**: qa-dept  
 **Date**: 2026-06-08  
