@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · app spine
+   Galley · app spine
    window.TV — state, render loop, chrome, tabs, sidebar,
                keyboard router, theme/accent.
    Owns: index.html + js/tv-app.js  (contract §file-ownership)
@@ -34,6 +34,46 @@
     return String(s)
       .replace(/&/g, '&amp;').replace(/</g, '&lt;')
       .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+
+  /* ── C-05: middle-truncating file labels ─────────────────────
+     macOS truncates filenames in the middle (Finder, the Dock, Xcode) so the
+     extension and the distinguishing tail survive: twelve files called
+     `2026-08-report-<n>.md` are told apart by their END, not their start.
+     We render the label as two spans — a shrinking head and a fixed tail —
+     and let CSS decide whether an ellipsis is needed, so a name that FITS
+     shows no ellipsis at all. textContent is unchanged by the split, which is
+     what the sidebar suites read. Never mutates tab.name. */
+  var LBL_TAIL_MAX = 10;   // characters kept on the right, extension included
+  var LBL_TAIL_MIN = 8;
+  var LBL_MIN_SPLIT = 12;  // shorter than this and there is nothing to protect
+
+  function splitLabel(name) {
+    var s = String(name == null ? '' : name);
+    if (s.length <= LBL_MIN_SPLIT) return { head: s, tail: '' };
+    var tailLen = LBL_TAIL_MAX;
+    var half = Math.floor(s.length / 2);
+    if (tailLen > half) tailLen = Math.max(LBL_TAIL_MIN, half);
+    if (tailLen >= s.length) tailLen = s.length - 1;
+    return { head: s.slice(0, s.length - tailLen), tail: s.slice(s.length - tailLen) };
+  }
+
+  // Escaped inner HTML for one file label. Returns a plain escaped string when
+  // the name is short enough that no middle truncation could ever apply.
+  function labelHtml(name) {
+    var parts = splitLabel(name);
+    if (!parts.tail) return esc(parts.head);
+    return '<span class="tv-lbl">' +
+      '<span class="tv-lbl-head">' + esc(parts.head) + '</span>' +
+      '<span class="tv-lbl-tail">' + esc(parts.tail) + '</span>' +
+    '</span>';
+  }
+
+  // C-05: the hover tooltip that end-truncation used to make impossible.
+  // Name on line one, full path underneath (native tooltips honour \n).
+  function labelTitle(name, path) {
+    var n = String(name == null ? '' : name);
+    return path ? n + '\n' + String(path) : n;
   }
 
   /* ── fuzzy search (launcher) ──────────────────────────────────
@@ -298,6 +338,13 @@
       name: opts.name || 'untitled.md',
       path: opts.path || null,
       source: opts.source || '',
+      // C-33: the last content known to be on disk — set on open, on a
+      // successful save, on a reload, and (via _syncSavedSource) on any
+      // live-watch update. Esc restores the buffer to this.
+      savedSource: opts.source || '',
+      // C-33: one level of undo for a discard: { source, at }. Cleared as soon
+      // as it is restored or the tab is saved.
+      discarded: null,
       scrollTop: 0,
       dirty: false,
       live: !!opts.live,
@@ -503,10 +550,107 @@
      BUILD HELPERS — produce HTML strings
    ──────────────────────────────────────────────────────────── */
 
+  /* ── C-32: one persistent polite live region ────────────────── */
+  // WCAG 4.1.3: a live region has to EXIST before text lands in it — a node
+  // created at message time is unreliably announced, so this one is created
+  // at boot instead, and is the ONLY polite live region in the app (P2-6:
+  // tv-native.js's showToast() calls TV.announce() rather than owning a
+  // second one inside #tv-toasts — two independent aria-live regions could
+  // both fire on the same turn, which is confusing for a screen reader
+  // even though in practice they rarely disagreed).
+  var _liveRegion = null;
+
+  function ensureLiveRegion() {
+    if (_liveRegion && _liveRegion.parentNode) return _liveRegion;
+    _liveRegion = document.getElementById('tv-live-region');
+    if (!_liveRegion) {
+      _liveRegion = document.createElement('div');
+      _liveRegion.id = 'tv-live-region';
+      _liveRegion.className = 'tv-visually-hidden';
+      _liveRegion.setAttribute('aria-live', 'polite');
+      _liveRegion.setAttribute('aria-atomic', 'true');
+      document.body.appendChild(_liveRegion);
+    }
+    return _liveRegion;
+  }
+
+  function announce(msg) {
+    if (!msg) return;
+    var host = ensureLiveRegion();
+    // Re-announce identical text: clear first, or assistive tech treats the
+    // unchanged node as nothing new.
+    if (host.textContent === msg) host.textContent = '';
+    host.textContent = msg;
+  }
+
+  /* ── C-19: the "⌘E to edit" hint is onboarding, not chrome ──── */
+  // DR-07 wants chrome invisible at rest, and a permanent label parked in the
+  // viewer's dead left gutter is the opposite. It teaches something you learn
+  // once, so it is shown for the first few sessions and then never again.
+  var HINT_EDIT_SESSIONS = 5;
+  var _editHintSession = 1;
+
+  function _bumpEditHintSession() {
+    try {
+      var n = parseInt(localStorage.getItem('tv-hint-edit-seen') || '0', 10);
+      if (!(n >= 0)) n = 0;
+      n += 1;
+      localStorage.setItem('tv-hint-edit-seen', String(n));
+      _editHintSession = n;
+    } catch (e) {
+      _editHintSession = 1; // private mode / storage disabled: show it
+    }
+  }
+
+  function _showEditHint() {
+    return _editHintSession <= HINT_EDIT_SESSIONS;
+  }
+
+  /* ── C-38: window + in-app title ───────────────────────────── */
+  // The in-app .tv-wintitle label. Editing supersedes Edited — you are looking
+  // at the unsaved buffer either way, and stacking both reads as a stutter.
+  // Middle dot, never a dash.
+  function _winTitleLabel() {
+    var t = getActiveTab();
+    if (!state.tabs.length || !t) return 'Galley';
+    var name = t.name || 'Untitled';
+    if (state.mode === 'edit') return name + ' · Editing';
+    if (t.dirty) return name + ' · Edited';
+    return name;
+  }
+
+  // Keeps document.title (Window menu, ⌘-Tab switcher, Mission Control) and
+  // the in-app title in step. Called from render() AND from markDirty(), which
+  // deliberately skips render() and would otherwise leave both stale.
+  function _syncTitles() {
+    var t = getActiveTab();
+    document.title = (state.tabs.length && t)
+      ? (t.name || 'Untitled') + (t.dirty ? ' · Edited' : '') + ' · Galley'
+      : 'Galley';
+    var winEl = document.querySelector('.tv-wintitle');
+    if (!winEl) return;
+    // .tv-wintitle is <span class="tv-doc-ic">…</span> followed by a text node.
+    var last = winEl.lastChild;
+    if (last && last.nodeType === 3) last.nodeValue = _winTitleLabel();
+  }
+
+  // C-33: keep the edit toolbar's exit button truthful without a full render.
+  // markDirty() is deliberately render-free (S-01), so the label has to be
+  // patched in place or it stays at whatever the last repaint left.
+  function _syncEditEscLabel() {
+    if (state.mode !== 'edit') return;
+    var btn = document.querySelector('[data-edit-esc]');
+    if (!btn) return;
+    var t = getActiveTab();
+    var dirty = !!(t && t.dirty);
+    btn.classList.toggle('danger', dirty);
+    var last = btn.lastChild; // '<span class="kbd">esc</span>' + ' Discard'
+    if (last && last.nodeType === 3) last.nodeValue = ' ' + (dirty ? 'Discard' : 'Done');
+  }
+
   function buildTitlebar() {
     var tab = getActiveTab();
-    var title = tab ? tab.name : 'tiny-viewer';
-    if (state.mode === 'edit' && tab) title = tab.name + ' — editing';
+    var title = _winTitleLabel();
     var icons = window.TV_ICONS || {};
 
     // U-02: quiet theme toggle button (sun/moon) in titlebar right
@@ -542,8 +686,14 @@
   function buildTabbar() {
     var icons = window.TV_ICONS || {};
     var tabs = state.tabs.map(function (t) {
+      // C-39: ONE place decides what the tab's lead slot shows, with an
+      // explicit precedence — error beats live beats dirty. An error tab has
+      // no content to watch and nothing savable, so the ⚠ is never ambiguous.
+      // tv-live.js still owns t.liveActive (setBoltActive); this only reads it.
       var lead = '';
-      if (t.liveActive && t.dirty) {
+      if (t.error) {
+        lead = '<span class="tv-tab-warn" aria-hidden="true">&#9888;</span>';
+      } else if (t.liveActive && t.dirty) {
         // F-13: show both indicators when live+dirty (bolt gated on liveActive)
         lead = '<span class="tv-bolt">' + (icons.bolt || '') + '</span>' +
                '<span class="tv-dot"></span>';
@@ -561,17 +711,31 @@
           ' role="tab"' +
           ' aria-selected="' + (isActive ? 'true' : 'false') + '"' +
           ' aria-controls="tv-viewer-panel"' +
+          // P2-11: .tv-lbl-head/.tv-lbl-tail (inside .name below) are
+          // inline-flex, which blockifies them — the accname algorithm then
+          // inserts a space between block-level parts, so the tab's computed
+          // accessible name could gain a stray space mid-filename. An
+          // explicit aria-label wins over content-derived naming, so this
+          // stays correct regardless of how .tv-lbl's layout evolves.
+          ' aria-label="' + esc(t.name) + '"' +
           ' tabindex="' + (isActive ? '0' : '-1') + '"' +
+          // C-05: name over full path, so same-prefix files are tellable apart.
+          ' title="' + esc(labelTitle(t.name, t.nativePath || t.path)) + '"' +
           ' data-tab-id="' + esc(t.id) + '">' +
           lead +
-          '<span class="name">' + esc(t.name) + '</span>' +
-          '<span class="tv-close"' +
-            ' role="button"' +
+          '<span class="name">' + labelHtml(t.name) + '</span>' +
+          // C-32: a real <button>, not a span with role="button" — natively
+          // focusable, so Enter/Space work without a hand-rolled handler.
+          // tabindex="-1" keeps it OUT of the global Tab order (one stop per
+          // open tab would drown the sequence); it is reached from its own tab
+          // with Delete/Backspace, and ⌘W still closes the active one.
+          '<button type="button" class="tv-close"' +
             ' aria-label="Close ' + esc(t.name) + '"' +
             ' data-close-tab="' + esc(t.id) + '"' +
+            ' tabindex="-1"' +
             ' title="Close">' +
             (icons.close || '') +
-          '</span>' +
+          '</button>' +
         '</div>'
       );
     }).join('');
@@ -594,15 +758,173 @@
 
     // L-03: tabs live in a scrolling .tv-tab-strip; .tv-newtab is a SIBLING
     // (outside the strip) so the "+" stays opaque + clickable when tabs overflow.
+    // C-06: overflow list. Rendered ALWAYS but `hidden` until the strip
+    // actually overflows (updateTabStripScroll owns the toggle), so a strip
+    // that fits spends zero pixels. Sibling of the strip, like .tv-newtab.
+    var overflowBtn = (
+      '<button class="tv-tab-overflow" data-tab-overflow hidden type="button"' +
+        ' title="All open tabs" aria-label="All open tabs" aria-haspopup="menu">' +
+        '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"' +
+          ' stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+          '<polyline points="6 9 12 15 18 9"/></svg>' +
+      '</button>'
+    );
+
     return (
       '<div class="tv-tabbar" role="tablist">' +
         sideToggle +
         '<div class="tv-tab-strip">' + tabs + '</div>' +
+        overflowBtn +
         '<button class="tv-newtab" data-newtab title="New tab (⌘T)" aria-label="New tab (⌘T)" type="button">' +
           (icons.plus || '') +
         '</button>' +
       '</div>'
     );
+  }
+
+  /* ── C-06: all-open-tabs overflow list ─────────────────────── */
+  // A scrolling tab strip hides tabs with no pointer-reachable way back to
+  // them. Reuses the context-menu shell so it inherits its surface, dismissal
+  // and clamping behaviour rather than inventing a second popover.
+  var _tabOverflowEl = null;
+  var _tabOverflowAnchor = null;   // C-06: kept so a per-row close can re-open the list
+
+  function _tabOverflowEsc(e) {
+    if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeTabOverflow(); }
+  }
+
+  function closeTabOverflow() {
+    document.removeEventListener('keydown', _tabOverflowEsc, true);
+    if (_tabOverflowEl && _tabOverflowEl.parentNode) {
+      _tabOverflowEl.parentNode.removeChild(_tabOverflowEl);
+    }
+    _tabOverflowEl = null;
+  }
+
+  function openTabOverflow(anchorEl) {
+    closeTabOverflow();
+    _tabOverflowAnchor = anchorEl || null;
+    closeTabCtx();
+    closeFolderCtx();
+    var tvRoot = document.querySelector('.tv');
+    if (!tvRoot || !state.tabs.length) return;
+    var icons = window.TV_ICONS || {};
+
+    var rows = state.tabs.map(function (t) {
+      var isActive = t.id === state.activeId;
+      var lead = t.liveActive
+        ? '<span class="ic tv-tof-live">' + (icons.bolt || '') + '</span>'
+        : (t.dirty ? '<span class="ic tv-tof-dot">&#9679;</span>' : '<span class="ic"></span>');
+      // C-06 (round 2): each row carries its own close control, so the list is
+      // a way to CLOSE files as well as jump to them.
+      return (
+        '<div class="tv-ctx-item tv-tof-row' + (isActive ? ' tv-tof-active' : '') + '"' +
+          ' data-overflow-tab="' + esc(t.id) + '"' +
+          ' title="' + esc(labelTitle(t.name, t.nativePath || t.path)) + '">' +
+          lead +
+          '<span class="tv-tof-name">' + esc(t.name) + '</span>' +
+          '<button type="button" class="tv-tof-close" data-overflow-close="' + esc(t.id) + '"' +
+            ' aria-label="Close ' + esc(t.name) + '" tabindex="-1">&#10005;</button>' +
+        '</div>'
+      );
+    }).join('');
+
+    var wrapper = document.createElement('div');
+    wrapper.innerHTML =
+      '<div class="tv-ctx-scrim" data-ctx-scrim>' +
+        '<div class="tv-ctx tv-tab-overflow-menu" data-ctx-menu role="menu"' +
+          ' aria-label="All open tabs">' + rows + '</div>' +
+      '</div>';
+    _tabOverflowEl = wrapper.firstChild;
+    tvRoot.appendChild(_tabOverflowEl);
+
+    // Anchor under the ⌄ button, right-aligned, clamped to the window.
+    // CSP: position via CSSOM, never a style="" attribute (WKWebView drops it).
+    var menuEl = _tabOverflowEl.querySelector('[data-ctx-menu]');
+    if (menuEl && anchorEl && anchorEl.getBoundingClientRect) {
+      var r = anchorEl.getBoundingClientRect();
+      var mw = menuEl.offsetWidth || 220;
+      var mh = menuEl.offsetHeight || 240;
+      var cx = Math.max(4, Math.min(r.right - mw, window.innerWidth - mw - 4));
+      var cy = Math.min(r.bottom + 4, Math.max(4, window.innerHeight - mh - 4));
+      menuEl.style.left = cx + 'px';
+      menuEl.style.top = cy + 'px';
+    }
+
+    _tabOverflowEl.addEventListener('mousedown', function (e) {
+      if (!e.target.closest('[data-ctx-menu]')) closeTabOverflow();
+    });
+    _tabOverflowEl.addEventListener('click', function (e) {
+      // C-06 (round 2): the per-row ✕ closes that file. Checked BEFORE the row
+      // handler so closing never also activates the tab it just removed.
+      var closeBtn = e.target.closest('[data-overflow-close]');
+      if (closeBtn) {
+        e.stopPropagation();
+        var closeId = closeBtn.getAttribute('data-overflow-close');
+        closeTabOverflow();
+        closeTab(closeId);
+        // Re-open so several files can be closed in a row. The anchor node we
+        // opened with is gone — closeTab re-renders the whole tab bar — so
+        // re-query the live control, which only exists while the strip still
+        // overflows. When it does not, staying closed is the right answer.
+        var freshAnchor = document.querySelector('.tv-tab-overflow');
+        if (freshAnchor && state.tabs.length > 1) openTabOverflow(freshAnchor);
+        return;
+      }
+      var row = e.target.closest('[data-overflow-tab]');
+      if (!row) return;
+      var id = row.getAttribute('data-overflow-tab');
+      closeTabOverflow();
+      activateTab(id);
+    });
+    document.addEventListener('keydown', _tabOverflowEsc, true);
+  }
+
+  /* ── C-04/C-06: tab-strip scroll state ─────────────────────── */
+  // Publishes the strip's scroll position as data attributes so tv-app.css can
+  // fade whichever edge still hides a tab, and so the overflow control (C-06)
+  // knows whether it has anything to show. Cheap: two reads, no layout write.
+  //   data-scrolled   → something is clipped on the LEFT
+  //   data-scroll-end → nothing is clipped on the RIGHT (also true when the
+  //                     strip does not overflow at all, which is what we want:
+  //                     no fade on a strip that fits)
+  //   data-overflow   → the strip is wider than its box (drives the ⌄ button)
+  // C-04 (round 4): the ⌄ button's visibility, split out so render() can settle
+  // it BEFORE it restores the strip's scrollLeft. The button is ~24px wide, so
+  // flipping it changes .tv-tab-strip's clientWidth — and both the scroll
+  // restore's clamp and the active-pill flush measure against that width. Left
+  // inside updateTabStripScroll it ran AFTER both, which meant they did their
+  // arithmetic against a strip 24px wider than the one the user ends up
+  // looking at. The verdict itself reads scrollWidth/clientWidth only, never
+  // scrollLeft, and shrinking the box can only keep an overflowing strip
+  // overflowing — so deciding it early is stable and cannot oscillate.
+  // Returns the verdict so updateTabStripScroll does not recompute it.
+  function syncTabOverflowBtn(strip) {
+    if (!strip) return false;
+    var over = strip.scrollWidth > strip.clientWidth + 1;
+    // The ⌄ overflow button is zero chrome when nothing overflows.
+    var tabbar = strip.parentNode;
+    var moreBtn = tabbar && tabbar.querySelector && tabbar.querySelector('[data-tab-overflow]');
+    if (moreBtn) moreBtn.hidden = !over;
+    return over;
+  }
+
+  function updateTabStripScroll(rootEl) {
+    var strip = (rootEl || document).querySelector('.tv-tab-strip');
+    if (!strip) return;
+    // Settle the button first, then publish the attributes from the geometry
+    // that results — otherwise data-scroll-end is decided against a clientWidth
+    // the strip is about to lose.
+    var over = syncTabOverflowBtn(strip);
+    if (strip.scrollLeft > 0) strip.setAttribute('data-scrolled', '1');
+    else strip.removeAttribute('data-scrolled');
+    if (strip.scrollLeft + strip.clientWidth >= strip.scrollWidth - 1) {
+      strip.setAttribute('data-scroll-end', '1');
+    } else {
+      strip.removeAttribute('data-scroll-end');
+    }
+    if (over) strip.setAttribute('data-overflow', '1');
+    else strip.removeAttribute('data-overflow');
   }
 
   /* ── F-19 helpers ──────────────────────────────────────────── */
@@ -735,6 +1057,54 @@
   // (tab close, folder removal, prune, unwatch, recent, render) happens ONLY
   // after it resolves — never synchronously before, or state desyncs from the
   // dialog outcome. Exactly ONE batched dialog is shown, never one per tab.
+  /* ── C-29: re-scan a truncated folder without the cap ───────── */
+  // Deliberately NOT registerFolder(): its refresh branch fires
+  // revealSidebarRow('… is already open'), which is a misleading toast here and
+  // yanks the keyboard cursor. Swapping the tree object in its existing slot
+  // gives exactly what the item asks for — same root, same MRU position,
+  // state.folderCollapsed untouched (so every expansion survives) and sbKbd.id
+  // untouched (so the cursor stays where the user left it).
+  function loadMoreFolder(path) {
+    if (!path) return;
+    state.folderMoreLoading = state.folderMoreLoading || {};
+    if (state.folderMoreLoading[path]) return; // already in flight
+    if (!(window.TVNative && typeof TVNative.readDirTree === 'function')) return;
+
+    state.folderMoreLoading[path] = true;
+    render();
+
+    function done() {
+      delete state.folderMoreLoading[path];
+    }
+
+    TVNative.readDirTree(path, { uncapped: true }).then(function (tree) {
+      done();
+      if (tree && tree.path) {
+        var replaced = false;
+        for (var i = 0; i < state.openFolders.length; i++) {
+          if (state.openFolders[i].path === tree.path) {
+            state.openFolders[i] = tree;
+            replaced = true;
+            break;
+          }
+        }
+        // The folder was closed while the scan was running — do not re-mount it.
+        if (!replaced) { render(); return; }
+      }
+      render();
+      // C-32: the row the user activated has just vanished from the list; say
+      // what happened, since nothing else does.
+      announce(pathBasename(path) + ' fully loaded');
+    }).catch(function (err) {
+      done();
+      render();
+      console.warn('[Galley] C-29 uncapped folder scan failed', path, err);
+      if (window.TVNative && typeof TVNative.showToast === 'function') {
+        TVNative.showToast('Could not load the rest of this folder', { kind: 'error' });
+      }
+    });
+  }
+
   function closeFolder(path) {
     if (!path) return;
 
@@ -988,6 +1358,51 @@
     }
   }
 
+  /* ── C-04 (round 4): the tab strip is the THIRD scroller ──────
+     render() rebuilds #tv-root wholesale, so .tv-tab-strip is destroyed and
+     recreated at scrollLeft 0 on EVERY repaint — theme change, ⌘B, a
+     live-watch update, a dirty-dot flip, closing a tab, a font-size step. The
+     content pane (DR-03) and the sidebar list (JANK-01) have both been
+     preserved across that swap for a long time; the strip never was. With the
+     tabs scrolled right, any repaint therefore threw the whole strip back to
+     the beginning and every tab landed somewhere else.
+
+     Selecting a tab is where users see it, but the click is not the cause: the
+     active-pill flush below then measured the pill against that reset 0 and
+     wrote a THIRD position, so one click produced a completely different set
+     of visible tabs. Round 2's conditional scrollLeft write and round 3's
+     font-weight fix both addressed what happens after the rebuild; this
+     addresses the rebuild.
+
+     Not persisted to session or disk (JANK-01 precedent — DR-06 untouched):
+     the offset only has to survive a repaint. */
+  var _tabStripScrollLeft = 0;
+
+  function captureTabStripScroll(root) {
+    if (!root || typeof root.querySelector !== 'function') return;
+    var strip = root.querySelector('.tv-tab-strip');
+    // clientWidth, not hasLayout's clientHeight: this scroller is horizontal,
+    // and it is absent altogether in the empty state. A zero width means it is
+    // not laid out — reading it would overwrite the saved offset with a 0 and
+    // drop the user back at the first tab when the strip returns.
+    if (strip && strip.clientWidth) _tabStripScrollLeft = strip.scrollLeft || 0;
+  }
+
+  function restoreTabStripScroll(root) {
+    if (!root || typeof root.querySelector !== 'function') return;
+    var strip = root.querySelector('.tv-tab-strip');
+    if (!strip) return;
+    // Settle the C-06 ⌄ control BEFORE writing scrollLeft. buildTabbar always
+    // renders it `hidden`; unhiding it later takes ~24px off the strip's
+    // clientWidth, which would silently re-clamp the position just restored
+    // and skew the pill flush that measures against the same width.
+    syncTabOverflowBtn(strip);
+    // No manual clamp: the browser clamps scrollLeft to the new scrollWidth on
+    // its own when the strip got narrower (⌘B revealing the sidebar) or shorter
+    // (a tab closed) — same reasoning as restoreSidebarScroll.
+    if (_tabStripScrollLeft) strip.scrollLeft = _tabStripScrollLeft;
+  }
+
   /* ── F-19 / ISS-005: build one folder's nested tree section ── */
   // Delegates the tree build + collapse logic to the pure window.TVTree module
   // (js/tv-tree.js) so it stays unit-testable; this function only renders the
@@ -995,7 +1410,39 @@
   // treeIndent() above. DR-108 a11y attributes (role=option, aria-selected,
   // data-sidebar-item, id) go on every row so the sidebar keyboard cursor can
   // target tree items.
-  function buildFolderSection(tree) {
+  /* ── C-30: folder-header disambiguation ────────────────────── */
+  // Two projects each containing a `docs` folder rendered two identical
+  // headers, which defeats the point of the SBH hierarchy work. Prefix the
+  // parent segment ONLY on an actual collision — SBH-02 rule 4 retired the
+  // blanket breadcrumb affix, so this must stay the exception, not the rule.
+  function headerDupeSet(paths) {
+    var seen = {}, dup = {};
+    (paths || []).forEach(function (p) {
+      var b = pathBasename(p);
+      if (seen[b]) dup[b] = true; else seen[b] = true;
+    });
+    return dup;
+  }
+
+  // Escaped header label, with the muted parent segment appended on collision.
+  function headerLabelHtml(path, dupes) {
+    var base = pathBasename(path);
+    if (!dupes || !dupes[base]) return esc(base);
+    var parent = parentFolderName(path);
+    if (!parent) return esc(base);
+    return esc(base) + '<span class="tv-hdr-parent"> · ' + esc(parent) + '</span>';
+  }
+
+  // C-28: the "no markdown files" placeholder, indented to the depth its
+  // missing children would have had. data-tv-depth lets applyTreeDepths give
+  // it a real indent (css-polish's static 24 px fallback assumed depth 0, so a
+  // nested placeholder sat under the wrong folder).
+  function treeEmptyRow(depth) {
+    return '<div class="tv-tree-empty" data-tv-depth="' + depth +
+      '" data-tv-kind="file">No markdown files</div>';
+  }
+
+  function buildFolderSection(tree, dupes) {
     var icons = window.TV_ICONS || {};
     var TVTree = window.TVTree;
     if (!TVTree || !tree || !tree.path) return '';
@@ -1024,7 +1471,7 @@
         ' data-folder-ctx-target="' + esc(head.path) + '">' +
         '<span class="tv-chev' + (head.collapsed ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
         '<span class="ic">' + (icons.folder || '') + '</span>' +
-        '<span class="fname" title="' + esc(head.path) + '">' + esc(pathBasename(head.path)) + '</span>' +
+        '<span class="fname" title="' + esc(head.path) + '">' + headerLabelHtml(head.path, dupes) + '</span>' +
         '<button class="folder-x" data-folder-close="' + esc(head.path) + '" title="Close folder" type="button">' +
           (icons.close || '') +
         '</button>' +
@@ -1038,22 +1485,61 @@
       // path so several open trees each keep their own offset across renders.
       html += '<div class="tv-folder-body' + (capped ? ' capped' : '') + '"' +
         ' data-folder-body="' + esc(head.path) + '">';
-      bodyNodes.forEach(function (n) {
-        html += (n.kind === 'folder')
-          ? buildTreeFolderRow(n)
-          : buildTreeFileRow(n);
+      bodyNodes.forEach(function (n, i) {
+        if (n.kind === 'folder') {
+          html += buildTreeFolderRow(n);
+          // C-28: an EXPANDED subfolder with nothing under it used to render
+          // zero rows and no message — the A4 placeholder only ever fired for
+          // an empty root, so expanding an empty subfolder looked broken.
+          // buildTreeNodes emits a flat depth-annotated list, so "has no
+          // children" is "the next node is not deeper than me".
+          if (!n.collapsed) {
+            var next = bodyNodes[i + 1];
+            if (!next || next.depth <= n.depth) {
+              html += treeEmptyRow(n.depth + 1);
+            }
+          }
+        } else {
+          html += buildTreeFileRow(n);
+        }
       });
       // A4: empty-folder placeholder. A muted, NON-interactive row (no
       // role=option / data-sidebar-item / id) so the DR-108 keyboard cursor
       // skips it. Shown only when the expanded tree has no files/subfolders.
       if (bodyNodes.length === 0) {
-        html += '<div class="tv-tree-empty">No markdown files</div>';
+        html += treeEmptyRow(1);
       }
-      // B2: truncation indicator. The native scanner caps how many entries it
-      // visits; when it dropped any matching item it sets tree.truncated. Render
-      // a muted, NON-interactive footer row (cursor skips it, same as A4).
+      // C-29: the native scanner caps how many entries it visits. "Some items
+      // not shown" told the user neither how many were hidden nor how to see
+      // them. Now it names the count (tree.skipped, added to DirTree by the
+      // native side) and re-scans uncapped on click. Unlike the two rows above
+      // this one IS interactive, so it takes part in the DR-108 keyboard
+      // cursor — a mouse-only control would repeat the C-32 defect this pass
+      // is fixing.
       if (tree.truncated) {
-        html += '<div class="tv-tree-truncated">Some items not shown</div>';
+        var moreKey = 'more:' + head.path;
+        var loading = !!(state.folderMoreLoading && state.folderMoreLoading[head.path]);
+        // P1-1: tree.skippedExact === false means the scan stopped blind
+        // (e.g. the max_subfolders cap) — the count is a lower bound, so the
+        // label must say "N+" rather than a number the walk never verified.
+        var moreLabel = loading
+          ? 'Loading…'
+          : (typeof tree.skipped === 'number' && tree.skipped > 0
+              ? 'Show ' + tree.skipped + (tree.skippedExact === false ? '+' : '') +
+                ' more ' + (tree.skipped === 1 && tree.skippedExact !== false ? 'file' : 'files')
+              : 'Show all files');
+        html += (
+          '<div class="tv-tree-more' + (loading ? ' loading' : '') + '"' +
+            ' id="' + sbItemId(moreKey) + '"' +
+            ' role="option"' +
+            ' aria-selected="false"' +
+            ' data-sidebar-item="' + esc(moreKey) + '"' +
+            ' data-tree-more="' + esc(head.path) + '"' +
+            (loading ? ' aria-busy="true"' : '') +
+            ' data-tv-depth="1" data-tv-kind="file">' +
+            esc(moreLabel) +
+          '</div>'
+        );
       }
       html += '</div>';
     }
@@ -1109,7 +1595,10 @@
     if (isActive) cls += ' active';
     else if (isOpen) cls += ' is-open';
 
-    var titleAttr = isOpen ? 'title="' + esc(fileName + ' · open') + '"' : '';
+    // C-05: every tree file row carries name (+ the DR-34 "open" cue) over its
+    // full path. Previously only already-open rows had a title at all.
+    var titleAttr = 'title="' +
+      esc(labelTitle(fileName + (isOpen ? ' · open' : ''), filePath)) + '"';
 
     // DR-108: tree file rows get role="option" + data-sidebar-item for cursor participation
     var tfrKey = filePath ? 'file:' + filePath : '';
@@ -1125,14 +1614,18 @@
         (openTab ? ' data-tree-tab-id="' + esc(openTab.id) + '"' : '') +
         (titleAttr ? ' ' + titleAttr : '') + '>' +
         '<span class="ic">' + (icons.doc || '') + '</span>' +
-        '<span class="tname">' + esc(fileName) + '</span>' +
+        '<span class="tname">' + labelHtml(fileName) + '</span>' +
         (isLive ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
       '</div>'
     );
   }
 
   /* ── F-22 / U-06: shortcut overlay ─────────────────────────── */
-  // Canonical 17-entry list from the design's SHORTCUTS array (DR-23).
+  // Canonical list from the design's SHORTCUTS array (DR-23), plus the two
+  // shortcuts C-18 found missing: ⌘P (bound in the router and in the palette
+  // but listed nowhere) and ⌘G / ⇧⌘G. DR-17's row cap was raised from 18 to 20
+  // by the user on 2026-08-21 to make room — see the DR-17 amendment note in
+  // app/feature-gaps/waad-grounded-requirements.md. 19 rows → a 10/9 split.
   var SHORTCUTS = [
     { keys: ['⌘K'], action: 'Command palette' },
     { keys: ['⌘O'], action: 'Open file' },
@@ -1143,9 +1636,11 @@
     { keys: ['⌘[', '⌘]'], action: 'Previous / next tab' },
     { keys: ['⌘⇧F'], action: 'Search all tabs' },
     { keys: ['⌘F'], action: 'Find in file' },
+    { keys: ['⌘G', '⇧⌘G'], action: 'Find next / previous' },
     { keys: ['⌘⌥O'], action: 'Outline' },
     { keys: ['⌘E'], action: 'Toggle edit' },
     { keys: ['⌘S'], action: 'Save' },
+    { keys: ['⌘P'], action: 'Print / Export PDF' },
     { keys: ['⌘=', '⌘−'], action: 'Larger / smaller text' },
     { keys: ['⌘0'], action: 'Reset text size' },
     { keys: ['⌘B'], action: 'Toggle sidebar' },
@@ -1221,7 +1716,16 @@
     _scEl = null;
   }
 
+  var _SC_BARE_MODIFIERS = {
+    Shift: 1, Meta: 1, Alt: 1, Control: 1, CapsLock: 1, Fn: 1, FnLock: 1,
+    AltGraph: 1, OS: 1, Hyper: 1, Super: 1, NumLock: 1, ScrollLock: 1
+  };
+
   function _scKeyHandler(e) {
+    // C-18: DR-18 closes the sheet on any keypress — but holding ⌘ or ⇧ while
+    // READING the sheet that teaches ⌘ and ⇧ dismissed it instantly. A bare
+    // modifier is not a keypress in the sense DR-18 means.
+    if (_SC_BARE_MODIFIERS[e.key]) return;
     e.preventDefault();
     closeShortcuts();
   }
@@ -1686,17 +2190,28 @@
     var icons = window.TV_ICONS || {};
     var collapsed = !state.sidebarOpen;
 
-    // ── F-19: Folder tree sections (most-recently-opened first = reversed) ──
-    var folderSections = '';
-    var reversedFolders = state.openFolders.slice().reverse();
-    reversedFolders.forEach(function (tree) {
-      folderSections += buildFolderSection(tree);
-    });
-
     // ── Legacy open-tab list (tabs NOT associated with any open folder) ──
     // These are tabs opened via ⌘O without a folder context.
     var folderPaths = {};
     state.openFolders.forEach(function (f) { folderPaths[f.path] = true; });
+
+    // C-30: collision set across BOTH header kinds — open folder roots and the
+    // grouped-by-path headers below them. Computed once, before either is
+    // rendered, so a `docs` root and a `docs` group also disambiguate.
+    var headerPaths = state.openFolders.map(function (f) { return f.path; });
+    state.tabs.forEach(function (t) {
+      if (t.path && !folderPaths[t.path] && headerPaths.indexOf(t.path) === -1) {
+        headerPaths.push(t.path);
+      }
+    });
+    var headerDupes = headerDupeSet(headerPaths);
+
+    // ── F-19: Folder tree sections (most-recently-opened first = reversed) ──
+    var folderSections = '';
+    var reversedFolders = state.openFolders.slice().reverse();
+    reversedFolders.forEach(function (tree) {
+      folderSections += buildFolderSection(tree, headerDupes);
+    });
 
     // Exact set of every file path that some open folder tree renders. A tab
     // already shown inside a tree (e.g. a SUBFOLDER file opened by clicking it,
@@ -1760,21 +2275,22 @@
           ' aria-label="Close ' + esc(tabName) + '"' +
           ' type="button"' +
           ' tabindex="-1">' +
-          '&#x2715;' +
+          // C-32: the glyph is decoration; the button's aria-label is its name.
+          '<span aria-hidden="true">&#x2715;</span>' +
         '</button>'
       );
     }
 
     Object.keys(groups).forEach(function (path) {
-      var folderBasename = path.split('/').filter(Boolean).pop() || path;
       // SBH-02 (Fix 2, rule 4): NO breadcrumb affix on rows. The muted parent-
       // path suffix existed only to disambiguate the flat "More files" bucket;
       // that bucket is gone and nesting carries the location now. The full path
       // still resolves on hover via title=, so nothing is lost.
+      // C-30 narrows that to headers, and only on an actual name collision.
       rows += (
         '<div class="tv-tree-row folder" role="group" aria-label="' + esc(path) + '" title="' + esc(path) + '">' +
           ic('folder') +
-          '<span class="folder-name">' + esc(folderBasename) + '</span>' +
+          '<span class="folder-name">' + headerLabelHtml(path, headerDupes) + '</span>' +
         '</div>'
       );
       groups[path].forEach(function (t) {
@@ -1785,10 +2301,16 @@
             ' id="' + sbOptId(t.id) + '"' +
             ' role="option"' +
             ' aria-selected="' + (isActive ? 'true' : 'false') + '"' +
+            // C-32: name the option explicitly. Without this the row's
+            // accessible name was computed from its contents and came out as
+            // "schema.md✕" — the close glyph read as part of the filename.
+            ' aria-label="' + esc(t.name) + '"' +
+            // C-05: name over full path (the row label truncates in the middle).
+            ' title="' + esc(labelTitle(t.name, t.nativePath || t.path)) + '"' +
             ' tabindex="-1"' +
             ' data-sidebar-tab="' + esc(t.id) + '">' +
             ic('doc') +
-            '<span>' + esc(t.name) + '</span>' +
+            '<span>' + labelHtml(t.name) + '</span>' +
             (t.liveActive ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
             sbCloseBtn(t.id, t.name) +
           '</div>'
@@ -1809,10 +2331,16 @@
             ' id="' + sbOptId(t.id) + '"' +
             ' role="option"' +
             ' aria-selected="' + (isActive ? 'true' : 'false') + '"' +
+            // C-32: name the option explicitly. Without this the row's
+            // accessible name was computed from its contents and came out as
+            // "schema.md✕" — the close glyph read as part of the filename.
+            ' aria-label="' + esc(t.name) + '"' +
+            // C-05: name over full path (the row label truncates in the middle).
+            ' title="' + esc(labelTitle(t.name, t.nativePath || t.path)) + '"' +
             ' tabindex="-1"' +
             ' data-sidebar-tab="' + esc(t.id) + '">' +
             ic('doc') +
-            '<span>' + esc(t.name) + '</span>' +
+            '<span>' + labelHtml(t.name) + '</span>' +
             (t.liveActive ? '<span class="mini-bolt">' + (icons.bolt || '') + '</span>' : '') +
             sbCloseBtn(t.id, t.name) +
           '</div>'
@@ -1867,6 +2395,36 @@
       });
     }
 
+    // C-16: on a genuinely first run the sidebar is ~950 px of empty grey under
+    // FILES. Say what it is for and give it its one action, rather than leaving
+    // the panel to read as broken.
+    var sidePlaceholder = '';
+    if (!folderSections && !rows) {
+      sidePlaceholder = (
+        '<div class="tv-side-empty">' +
+          '<span class="tv-side-empty-ic">' + (icons.folder || '') + '</span>' +
+          '<span class="tv-side-empty-title">No folder open</span>' +
+          '<button class="tv-side-empty-btn" data-open-folder type="button">' +
+            'Open folder… <span class="kbd">⌘⇧O</span>' +
+          '</button>' +
+        '</div>'
+      );
+    }
+
+    // C-16: "Find in document" cannot act without a document. Hiding it beats
+    // disabling it — a dead control in a 950 px empty panel is the loudest
+    // thing on the first screen.
+    var findBox = !state.tabs.length ? '' : (
+      '<div class="tv-search">' +
+        '<div class="tv-search-box" data-open-find' +
+          ' title="Find in document (⌘F)" aria-label="Find in document (⌘F)" role="button" tabindex="0">' +
+          ic('search') +
+          '<span>Find in document</span>' +
+          '<span class="kbd">⌘F</span>' +
+        '</div>' +
+      '</div>'
+    );
+
     var sidebarCls = 'tv-sidebar' + (collapsed ? ' collapsed' : '');
     return (
       '<aside class="' + sidebarCls + '">' +
@@ -1888,15 +2446,10 @@
           folderSections +
           // Legacy open-tabs / recent rows below
           rows +
+          // C-16: shown only when the two above produced nothing at all.
+          sidePlaceholder +
         '</div>' +
-        '<div class="tv-search">' +
-          '<div class="tv-search-box" data-open-find' +
-            ' title="Find in document (⌘F)" aria-label="Find in document (⌘F)" role="button" tabindex="0">' +
-            ic('search') +
-            '<span>Find in document</span>' +
-            '<span class="kbd">⌘F</span>' +
-          '</div>' +
-        '</div>' +
+        findBox +
         // BUG-4: drag handle on the sidebar's right edge.
       '</aside>'
     );
@@ -1943,18 +2496,32 @@
         });
         recentHtml += '</div>';
       }
+      // C-16: the first screen taught exactly one way in (⌘O) and orphaned the
+      // trust line 250 px below the card. The stack wrapper puts the card, the
+      // recent list and the trust line in one column — before this the recent
+      // list rendered BESIDE the card, because .tv-empty is a row flex and
+      // .tv-empty-recent's margin-top assumed it was not.
       return (
         '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
           '<div class="tv-empty">' +
-            '<div class="tv-dropzone">' +
-              '<span class="dz-ic">' + ((window.TV_ICONS || {}).tray || '') + '</span>' +
-              '<span class="dz-title">Drop .md files here</span>' +
-              '<span class="dz-or">— or —</span>' +
-              '<span class="dz-cmd"><span class="kbd">⌘O</span> to open files</span>' +
+            '<div class="tv-empty-stack">' +
+              '<div class="tv-dropzone">' +
+                '<span class="dz-ic">' + ((window.TV_ICONS || {}).tray || '') + '</span>' +
+                '<span class="dz-title">Drop .md files here</span>' +
+                '<span class="dz-or">or</span>' +
+                '<span class="dz-cmd"><span class="kbd">⌘O</span> to open files</span>' +
+                // The quiet second line: the sidebar's whole reason to exist
+                // (⌘⇧O) was never mentioned anywhere on this screen.
+                '<span class="dz-more">' +
+                  '<span class="dz-more-item"><span class="kbd">⌘⇧O</span> open folder</span>' +
+                  '<span class="dz-more-item"><span class="kbd">⌘K</span> commands</span>' +
+                  '<span class="dz-more-item"><span class="kbd">?</span> shortcuts</span>' +
+                '</span>' +
+              '</div>' +
+              recentHtml +
+              '<div class="tv-empty-hint">No file open · nothing is imported, nothing is synced</div>' +
             '</div>' +
-            recentHtml +
           '</div>' +
-          '<div class="tv-empty-hint">No file open · nothing is imported, nothing is synced</div>' +
         '</div>'
       );
     }
@@ -1992,9 +2559,16 @@
           }).join('') +
         '</div>';
       }
+      // C-33: Esc now DISCARDS, so the label must say so. On a clean document
+      // there is nothing to discard and Esc is simply the way out, so it reads
+      // "Done" — a button that threatens to throw away work you have not done
+      // is its own kind of lie.
+      var escLabel = tab.dirty ? 'Discard' : 'Done';
       var toolbar = (
         '<div class="tv-edit-toolbar">' +
-          '<button class="tv-edit-btn" type="button" data-edit-esc><span class="kbd">esc</span> Reading</button>' +
+          '<button class="tv-edit-btn' + (tab.dirty ? ' danger' : '') + '" type="button" data-edit-esc>' +
+            '<span class="kbd">esc</span> ' + escLabel +
+          '</button>' +
           '<button class="tv-edit-btn primary" type="button" data-edit-save><span class="kbd">⌘S</span> Save</button>' +
           '<span class="tv-edit-meta">' + wordCount + ' words</span>' +
         '</div>'
@@ -2014,14 +2588,24 @@
     // Reading mode
 
     // F-21: empty .md file → explicit "This file is empty." message, no spinner.
+    // C-27: this branch used to return BEFORE the pencil and the ⌘E hint were
+    // attached, so the one state where you most want to start typing was the
+    // one state offering no way in. Keep both, and say so in the message.
+    // F-21's specified string survives as the prefix.
     if (!tab.source || !tab.source.trim()) {
+      var emptyPencilIc = (window.TV_ICONS && window.TV_ICONS.pencil) ? window.TV_ICONS.pencil : '';
       return (
         '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
           '<div class="tv-scroll" data-scroll tabindex="0">' +
             '<div class="tv-content tv-content--readable">' +
-              '<div class="tv-empty-doc">This file is empty.</div>' +
+              '<button class="tv-edit-pencil" data-edit-pencil' +
+                ' title="Edit (⌘E)" aria-label="Edit document (⌘E)" type="button">' +
+                emptyPencilIc +
+              '</button>' +
+              '<div class="tv-empty-doc">This file is empty. ⌘E to start writing.</div>' +
             '</div>' +
           '</div>' +
+          (_showEditHint() ? '<div class="tv-edit-hint">⌘E to edit</div>' : '') +
         '</div>'
       );
     }
@@ -2051,8 +2635,9 @@
         pencilIc +
       '</button>'
     );
-    // UX-21: status bar hint — "⌘E to edit" shown in reading mode
-    var editHint = '<div class="tv-edit-hint">⌘E to edit</div>';
+    // UX-21: status bar hint — "⌘E to edit" shown in reading mode.
+    // C-19: only for the first few sessions; after that the pencil carries it.
+    var editHint = _showEditHint() ? '<div class="tv-edit-hint">⌘E to edit</div>' : '';
     return (
       '<div class="tv-viewer" id="tv-viewer-panel" role="tabpanel">' +
         '<div class="tv-scroll" data-scroll tabindex="0">' +
@@ -2102,6 +2687,11 @@
               '<span class="tv-error-badge" aria-hidden="true">&#9888;</span>' +
               '<div class="tv-error-title">' + title + '</div>' +
               '<div class="tv-error-name">' + name + '</div>' +
+              // C-39: "Locate file…" asked the user to find something without
+              // saying where it had been. Muted monospace, user-selectable so
+              // the path can be copied. Screen-only: tv-print.css keeps full
+              // paths out of shared PDFs (U-15's privacy rationale).
+              (path ? '<div class="tv-error-path">' + esc(path) + '</div>' : '') +
               '<div class="tv-error-detail">' + detail + '</div>' +
               actionBtn +
             '</div>' +
@@ -2323,20 +2913,13 @@
   }
 
   function buildEmpty() {
-    var icons = window.TV_ICONS || {};
-    // Bug A: same drag-region treatment as buildTitlebar()
     return (
-      '<div class="tv-titlebar" data-tauri-drag-region>' +
-        '<div class="tv-traffic">' +
-          '<span class="tv-light c"></span>' +
-          '<span class="tv-light m"></span>' +
-          '<span class="tv-light x"></span>' +
-        '</div>' +
-        '<div class="tv-wintitle" data-tauri-drag-region>' +
-          '<span class="tv-doc-ic">' + (icons.doc || '') + '</span>' +
-          'tiny-viewer' +
-        '</div>' +
-      '</div>' +
+      // C-16: the empty state hand-rolled its own titlebar, which is why the
+      // theme toggle vanished on first launch and reappeared once a document
+      // was open. buildTitlebar() already renders 'Galley' when there is no
+      // active tab, so share it and the chrome inventory stops depending on
+      // whether you happen to have a file open.
+      buildTitlebar() +
       // Reuse the standard tabbar so the sidebar toggle is present in the empty
       // state too, and render the sidebar in the body so it can reveal the Recent
       // list (otherwise the empty state had no path to it but the ⌘O launcher).
@@ -2369,9 +2952,22 @@
       return;
     }
 
+    // C-33: keep tab.savedSource honest. Any path that changes tab.source
+    // WITHOUT marking the tab dirty is by definition writing DISK content —
+    // the live-watch update (tv-live.js / tv-native.js), a reload, a session
+    // restore. Reconciling here means those files do not each have to remember
+    // a second field, and the invariant is stated in exactly one place:
+    //   not dirty  ⇒  source IS what is on disk.
+    for (var _si = 0; _si < state.tabs.length; _si++) {
+      var _st = state.tabs[_si];
+      if (!_st.dirty && _st.savedSource !== _st.source) _st.savedSource = _st.source;
+    }
+
     // JANK-01: read the sidebar's live scroll offset before the DOM that owns
     // it is thrown away.
     captureSidebarScroll(root);
+    // C-04: same for the tab strip's horizontal offset.
+    captureTabStripScroll(root);
 
     // S-02/S-08: reset overlay state before replacing DOM
     // (overlay elements are about to be detached; reset their _open flags
@@ -2382,6 +2978,9 @@
     if (window.TVSearch && typeof TVSearch.close === 'function') {
       TVSearch.close();
     }
+    // C-06: the overflow list is appended to .tv, which this render replaces —
+    // detach it (and its document-level Esc listener) instead of orphaning it.
+    if (_tabOverflowEl) closeTabOverflow();
     // UF-06: Preserve find state across non-destructive renders (theme, sidebar, etc.).
     // Capture the query and index so we can re-run the find after DOM replacement.
     // Tab switches still close the bar (content changes), handled via activateTab.
@@ -2422,7 +3021,10 @@
         ntpOverlay;
     }
 
-    root.innerHTML = '<div class="' + rootCls + '" style="--tv-md-font:' + state.fontSize + 'px">' + html + '</div>';
+    // C-20: --tv-edit-font rides along with --tv-md-font, otherwise setFontSize's
+    // CSSOM write is thrown away by the next repaint and the editor snaps back.
+    root.innerHTML = '<div class="' + rootCls + '" style="--tv-md-font:' + state.fontSize +
+      'px;--tv-edit-font:' + editFontFor(state.fontSize) + 'px">' + html + '</div>';
 
     // BUG-4: Apply sidebar width CSS var to the .tv root so the sidebar can read it.
     // dev2's CSS: .tv-sidebar { width: var(--tv-sidebar-w, 224px) }
@@ -2439,6 +3041,13 @@
     // applyTreeDepths so row padding (and therefore any wrap-driven height) is
     // already final and scrollTop is measured against the final scrollHeight.
     restoreSidebarScroll(root);
+
+    // C-04: put the tab strip back where the user left it, for the same reason
+    // and at the same moment. Runs after the --tv-sidebar-w write above, so the
+    // strip's clientWidth is already final. Everything downstream — the
+    // active-pill flush, updateTabStripScroll's edge fades — then measures the
+    // position the user actually has, not a fresh 0.
+    restoreTabStripScroll(root);
 
     // Restore scroll position (DR-03)
     var newScroll = root.querySelector('[data-scroll]');
@@ -2562,8 +3171,35 @@
     if (_pendingTabScrollId) {
       var pillEl = root.querySelector('[data-tab-id="' + _pendingTabScrollId + '"]');
       _pendingTabScrollId = null;
-      if (pillEl) pillEl.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+      // C-04 (round 2): scrollIntoView nudges ancestors and can shift the strip
+      // even when the pill is ALREADY fully visible. Move scrollLeft ourselves,
+      // and only when the pill is actually out of view, so selecting a visible
+      // tab is a pure repaint with no layout movement.
+      var stripEl = pillEl && pillEl.closest ? pillEl.closest('.tv-tab-strip') : null;
+      if (pillEl && stripEl) {
+        var PAD = 8;
+        var pillL = pillEl.offsetLeft;
+        var pillR = pillL + pillEl.offsetWidth;
+        var viewL = stripEl.scrollLeft;
+        var viewR = viewL + stripEl.clientWidth;
+        if (pillL < viewL) {
+          stripEl.scrollLeft = Math.max(0, pillL - PAD);
+        } else if (pillR > viewR) {
+          stripEl.scrollLeft = pillR - stripEl.clientWidth + PAD;
+        }
+      }
     }
+
+    // C-04/C-06: publish the strip's overflow/scroll state. Last, because the
+    // restore and the pill flush above both move scrollLeft. Its own
+    // syncTabOverflowBtn call is by now an idempotent re-check — the button was
+    // already settled in restoreTabStripScroll, deliberately, before anything
+    // measured the strip.
+    updateTabStripScroll(root);
+
+    // C-38: the Window menu, ⌘-Tab switcher and Mission Control read
+    // document.title. Follow the NSDocument convention (name, then Edited).
+    _syncTitles();
   }
 
   // UX-10 / DR-108: Renders the sidebar keyboard cursor highlight using .kbd-cursor class
@@ -2674,11 +3310,26 @@
       inputEl.focus();
       inputEl.addEventListener('input', function () {
         _findQuery = inputEl.value;
-        _runFind(_findQuery);
+        // C-14: coalesce keystrokes. _runFind itself stays synchronous — the
+        // render() restore path calls it directly and reads _findMatches right
+        // after, so the debounce lives here and nowhere else.
+        if (_findDebounce) clearTimeout(_findDebounce);
+        _findDebounce = setTimeout(function () {
+          _findDebounce = null;
+          if (_findOpen) _runFind(_findQuery);
+        }, _FIND_DEBOUNCE_MS);
       });
       inputEl.addEventListener('keydown', function (e) {
         if (e.key === 'Enter') {
           e.preventDefault();
+          // C-14: Enter must act on what the user just typed, not on the
+          // previous debounce window.
+          if (_findDebounce) {
+            clearTimeout(_findDebounce);
+            _findDebounce = null;
+            _runFind(_findQuery);
+            return;
+          }
           if (e.shiftKey) {
             _findStep(-1);
           } else {
@@ -2703,6 +3354,8 @@
     if (!_findOpen) return;
     _findOpen = false;
     _findQuery = '';
+    // C-14: a pending debounce must not fire against a closed bar.
+    if (_findDebounce) { clearTimeout(_findDebounce); _findDebounce = null; }
     // Remove marks from DOM
     _clearFindMarks();
     if (_findBarEl && _findBarEl.parentNode) {
@@ -2710,33 +3363,144 @@
     }
     _findBarEl = null;
     _findMatches = [];
+    _findNodes = [];
+    _findNodeIdxs = [];
     _findIndex = 0;
   }
 
-  function _clearFindMarks() {
-    var mdEl = document.querySelector('.md');
-    if (!mdEl) return;
-    // Unwrap all <mark data-find> spans
-    var marks = mdEl.querySelectorAll('mark[data-find]');
-    for (var i = marks.length - 1; i >= 0; i--) {
-      var mark = marks[i];
-      var parent = mark.parentNode;
-      if (parent) {
-        var text = document.createTextNode(mark.textContent);
-        parent.replaceChild(text, mark);
-        parent.normalize();
-      }
+  /* ── C-14: find without freezing the app ─────────────────────
+     The old implementation wrapped EVERY hit in a <mark> on every keystroke —
+     60 000 element insertions for one character on a 20 000-block document,
+     then unwrapped them all on the next keystroke. The expensive part is the
+     DOM mutation and relayout, not the text walk (a TreeWalker over 94 000
+     text nodes measures ~12 ms), so the cap belongs on MARKS, not on matching.
+
+     _findMatches therefore stops being a list of DOM nodes and becomes the
+     authoritative list of match POSITIONS — { n: index into _findNodes, s:
+     offset within that node }. The count and _findStep's modulo arithmetic run
+     over that full list, so neither can ever diverge from what the user is
+     told, which is the trap the skeptics flagged. Only the matches inside a
+     window around the current index are actually wrapped, and stepping
+     re-marks as it goes. */
+  var _FIND_MARK_WINDOW = 150; // matches marked either side of the current one
+  // P1-5: was 2 — a single character (CJK, a lone symbol, `]`/`}` in code)
+  // is a legitimate ⌘F query, and it made the find bar look dead with no
+  // feedback while tv-search's cross-tab panel searched from 2 chars anyway.
+  // _FIND_MARK_WINDOW above already bounds the marking cost regardless of
+  // how many matches a short query produces (C-14's own argument for 150).
+  var _FIND_MIN_QUERY = 1;     // below this we do not search at all
+  var _FIND_DEBOUNCE_MS = 120;
+  var _FIND_NODE_MARK_CAP = 1000; // per-node guard against one giant text node
+  var _findNodes = [];         // original text nodes, DOM order; index = match.n
+  var _findNodeIdxs = [];      // n → [matchIdx,…] every match living in that node
+  var _findMarked = {};        // n → { orig:String, nodes:[Node], idxs:[…] }
+  var _findMarkEls = [];       // matchIdx → <mark>, sparse (only marked ones)
+  var _findLen = 0;            // query length, for slicing
+  var _findDebounce = null;
+
+  function _sameIdxs(a, b) {
+    if (!a || !b || a.length !== b.length) return false;
+    for (var i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+    return true;
+  }
+
+  // Put node `n` back the way we found it and re-seed _findNodes[n] with the
+  // fresh text node, so the index → live-node mapping survives mark/unmark
+  // cycles (a normalize()-based unwrap would leave the mapping dangling).
+  function _unmarkNode(n) {
+    var rec = _findMarked[n];
+    if (!rec) return;
+    delete _findMarked[n];
+    // Drop the element refs too — leaving them behind would let
+    // _highlightFindMatch toggle .current on a detached <mark>.
+    for (var j = 0; j < rec.idxs.length; j++) _findMarkEls[rec.idxs[j]] = null;
+    var first = rec.nodes[0];
+    var parent = first && first.parentNode;
+    if (!parent) { _findNodes[n] = null; return; }
+    var fresh = document.createTextNode(rec.orig);
+    parent.replaceChild(fresh, first);
+    for (var i = 1; i < rec.nodes.length; i++) {
+      if (rec.nodes[i].parentNode) rec.nodes[i].parentNode.removeChild(rec.nodes[i]);
     }
+    _findNodes[n] = fresh;
+  }
+
+  // Wrap the matches listed in `idxs` (all belonging to node `n`) in <mark>.
+  function _markNode(n, idxs) {
+    if (_findMarked[n] || !idxs.length) return;
+    var node = _findNodes[n];
+    if (!node || !node.parentNode) return;
+    var text = node.textContent;
+    var frag = document.createDocumentFragment();
+    var inserted = [];
+    var cur = 0;
+    for (var i = 0; i < idxs.length; i++) {
+      var m = _findMatches[idxs[i]];
+      if (m.s > cur) inserted.push(frag.appendChild(document.createTextNode(text.slice(cur, m.s))));
+      var mk = document.createElement('mark');
+      mk.setAttribute('data-find', '');
+      mk.textContent = text.slice(m.s, m.s + _findLen);
+      inserted.push(frag.appendChild(mk));
+      _findMarkEls[idxs[i]] = mk;
+      cur = m.s + _findLen;
+    }
+    if (cur < text.length) inserted.push(frag.appendChild(document.createTextNode(text.slice(cur))));
+    node.parentNode.replaceChild(frag, node);
+    _findMarked[n] = { orig: text, nodes: inserted, idxs: idxs };
+  }
+
+  // Make sure every match within ±_FIND_MARK_WINDOW of `center` is wrapped and
+  // nothing outside it is. The window is SNAPPED TO NODE BOUNDARIES: a text
+  // node touched by the window gets ALL of its matches wrapped. Marking a node
+  // only partially was the first version of this and it was wrong — as the
+  // window slid, a node entered with just the one match the boundary happened
+  // to cut, so the CURRENT match frequently had no <mark> at all and neither
+  // .current nor scrollIntoView could find it.
+  function _markWindow(center) {
+    if (!_findMatches.length) return;
+    var lo = Math.max(0, center - _FIND_MARK_WINDOW);
+    var hi = Math.min(_findMatches.length - 1, center + _FIND_MARK_WINDOW);
+    var want = {};
+    for (var i = lo; i <= hi; i++) {
+      var n = _findMatches[i].n;
+      if (want[n]) continue;
+      var all = _findNodeIdxs[n];
+      // Guard: one pathological text node holding thousands of hits would
+      // undo the whole point of the cap. Fall back to the in-window slice —
+      // `center` is inside [lo,hi], so the current match is still covered.
+      want[n] = (all.length <= _FIND_NODE_MARK_CAP)
+        ? all
+        : all.filter(function (ix) { return ix >= lo && ix <= hi; });
+    }
+    // Drop anything that fell out of the window (or whose marked set changed)
+    // first, so the DOM never holds more than one window's worth of marks.
+    Object.keys(_findMarked).forEach(function (k) {
+      if (!want[k] || !_sameIdxs(_findMarked[k].idxs, want[k])) _unmarkNode(k);
+    });
+    Object.keys(want).forEach(function (k) {
+      _markNode(k, want[k]);
+    });
+  }
+
+  function _clearFindMarks() {
+    Object.keys(_findMarked).forEach(_unmarkNode);
+    _findMarked = {};
+    _findMarkEls = [];
   }
 
   function _runFind(query) {
     _clearFindMarks();
     _findMatches = [];
+    _findNodes = [];
+    _findNodeIdxs = [];
     _findIndex = 0;
 
     var countEl = _findBarEl && _findBarEl.querySelector('.tv-find-count');
 
-    if (!query) {
+    // C-14: a single character matches so much of any document that marking it
+    // is pure cost with no signal. Say nothing rather than "No results" — we
+    // have not searched, so claiming zero hits would be a lie.
+    if (!query || query.length < _FIND_MIN_QUERY) {
       if (countEl) countEl.textContent = '';
       return;
     }
@@ -2744,7 +3508,7 @@
     var mdEl = document.querySelector('.md');
     if (!mdEl) return;
 
-    // Walk text nodes and insert <mark> elements
+    _findLen = query.length;
     var lq = query.toLowerCase();
     var walker = document.createTreeWalker(mdEl, NodeFilter.SHOW_TEXT, {
       acceptNode: function (node) {
@@ -2757,50 +3521,25 @@
       }
     }, false);
 
-    var textNodes = [];
+    // One pass: record every match POSITION in DOM order. No DOM writes here,
+    // so the cost is the walk (cheap) and nothing else.
     var node;
     while ((node = walker.nextNode())) {
-      textNodes.push(node);
-    }
-
-    // Process in reverse to avoid invalidating ranges
-    for (var i = textNodes.length - 1; i >= 0; i--) {
-      var tn = textNodes[i];
-      var text = tn.textContent;
+      var text = node.textContent;
+      if (!text) continue;
       var lText = text.toLowerCase();
-      var lastIdx = 0;
-      var positions = [];
-      var pos;
-      while ((pos = lText.indexOf(lq, lastIdx)) !== -1) {
-        positions.push(pos);
-        lastIdx = pos + lq.length;
+      var pos = lText.indexOf(lq);
+      if (pos === -1) continue;
+      var n = _findNodes.length;
+      _findNodes.push(node);
+      var own = [];
+      while (pos !== -1) {
+        own.push(_findMatches.length);
+        _findMatches.push({ n: n, s: pos });
+        pos = lText.indexOf(lq, pos + lq.length);
       }
-      if (!positions.length) continue;
-
-      // Build a fragment replacing matches with <mark>
-      var frag = document.createDocumentFragment();
-      var cur = 0;
-      for (var pi = 0; pi < positions.length; pi++) {
-        var p = positions[pi];
-        if (p > cur) {
-          frag.appendChild(document.createTextNode(text.slice(cur, p)));
-        }
-        var mark = document.createElement('mark');
-        mark.setAttribute('data-find', '');
-        mark.textContent = text.slice(p, p + query.length);
-        frag.appendChild(mark);
-        cur = p + query.length;
-      }
-      if (cur < text.length) {
-        frag.appendChild(document.createTextNode(text.slice(cur)));
-      }
-      tn.parentNode.replaceChild(frag, tn);
+      _findNodeIdxs.push(own);
     }
-
-    // Collect all marks in DOM order
-    _findMatches = Array.prototype.slice.call(
-      document.querySelectorAll('.md mark[data-find]')
-    );
 
     if (_findMatches.length) {
       _findIndex = 0;
@@ -2808,11 +3547,9 @@
     }
 
     if (countEl) {
-      if (_findMatches.length) {
-        countEl.textContent = (_findIndex + 1) + ' / ' + _findMatches.length;
-      } else {
-        countEl.textContent = 'No results';
-      }
+      countEl.textContent = _findMatches.length
+        ? (_findIndex + 1) + ' / ' + _findMatches.length
+        : 'No results';
     }
   }
 
@@ -2825,12 +3562,18 @@
   }
 
   function _highlightFindMatch() {
-    _findMatches.forEach(function (m, i) {
-      m.classList.toggle('current', i === _findIndex);
-    });
-    var cur = _findMatches[_findIndex];
-    if (cur) {
-      cur.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    // Lazy marking: bring the current match (and its neighbourhood) into the
+    // DOM before trying to highlight it.
+    _markWindow(_findIndex);
+    for (var i = 0; i < _findMarkEls.length; i++) {
+      var el = _findMarkEls[i];
+      if (el && el.classList) el.classList.toggle('current', i === _findIndex);
+    }
+    var cur = _findMarkEls[_findIndex];
+    if (cur && cur.scrollIntoView) {
+      var reduce = window.matchMedia &&
+        window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      cur.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'center' });
     }
   }
 
@@ -3546,6 +4289,69 @@
       tabbarEl.addEventListener('pointercancel', _onTabPointerCancel);
     }
 
+    // C-32: the tab bar declared role="tablist" but arrow keys did nothing, so
+    // the ARIA contract it advertised was not implemented (WCAG 2.1.1 / ARIA
+    // APG). Arrows and Home/End move the roving tabindex AND activate, which is
+    // the APG's "automatic activation" pattern and matches what ⌘[ / ⌘] do.
+    // Delete closes the focused tab — the reason .tv-close can stay out of
+    // the Tab order. P2-3: Backspace was dropped — the ARIA APG lists Delete
+    // as the optional close key but does not include Backspace, and clicking
+    // a tab pill focuses it in WebKit, so a stray Backspace (e.g. typed while
+    // aiming for a text field) used to close the focused tab with no
+    // confirmation for a clean one.
+    if (tabbarEl) {
+      tabbarEl.addEventListener('keydown', function (e) {
+        var tabEl = e.target && e.target.closest && e.target.closest('[role="tab"][data-tab-id]');
+        if (!tabEl) return;
+        var ids = state.tabs.map(function (t) { return t.id; });
+        if (!ids.length) return;
+        var cur = ids.indexOf(tabEl.getAttribute('data-tab-id'));
+        if (cur === -1) return;
+        var k = e.key;
+        var next = -1;
+
+        if (k === 'ArrowRight') next = (cur + 1) % ids.length;
+        else if (k === 'ArrowLeft') next = (cur - 1 + ids.length) % ids.length;
+        else if (k === 'Home') next = 0;
+        else if (k === 'End') next = ids.length - 1;
+        else if (k === 'Enter' || k === ' ') {
+          e.preventDefault();
+          activateTab(ids[cur]);
+          return;
+        } else if (k === 'Delete') {
+          e.preventDefault();
+          closeTab(ids[cur]);
+          return;
+        } else {
+          return;
+        }
+
+        e.preventDefault();
+        activateTab(ids[next]);
+        announce(state.tabs[next] ? state.tabs[next].name : '');
+        // render() rebuilt the strip, so re-find the pill and move DOM focus
+        // with it. Under WKWebView with Full Keyboard Access off this focus()
+        // is a no-op — activation and aria-selected still carry the state,
+        // which is why activation is not deferred until focus lands.
+        requestAnimationFrame(function () {
+          var el = document.querySelector('[data-tab-id="' + ids[next] + '"]');
+          // C-04: preventScroll — focusing a pill lets the browser scroll the
+          // strip to it on its own terms, a frame AFTER render() restored the
+          // position and the flush decided whether the pill needed bringing
+          // into view. The flush owns positioning; focus only moves the ring.
+          if (el && el.focus) el.focus({ preventScroll: true });
+        });
+      });
+    }
+
+    // C-04: keep the strip's edge-fade state honest while the user scrolls it.
+    var stripEl = tvEl.querySelector('.tv-tab-strip');
+    if (stripEl) {
+      stripEl.addEventListener('scroll', function () {
+        updateTabStripScroll(tvEl);
+      }, { passive: true });
+    }
+
     // UX-11: keyboard activation for .tv-recent-row (role="button")
     tvEl.addEventListener('keydown', function (e) {
       if (e.key !== 'Enter' && e.key !== ' ') return;
@@ -3758,6 +4564,27 @@
         return;
       }
 
+      // C-29: "Show N more files" — re-scan this folder uncapped.
+      var moreRow = e.target.closest('[data-tree-more]');
+      if (moreRow) {
+        loadMoreFolder(moreRow.getAttribute('data-tree-more'));
+        return;
+      }
+
+      // C-16: the empty sidebar's "Open folder…" button (same path as ⌘⇧O).
+      if (e.target.closest('[data-open-folder]')) {
+        openFolder();
+        return;
+      }
+
+      // C-06: ⌄ — list every open tab when the strip has scrolled some away.
+      var tofBtn = e.target.closest('[data-tab-overflow]');
+      if (tofBtn) {
+        if (_tabOverflowEl) closeTabOverflow();
+        else openTabOverflow(tofBtn);
+        return;
+      }
+
       // New tab button — creates/activates the Untitled tab (browser-style ⌘T)
       if (e.target.closest('[data-newtab]')) {
         openUntitledTab();
@@ -3813,9 +4640,10 @@
         return;
       }
 
-      // Edit toolbar: exit edit
+      // Edit toolbar: exit edit — C-33: same path as Esc, so the button and
+      // the key can never mean different things.
       if (e.target.closest('[data-edit-esc]')) {
-        setMode('reading');
+        discardEdits();
         return;
       }
 
@@ -4077,6 +4905,25 @@
     return null;
   }
 
+  // C-02: the native shell asks JS whether quitting would drop unsaved work.
+  // Kept as a pair (count + names) so Rust can build a confirm sheet that
+  // actually names the files rather than saying "some documents".
+  function hasDirtyTabs() {
+    var n = 0;
+    for (var i = 0; i < state.tabs.length; i++) {
+      if (state.tabs[i].dirty) n++;
+    }
+    return n;
+  }
+
+  function dirtyTabNames() {
+    var out = [];
+    for (var i = 0; i < state.tabs.length; i++) {
+      if (state.tabs[i].dirty) out.push(state.tabs[i].name || 'Untitled');
+    }
+    return out;
+  }
+
   function openDoc(opts) {
     if (!opts || !opts.name) return null;
 
@@ -4090,8 +4937,39 @@
       var key = tabKey(opts);
       for (var i = 0; i < state.tabs.length; i++) {
         if (tabKey(state.tabs[i]) === key) {
-          activateTab(state.tabs[i].id);
-          return state.tabs[i].id;
+          var open = state.tabs[i];
+          // C-42: re-opening a path whose content has changed used to activate
+          // the tab and silently drop the incoming bytes, so the app claimed to
+          // show a file while displaying superseded content. Refresh a CLEAN
+          // tab; never overwrite unsaved work.
+          // activateTab → _doActivateTab saves this tab's live scrollTop and
+          // render() restores it, so the refresh keeps the reading position
+          // (DR-03) and does not scrolljack (DR-10).
+          // P2-8: refreshing the tab that is BOTH active AND in edit mode
+          // fights _doActivateTab's own edit-mode commit safety net —
+          // writing the fresh disk bytes into open.source here, then
+          // activating the (same) tab below, makes _doActivateTab see
+          // editTextarea.value !== outgoing.source and "helpfully" write
+          // the stale textarea value straight back over the refresh,
+          // marking the tab dirty in the process. Treat that case like a
+          // dirty tab: skip the refresh and say why, rather than silently
+          // losing it a few lines later.
+          var editingThisTab = (state.mode === 'edit' && state.activeId === open.id);
+          if (opts.source != null && opts.source !== open.source) {
+            if (open.dirty || editingThisTab) {
+              if (window.TVNative && typeof TVNative.showToast === 'function') {
+                TVNative.showToast(editingThisTab
+                  ? 'Not refreshed. You are editing this file.'
+                  : 'Already open with unsaved changes');
+              }
+            } else {
+              open.source = opts.source;
+              open.savedSource = opts.source;
+              open.error = null;
+            }
+          }
+          activateTab(open.id);
+          return open.id;
         }
       }
 
@@ -4503,6 +5381,66 @@
     saveSession();
   }
 
+  /* ── C-35: keyboard entry into edit mode lands where you were ── */
+  // The same block tags tv-edit.js's dblclick capture walks up to, so both
+  // paths feed _findAnchorOffset the same kind of text.
+  var _EDIT_ANCHOR_BLOCKS = 'p,h1,h2,h3,h4,h5,h6,li,pre,blockquote,td,th,figure';
+
+  // Set when the reading view was at the very top as we entered edit mode.
+  var _editEnteredAtTop = false;
+
+  function _seedEditAnchorFromViewport() {
+    _editEnteredAtTop = false;
+    if (typeof window === 'undefined') return;
+    // A double-click already set a precise anchor — never overwrite it.
+    if (window._tvEditAnchor || window._tvEditAnchorText) return;
+    var scroll = document.querySelector('.tv-scroll');
+    var md = document.querySelector('.md');
+    if (!scroll || !md) return;
+    _editEnteredAtTop = scroll.scrollTop <= 1;
+    var top = scroll.getBoundingClientRect().top;
+    var blocks = md.querySelectorAll(_EDIT_ANCHOR_BLOCKS);
+    for (var i = 0; i < blocks.length; i++) {
+      var r = blocks[i].getBoundingClientRect();
+      if (r.bottom <= top + 1) continue;   // fully scrolled past
+      var txt = (blocks[i].textContent || '').trim().slice(0, 120);
+      if (!txt) continue;
+      // No window24: this is a BLOCK anchor, so tv-edit uses the block-text
+      // path (_findAnchorOffset), not the sub-word caretRangeFromPoint path.
+      window._tvEditAnchor = { blockText: txt, window24: null };
+      window._tvEditAnchorText = txt;
+      return;
+    }
+  }
+
+  // C-35: the anchor above lands the CARET correctly, but the viewport does not
+  // follow it — tv-edit's wire() calls textarea.focus() before applying the
+  // anchor, and the browser scrolls to the caret's default (end-of-text)
+  // position. tv-edit has scroll-correction code for exactly this, but it looks
+  // the container up with rootEl.closest('.tv-scroll') while rootEl is the .tv
+  // ROOT, an ancestor of .tv-scroll — so it resolves to null and never runs.
+  // That one-word fix lives in tv-edit.js (modules owns it; filed in
+  // plan/requests-shell.md). Until it lands, guarantee the case this item
+  // actually names: entering edit mode from the TOP of a document opens the
+  // source at the top. No heuristic, no proportional mapping — exact or
+  // nothing, which is the narrow subset the reviewers endorsed.
+  function _restoreEditEntryScroll() {
+    if (!_editEnteredAtTop) return;
+    _editEnteredAtTop = false;
+    // Two frames: tv-edit schedules its caret work in a rAF from inside
+    // render(), so one frame guarantees we run after it and the second absorbs
+    // any layout the auto-resize triggers.
+    requestAnimationFrame(function () {
+      requestAnimationFrame(function () {
+        if (state.mode !== 'edit') return;
+        var ta = document.querySelector('[data-edit-area]');
+        var sc = document.querySelector('.tv-scroll');
+        if (!sc || !ta || ta.selectionStart > 0) return; // caret is not at line 1
+        sc.scrollTop = 0;
+      });
+    });
+  }
+
   function setMode(m) {
     if (m !== 'reading' && m !== 'edit') return;
     // Untitled new-tab pages have no document to edit — central guard that
@@ -4510,13 +5448,29 @@
     if (m === 'edit') {
       var t = getActiveTab();
       if (t && t.untitled) return;
+      // C-03: an error tab has no usable source (buildViewer renders the
+      // recovery card instead), so entering edit mode gave a titlebar that
+      // said "editing" over a screen with no editor. Guarded on the edit
+      // DIRECTION only, so the edit→reading reset on tab switch still runs.
+      if (t && t.error) return;
       // SBH-03: editing a file pins it. A preview you have started changing is
       // no longer disposable — without this the next single click in the tree
       // would silently replace a tab holding unsaved edits.
       if (t && t.transient) t.transient = false;
+      // C-35: ⌘E (or the pencil, or the palette) has no click anchor, so
+      // tv-edit fell through to "place the caret at EOF" and the source opened
+      // scrolled to the bottom — pressing ⌘E at the TOP of a document put line
+      // 1 off screen. Seed the same anchor a double-click would have set, from
+      // the topmost block currently visible, and let the existing
+      // block→source-line mapping do the rest. Only when nothing else set one,
+      // so the ISS-001 double-click path (tv-edit.js:589) is untouched.
+      if (state.mode !== 'edit') _seedEditAnchorFromViewport();
     }
+    var enteringEdit = (m === 'edit' && state.mode !== 'edit');
     state.mode = m;
     render();
+    // C-35: after the editor exists and tv-edit has placed the caret.
+    if (enteringEdit) _restoreEditEntryScroll();
     tvEmit('modechange', { mode: m });
   }
 
@@ -4547,6 +5501,13 @@
       localStorage.setItem('tv-theme', t);
     }
     render();
+    // C-36: one appearance truth. `t` is the CHOICE the user made
+    // ('light'|'dark'|'system'); state.theme is the resolved paint. Rust
+    // re-checks the right Appearance item from the choice, so send both.
+    tvEmit('themechange', { theme: state.theme, choice: t });
+    if (window.TVNative && typeof TVNative.notifyTheme === 'function') {
+      TVNative.notifyTheme(t, state.theme);
+    }
   }
 
   function setAccent(a) {
@@ -4582,16 +5543,32 @@
     }
   }
 
+  // C-20: the editor's type scales with the reading view. 13 px at the 16 px
+  // default, proportional either side, floored at 11 and capped at 18 — the
+  // editor is a monospaced source view, so it neither shrinks past legibility
+  // nor grows to the point that a wrapped line stops looking like source.
+  function editFontFor(bodyPx) {
+    return Math.max(11, Math.min(18, Math.round(13 * (bodyPx / 16))));
+  }
+
   // F-05/U-07: Font size control — DR-27: floor 13px, cap 22px (DR-29: persisted)
   function setFontSize(px) {
+    // DR-28: the clamp is SILENT by design — ⌘= at 22 and ⌘− at 13 do nothing
+    // and say nothing. Unchanged.
     var clamped = Math.max(13, Math.min(22, px));
     state.fontSize = clamped;
     localStorage.setItem('tv-font-size', String(clamped));
-    // Apply without full render — just update the CSS variable on the .tv root
+    // Apply without full render — just update the CSS variables on the .tv root
     var tvRoot = document.querySelector('.tv');
     if (tvRoot) {
       tvRoot.style.setProperty('--tv-md-font', clamped + 'px');
+      // C-20: the editor textarea used to stay locked at 13 px however far you
+      // zoomed the reading view — an accessibility control that half worked.
+      tvRoot.style.setProperty('--tv-edit-font', editFontFor(clamped) + 'px');
     }
+    // C-20: so the palette's Increase / Decrease rows can show the current size
+    // instead of a new on-screen chip (DR-31: zero-pixel chrome budget).
+    tvEmit('fontsize', clamped);
   }
 
   // S-11 fix: capture tab id before rAF to avoid scrolling wrong tab
@@ -4665,6 +5642,13 @@
         state.tabs[i].dirty = !!isDirty;
         // S-01: update ONLY the dot in the tab element, no full render
         _updateTabDot(id, !!isDirty);
+        // C-38: the dot is not the only dirty indicator any more — the window
+        // title and the in-app title carry it too, and this path skips render().
+        _syncTitles();
+        // C-33: nor is it the only thing the dirty flag drives — the edit
+        // toolbar's exit button says "Discard" only once there is something to
+        // discard, and onInput reaches us through this render-free path.
+        _syncEditEscLabel();
         return;
       }
     }
@@ -4691,6 +5675,11 @@
     // Re-insert lead indicators based on current state
     var nameEl = tabEl.querySelector('.name');
     if (!nameEl) return;
+
+    // C-39: same precedence as buildTabbar — error beats live beats dirty. The
+    // ⚠ is rendered by buildTabbar and must survive this partial update, so
+    // bail before re-inserting anything else.
+    if (tab.error) return;
 
     if (tab.liveActive && isDirty) {
       var boltSpan = document.createElement('span');
@@ -4733,6 +5722,92 @@
   //   2. Else delegate to TVNative.saveTab (Tauri) or TVFiles.writeFile (browser).
   //      tab.source is current at save time — TVEdit writes edits directly into
   //      tab.source live (renderer contract), so no getSource() call is needed.
+  /* ── C-33: Esc discards (user decision, 2026-08-21) ─────────── */
+  // Esc previously exited edit mode and silently KEPT the edits, which inverts
+  // the near-universal meaning of Esc as cancel. It now reverts the buffer to
+  // the last on-disk content — with one level of undo, because a destructive
+  // action with no way back is worse than the ambiguity it replaces.
+  //   Esc  discard (this)      ⌘E  keep the edits, just switch to reading
+  //   ⌘S   save                ⌘Z  (reading mode) restore what Esc discarded
+  function discardEdits() {
+    var tab = getActiveTab();
+    if (!tab) return;
+
+    // Nothing typed → Esc is just "leave edit mode". No toast, nothing lost.
+    if (!tab.dirty || tab.savedSource == null || tab.source === tab.savedSource) {
+      setMode('reading');
+      return;
+    }
+
+    // The textarea is the live truth; onInput keeps tab.source in step, but a
+    // composition still in flight would not have fired yet.
+    var ta = document.querySelector('[data-edit-area]');
+    if (ta && ta.value !== tab.source) tab.source = ta.value;
+
+    tab.discarded = { source: tab.source, at: Date.now() };
+    tab.source = tab.savedSource;
+    tab.dirty = false;
+    tab._editCursorPos = null;
+
+    setMode('reading'); // renders
+    if (window.TVNative && typeof TVNative.showToast === 'function') {
+      TVNative.showToast('Edits discarded. ⌘Z restores them.');
+    }
+  }
+
+  // Put back the edits the last Esc threw away and return to edit mode.
+  // Exposed on window.TV so tv-palette.js can offer it as a command; also
+  // bound to ⌘Z in reading mode.
+  function restoreDiscardedEdits(tabId) {
+    var tab = null;
+    if (tabId) {
+      for (var i = 0; i < state.tabs.length; i++) {
+        if (state.tabs[i].id === tabId) { tab = state.tabs[i]; break; }
+      }
+    } else {
+      tab = getActiveTab();
+    }
+    if (!tab || !tab.discarded) return false;
+
+    var restored = tab.discarded.source;
+    tab.discarded = null;
+    batchRender(function () {
+      if (tab.id !== state.activeId) activateTab(tab.id);
+      tab.source = restored;
+      markDirty(tab.id, true);
+      setMode('edit');
+    });
+    return true;
+  }
+
+  function hasDiscardedEdits(tabId) {
+    var tab = null;
+    if (tabId) {
+      for (var i = 0; i < state.tabs.length; i++) {
+        if (state.tabs[i].id === tabId) { tab = state.tabs[i]; break; }
+      }
+    } else {
+      tab = getActiveTab();
+    }
+    return !!(tab && tab.discarded);
+  }
+
+  // C-03: one place that reports a browser save which did not write. Stays in
+  // edit mode in every branch — the buffer is the only copy of the user's work.
+  // `err` may be null (writeFile resolved but the tab is still dirty).
+  function _saveDidNotLand(tab, err) {
+    var aborted = !!(err && (err.name === 'AbortError' || err === 'AbortError'));
+    var msg = aborted
+      ? 'Save cancelled'
+      : 'Save failed. Your edits are still here.';
+    console.warn('[Galley] browser save did not write:', err || '(resolved, still dirty)');
+    if (window.TVNative && typeof TVNative.showToast === 'function') {
+      // A cancel is the user's own doing — quiet. A failure is an error.
+      TVNative.showToast(msg, aborted ? {} : { kind: 'error' });
+    }
+    // Deliberately NOT setMode('reading'): the app must not signal "saved".
+  }
+
   function handleSave() {
     var tab = getActiveTab();
     if (!tab) return;
@@ -4752,12 +5827,19 @@
     // is NOT set for native tabs (E-13 invariant: these paths are exclusive).
     if (window.TVNative && TVNative.available) {
       TVNative.saveTab(tab).then(function () {
-        setMode('reading');
+        // P0-2: save_md_file_as resolves (does not reject) when the user
+        // cancels the native panel — saveTab leaves tab.dirty untouched in
+        // that case (see TVNative.saveTab's C-02 comment). Mirror the browser
+        // branch below: only claim "saved" when the dirty flag was actually
+        // cleared, otherwise treat it as a cancel and stay in edit mode.
+        if (!tab.dirty) { _markSaved(tab); setMode('reading'); return; }
+        _saveDidNotLand(tab, null);
       }).catch(function (err) {
         // N-06: surface save failure as toast, keep user in edit mode
-        console.warn('[tiny-viewer] native save failed:', err);
+        console.warn('[Galley] native save failed:', err);
         if (window.TVNative && typeof TVNative.showToast === 'function') {
-          TVNative.showToast('Save failed: ' + (err || 'unknown error'));
+          // C-03: same channel and same severity as the browser branch.
+          TVNative.showToast('Save failed: ' + (err || 'unknown error'), { kind: 'error' });
         }
         // Do NOT call setMode('reading') — keep user in edit mode to retry
       });
@@ -4768,17 +5850,31 @@
     // or download fallback). TVFiles.writeFile(tab) calls markDirty internally.
     if (window.TVFiles && typeof TVFiles.writeFile === 'function') {
       TVFiles.writeFile(tab).then(function () {
-        setMode('reading');
+        // C-03: leaving edit mode is this app's "saved" signal, so it must be
+        // earned. A resolved promise is NOT proof: writeFile currently swallows
+        // its own errors and resolves anyway. tab.dirty is the honest witness —
+        // markDirty(id, false) fires only on a real write (or a download).
+        if (!tab.dirty) { _markSaved(tab); setMode('reading'); return; }
+        _saveDidNotLand(tab, null);
       }).catch(function (err) {
-        console.warn('[tiny-viewer] browser save failed:', err);
-        setMode('reading');
+        _saveDidNotLand(tab, err);
       });
       return;
     }
 
     // Last resort: no save mechanism available — just clear dirty and exit
     tab.dirty = false;
+    _markSaved(tab);
     setMode('reading');
+  }
+
+  // C-33: the buffer just became the on-disk content. The one-shot discard undo
+  // is dropped here — once the edits are on disk, "restore discarded edits"
+  // would put back a state that predates what the user chose to keep.
+  function _markSaved(tab) {
+    if (!tab) return;
+    tab.savedSource = tab.source;
+    tab.discarded = null;
   }
 
   /* ── F-03: Open Folder ────────────────────────────────────── */
@@ -4991,6 +6087,14 @@
 
       var sidebarItem = cursorEl.getAttribute('data-sidebar-item') || '';
 
+      // (0) C-29: "Show N more files" — checked before the folder prefixes so
+      // the interactive footer row is reachable by keyboard, not mouse only.
+      if (sidebarItem.indexOf('more:') === 0) {
+        loadMoreFolder(cursorEl.getAttribute('data-tree-more'));
+        requestAnimationFrame(function () { renderSidebarCursor(); });
+        return;
+      }
+
       // (1) Folder / subfolder toggle
       if (sidebarItem.indexOf('folder:') === 0 ||
           sidebarItem.indexOf('subfolder:') === 0) {
@@ -5087,7 +6191,9 @@
         closeShortcuts(); e.preventDefault(); return;
       }
       if (state.mode === 'edit') {
-        setMode('reading'); e.preventDefault(); return;
+        // C-33 (user decision): Esc DISCARDS the edits rather than silently
+        // keeping them. ⌘E is the "keep them, just read" exit; ⌘Z undoes this.
+        discardEdits(); e.preventDefault(); return;
       }
       // Launcher panel: Escape closes the untitled tab once everything
       // higher in the ladder (find bar, palette, search, edit) has passed.
@@ -5164,6 +6270,17 @@
       return;
     }
 
+    // C-18 / C-36: ⌘G / ⇧⌘G — find next / previous. Only while the find bar is
+    // open, so ⌘G never swallows the keystroke in a document with no search
+    // running. _findStep stays the single stepping path (see C-14).
+    if (k === 'g' || k === 'G') {
+      if (_findOpen) {
+        e.preventDefault();
+        _findStep(e.shiftKey ? -1 : 1);
+      }
+      return;
+    }
+
     // ⌘B — toggle sidebar
     if (k === 'b' || k === 'B') {
       e.preventDefault();
@@ -5195,6 +6312,25 @@
       e.preventDefault();
       if (window.TVFiles && typeof TVFiles.openPicker === 'function') {
         TVFiles.openPicker();
+      }
+      return;
+    }
+
+    // C-33: ⌘Z in READING mode puts back what Esc just discarded. In edit mode
+    // ⌘Z is the textarea's own undo and must not be intercepted, and neither
+    // must it be while any text field has focus.
+    if (k === 'z' || k === 'Z') {
+      if (state.mode === 'reading' && !e.shiftKey) {
+        var zFocused = document.activeElement;
+        var zInInput = zFocused && (
+          zFocused.tagName === 'INPUT' || zFocused.tagName === 'TEXTAREA' ||
+          zFocused.isContentEditable
+        );
+        if (!zInInput && hasDiscardedEdits()) {
+          e.preventDefault();
+          restoreDiscardedEdits();
+          return;
+        }
       }
       return;
     }
@@ -5416,12 +6552,11 @@
       toggleSidebar();
     }).catch(function () {});
 
-    // BUG-3 FIX: single toggle replaces the two separate Light/Dark items.
-    // Flips between light and dark; matches the "menu:theme-toggle" event emitted
-    // by lib.rs on_menu_event.
-    listen('menu:theme-toggle', function () {
-      setTheme(state.theme === 'dark' ? 'light' : 'dark');
-    }).catch(function () {});
+    // C-36: the "menu:theme-toggle" listener is gone with the menu item that
+    // emitted it. View ▸ Toggle Dark Mode was removed because it competed with
+    // View ▸ Appearance ▸ Light/Dark/System, and the two could disagree — Rust
+    // no longer emits this event, so the listener was dead weight. Appearance
+    // now round-trips through setTheme() → TVNative.notifyTheme(choice).
 
     listen('menu:next-tab', function () {
       if (state.tabs.length > 1) {
@@ -5453,6 +6588,12 @@
      S-05 fix: track first-opened (MRU index 0) tab and activate it last.
    ──────────────────────────────────────────────────────────── */
   function init() {
+    // C-19: one increment per app launch, read by _showEditHint().
+    _bumpEditHintSession();
+    // C-32: the region must outlive every render, so it lives in <body>, not
+    // inside the #tv-root subtree that render() replaces.
+    ensureLiveRegion();
+
     // F-09: responsive sidebar default by window width (step-6 breakpoints).
     //   ≥1440px → sidebar visible by default
     //   <1440px → hidden by default
@@ -5462,22 +6603,50 @@
     state.sidebarOpen = window.innerWidth >= 1440;
     (function () {
       var resizeRaf = null;
+      var overlayWait = null;
+      function _overlayOpen() {
+        return !!((window.TVPalette && TVPalette.isOpen && TVPalette.isOpen()) ||
+                  (window.TVSearch && TVSearch.isOpen && TVSearch.isOpen()));
+      }
       function applyResponsive() {
         if (state.sidebarUserToggled) return; // user choice wins
         var shouldOpen;
         if (window.innerWidth >= 1440) shouldOpen = true;
         else if (window.innerWidth < 1024) shouldOpen = false;
         else return; // 1024–1439: leave current state, don't fight the user
-        if (shouldOpen !== state.sidebarOpen) {
-          state.sidebarOpen = shouldOpen;
-          if (state.tabs.length) render();
+        if (shouldOpen === state.sidebarOpen) return;
+        // C-17: render() unconditionally closes ⌘K and ⌘⇧F, so repainting on a
+        // resize would yank an open overlay away mid-query. Defer BOTH the
+        // state flip and the repaint until it closes — that way state and DOM
+        // are never allowed to disagree, which is the actual bug here.
+        if (_overlayOpen()) {
+          if (!overlayWait) {
+            overlayWait = setInterval(function () {
+              if (_overlayOpen()) return;
+              clearInterval(overlayWait);
+              overlayWait = null;
+              applyResponsive();
+            }, 250);
+          }
+          return;
         }
+        state.sidebarOpen = shouldOpen;
+        // C-17: the old `if (state.tabs.length)` guard skipped this repaint in
+        // the empty state, leaving a 224 px sidebar on screen while state said
+        // it was closed — the next ⌘B flipped state back and appeared to do
+        // nothing, so it took two presses to close.
+        render();
       }
       window.addEventListener('resize', function () {
         if (resizeRaf) return;
         resizeRaf = requestAnimationFrame(function () {
           resizeRaf = null;
           applyResponsive();
+          // P2-2: updateTabStripScroll only ran from render() and the
+          // strip's own scroll listener, so narrowing the window until tabs
+          // overflow left the ⌄ control hidden and both edge fades stale
+          // until something else happened to repaint.
+          updateTabStripScroll();
         });
       }, { passive: true });
     }());
@@ -5595,10 +6764,17 @@
             });
           }
 
-          // DR-50: single consolidated toast for missing files
+          // DR-50: single consolidated toast for missing files.
+          // C-01 (native request): this is a failure, so it takes the error
+          // treatment — red tint, a ✕, and ~6 s rather than 3, because it names
+          // files the user may want to go and look for.
           if (sessionMissed > 0 && window.TVNative && typeof TVNative.showToast === 'function') {
-            var noun = sessionMissed === 1 ? 'file' : 'files';
-            TVNative.showToast(sessionMissed + ' ' + noun + ' from last session were not found');
+            // The verb has to agree with the noun; "1 file … were not found" was
+            // the shipped string.
+            var missingPhrase = (sessionMissed === 1)
+              ? '1 file from last session was not found'
+              : sessionMissed + ' files from last session were not found';
+            TVNative.showToast(missingPhrase, { kind: 'error' });
           }
 
           // DR-56: restore complete — clear flag and drain queued external opens
@@ -5700,6 +6876,8 @@
           // Overwrite in-memory content; mark clean
           tab.source = doc.content || '';
           tab.dirty = false;
+          // C-33: the buffer is now the disk content by definition.
+          _markSaved(tab);
           // DR-118: refresh tab.lastModTime from the reloaded mtime so the
           // recency bar reflects the reload's mtime, not a stale pre-reload value.
           // Note: tab.lastModTime is seed-only for TVLive.start(); after a watch
@@ -5779,6 +6957,33 @@
     // U-14 / DR-98: exposed so tv-palette.js Move Tab Left/Right commands can
     // call TV.saveSession() without relying on IIFE-internal access.
     saveSession: saveSession,
+    // C-02: the native shell reads these from the CloseRequested handler so a
+    // ⌘Q with unsaved work can name the files it is about to drop.
+    hasDirtyTabs: hasDirtyTabs,
+    dirtyTabNames: dirtyTabNames,
+    // C-18/C-36: ⌘G / ⇧⌘G — the ONE stepping path for the find bar, so the
+    // native Edit ▸ Find ▸ Next/Previous items and the keyboard agree.
+    findStep: _findStep,
+    // C-08: the ⌘T launcher's subsequence scorer, exposed so tv-palette.js
+    // stops running a second, substring-only matcher. fuzzyMatchFile scores a
+    // whole {name, folder, path} record; highlightIndices returns ESCAPED HTML.
+    fuzzyScore: fuzzyScore,
+    fuzzyMatchFile: fuzzyMatchFile,
+    highlightIndices: highlightIndices,
+    // C-09: the ⌘K "Save" and "Find in Document" rows must run the SAME entry
+    // points as ⌘S / ⌘F, or the palette drifts from the accelerator it shows.
+    handleSave: handleSave,
+    openFindBar: _openFindBar,
+    // C-33: Esc discards; these are the undo. tv-palette.js lists
+    // "Restore discarded edits" and should gate the row on hasDiscardedEdits().
+    restoreDiscardedEdits: restoreDiscardedEdits,
+    hasDiscardedEdits: hasDiscardedEdits,
+    discardEdits: discardEdits,
+    // P2-6: the ONE polite live region (#tv-live-region, created at boot).
+    // tv-native.js's showToast() calls this instead of owning a second
+    // aria-live region inside #tv-toasts, so a screen reader never has two
+    // independent regions that could both announce at once.
+    announce: announce,
   };
 
   /* ── Boot when DOM is ready ───────────────────────────────── */

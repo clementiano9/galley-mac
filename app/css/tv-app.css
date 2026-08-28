@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · application chrome + rendered markdown
+   Galley · application chrome + rendered markdown
    ─────────────────────────────────────────────────────────── */
 
 /* ── full-viewport host ──────────────────────────────────── */
@@ -21,6 +21,24 @@ html, body, #tv-root {
   box-sizing: border-box;
 }
 .tv *, .tv *::before, .tv *::after { box-sizing: border-box; }
+
+/* C-32: blanket reduced-motion rule, placed early so it loses cascade ties
+   to every per-component override further down this file that pins a
+   FINAL visual state (e.g. .tv-bolt's animation:none + opacity:1 — an
+   infinite pulse's own keyframe endpoint is dim, not the intended resting
+   look, so a bare duration/iteration clamp alone would land on the wrong
+   frame for THAT component). This blanket rule is the safety net for every
+   element this file does NOT special-case — new components get reduced
+   motion for free instead of needing a matching addition to an
+   enumerate-by-name list (that gap is exactly how UV-09 happened). */
+@media (prefers-reduced-motion: reduce) {
+  .tv *, .tv *::before, .tv *::after {
+    transition-duration: .01ms !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+  }
+}
 
 /* title bar (traffic lights) --------------------------------- */
 .tv-titlebar {
@@ -45,7 +63,10 @@ html, body, #tv-root {
   margin-right: 52px; /* counterweight the traffic lights */
 }
 /* Bug A: doc icon is decorative; pointer-events:none lets drag pass through to .tv-wintitle */
-.tv-wintitle .tv-doc-ic { opacity: .6; pointer-events: none; }
+.tv-wintitle .tv-doc-ic {
+  opacity: .6; pointer-events: none;
+  display: inline-flex; align-items: center; line-height: 0;
+}
 
 /* tab bar ---------------------------------------------------- */
 /* D-01 / E-09: scrollable tab strip — tabs keep legible width.
@@ -73,6 +94,14 @@ html, body, #tv-root {
   scrollbar-width: none;
   /* right-edge fade — purely decorative pointer-events:none overlay */
   position: relative;
+  /* P2-1: 1px taller than the flex stretch height (100% of .tv-tabbar's
+     content box) so overflow-y:hidden's clip line sits exactly at
+     .tv-tabbar's OUTER edge, i.e. past its own border-bottom, instead of
+     1px short of it. .tv-tab.active's own margin-bottom:-1px bleed (below)
+     was clipped a pixel before it could reach that border and paint over
+     it — this doesn't change anything else, since only the active tab
+     actually extends into that extra pixel. */
+  height: calc(100% + 1px);
 }
 .tv-tab-strip::-webkit-scrollbar { width: 0; height: 0; display: none; }
 /* Fade affordance as a pseudo — sits ABOVE the scrolling content but
@@ -92,6 +121,31 @@ html, body, #tv-root {
   pointer-events: none;
   z-index: 1;
 }
+/* C-04: right fade disappears once scrolled all the way right — nothing
+   left to hint at, and it would otherwise sit over the last (often active)
+   tab permanently. Shell sets data-scroll-end="1" on scrollLeft+width===
+   scrollWidth. */
+.tv-tab-strip[data-scroll-end="1"]::after { opacity: 0; }
+/* C-04: mirror of ::after on the left, shown only once the strip has
+   actually scrolled (shell sets data-scrolled="1" on scrollLeft > 0) — at
+   rest there is nothing to the left to fade, so no cue is drawn. */
+.tv-tab-strip::before {
+  content: "";
+  position: sticky;
+  left: 0; top: 0;
+  width: 40px; flex: 0 0 40px;
+  align-self: stretch;
+  margin-right: -40px;   /* don't take up flex-row space of its own */
+  background: linear-gradient(
+    to left,
+    transparent 0%,
+    var(--tv-bg-chrome) 100%
+  ) !important;
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0;
+}
+.tv-tab-strip[data-scrolled="1"]::before { opacity: 1; }
 
 .tv-tab {
   display: flex; align-items: center; gap: 7px;
@@ -108,16 +162,40 @@ html, body, #tv-root {
 }
 .tv-tab + .tv-tab { margin-left: 2px; }
 .tv-tab:hover { background: var(--tv-bg-hover) !important; }
+/* C-04: "connected tab" treatment — replaces the deleted 2px accent
+   under-rule (user's call: an accent bar read as an AI tell). The active
+   tab now reads as page-colour bg + a hairline outline on 3 sides, with NO
+   bottom edge so it visually fuses with the content area below. z-index:2
+   lifts it above the strip's right-edge fade (::after) so the fade never
+   washes out the active tab.
+   P2-1: the fuse relies on .tv-tab-strip's height:calc(100% + 1px) above —
+   every tab (align-items:stretch) now naturally reaches exactly
+   .tv-tabbar's outer edge, one pixel past the strip's OLD clip line, which
+   is what used to sit exactly on .tv-tabbar's border-bottom. Only the
+   active tab has an opaque background, so it alone visually paints over
+   that row; every other (transparent) tab lets the border show through as
+   before. A margin-bottom:-1px / padding-bottom:1px bleed used to try to
+   reach that same row from an unchanged (1px-short) strip height — it
+   measured out to the right pixel but overflow-y:hidden clipped it before
+   it could render, and stacking it on TOP of the new taller strip would
+   overshoot by a pixel instead, so it is gone rather than adjusted. */
 .tv-tab.active {
   background: var(--tv-bg-primary) !important;
   color: var(--tv-text-primary) !important;
+  /* C-04 (round 3): the active tab used to step to font-weight 500. Bolder
+     text is WIDER — measured 1.3px on a 105px pill — so selecting a tab
+     reflowed the whole strip to its right. That is the movement reported on
+     the verification pass. The weight now matches the inactive state and the
+     active tab is carried by its page-colour well, its 3-sided outline and
+     its primary ink instead, none of which change the box. */
+  font-weight: inherit;
   border-radius: 7px 7px 0 0;
-}
-/* Active-tab accent bar across the TOP edge (mock target). Spans the full
-   tab width so the warm/accent underline reads clearly on the active tab. */
-.tv-tab.active::after {
-  content: ""; position: absolute; left: 0; right: 0; top: 0;
-  height: 2px; background: var(--tv-accent) !important;
+  position: relative;
+  z-index: 2;
+  box-shadow:
+    inset 1px 0 0 var(--tv-border-strong),
+    inset -1px 0 0 var(--tv-border-strong),
+    inset 0 1px 0 var(--tv-border-strong);
 }
 .tv-tab .name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* SBH-03 (Fix 3): the transient (preview) tab. A single click on a tree file
@@ -125,15 +203,18 @@ html, body, #tv-root {
    grows the strip past one tab. Italic is the standing cue that the tab is not
    kept; double-clicking the file or the tab pins it (upright), as does editing. */
 .tv-tab.transient .name { font-style: italic; }
+/* C-32: 24×24 hit target (was 20×20, under the 24px a11y floor) — the
+   glyph itself is unchanged, and margin:-4px (was -2px) pulls the box back
+   in so the tab row's visual footprint doesn't grow. */
 .tv-tab .tv-close {
-  width: 20px; height: 20px; border-radius: 4px;
-  margin: -2px;
+  width: 24px; height: 24px; border-radius: 4px;
+  margin: -4px;
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--tv-text-muted) !important; opacity: 0; transition: opacity .12s, background .12s;
 }
 .tv-tab:hover .tv-close { opacity: 1; }
 .tv-tab .tv-close:hover { background: var(--tv-bg-sel) !important; }
-.tv-tab .tv-close:focus-visible { opacity: 1; outline: 2px solid var(--tv-accent); outline-offset: 1px; }
+.tv-tab .tv-close:focus-visible { opacity: 1; outline: var(--tv-focus-ring); outline-offset: var(--tv-focus-offset); }
 .tv-dot {           /* unsaved ● */
   width: 7px; height: 7px; border-radius: 50%;
   background: var(--tv-accent) !important; flex: 0 0 auto;
@@ -203,7 +284,7 @@ html, body, #tv-root {
    showing (the global button:focus-visible rule doesn't cover plain :focus) — kill
    it, and draw a tight 1px ring on keyboard focus to match .tv-close/.tv-sb-close. */
 .tv-side-toggle:focus { outline: none; }
-.tv-side-toggle:focus-visible { outline: 2px solid var(--tv-accent); outline-offset: 1px; }
+.tv-side-toggle:focus-visible { outline: var(--tv-focus-ring); outline-offset: var(--tv-focus-offset); }
 
 /* body row: sidebar + viewer -------------------------------- */
 .tv-body { flex: 1; display: flex; min-height: 0; background: var(--tv-bg-primary) !important; }
@@ -261,9 +342,10 @@ html, body, #tv-root {
   text-transform: uppercase; color: var(--tv-text-muted) !important;
   flex: 1;
 }
+/* C-32: 24×24 hit target (was 22×22, under the 24px a11y floor). */
 .tv-side-collapse {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 22px; height: 22px; padding: 0; border-radius: 4px;
+  width: 24px; height: 24px; padding: 0; border-radius: 4px;
   border: 0; background: transparent; cursor: default;
   color: var(--tv-text-muted) !important;
   opacity: .7;
@@ -273,7 +355,7 @@ html, body, #tv-root {
 .tv-side-collapse:hover { opacity: 1; background: var(--tv-bg-hover) !important; }
 .tv-side-collapse svg { display: block; }
 .tv-side-collapse:focus { outline: none; }
-.tv-side-collapse:focus-visible { opacity: 1; outline: 2px solid var(--tv-accent); outline-offset: 1px; }
+.tv-side-collapse:focus-visible { opacity: 1; outline: var(--tv-focus-ring); outline-offset: var(--tv-focus-offset); }
 
 /* D-01 / E-09: sidebar file list must scroll when entries exceed panel height */
 .tv-side-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--tv-s3) var(--tv-s2); }
@@ -329,6 +411,11 @@ html, body, #tv-root {
 .tv-tree-row.subfolder,
 .tv-tree-row.file {
   margin: 0;
+  /* C-28: normalises both row kinds (and, via .file, the OPEN section's
+     rows too — they share this class) to 30px alongside .tv-folder-head.
+     min-height only, so the rail step/offset/--tv-depth/background-color
+     ordering the sidebar tests pin stay untouched. */
+  min-height: 30px;
   border-top: 1px solid transparent;
   border-bottom: 1px solid transparent;
   background-origin: border-box;
@@ -381,7 +468,10 @@ html, body, #tv-root {
    .tv-folder-head is not a .tv-tree-row so gets its own matching rule. */
 .tv-tree-row.kbd-cursor,
 .tv-folder-head.kbd-cursor {
-  outline: 2px solid var(--tv-accent);
+  /* C-32: reuses the ring's width/style/colour but keeps its own INSET
+     offset — the one deliberate exception to --tv-focus-offset, since a
+     positive offset here would spill the ring outside the row. */
+  outline: var(--tv-focus-ring);
   outline-offset: -2px;
   border-radius: var(--tv-radius-sm);
 }
@@ -409,10 +499,13 @@ html, body, #tv-root {
 .tv-search-box .kbd { margin-left: auto; }
 
 /* keycap ----------------------------------------------------- */
+/* C-32: text-secondary (was text-muted) — ≥4.5:1 on the --tv-bg-sel chip
+   fill in both themes; text-muted was tuned for app backgrounds, not this
+   smaller, more heavily-bordered chip. */
 .tv-kbd, .kbd {
   font: 500 11px var(--tv-font-ui);
   padding: 1px 5px; border-radius: 4px;
-  background: var(--tv-bg-sel) !important; color: var(--tv-text-muted) !important;
+  background: var(--tv-bg-sel) !important; color: var(--tv-text-secondary) !important;
   border: 1px solid var(--tv-border);
 }
 
@@ -489,22 +582,27 @@ html, body, #tv-root {
   background: var(--tv-scrollthumb) !important;
 }
 
-/* Palette list scroll — hidden at rest, revealed on hover */
-.tv-pal-list { scrollbar-width: none; }
-.tv-pal-list::-webkit-scrollbar { width: 0; height: 0; display: none; }
-.tv-pal-list:hover,
-.tv-pal-list:focus-within {
+/* C-10: palette list scroll — the thumb stays visible the whole time the
+   palette is open (this element only exists in the DOM while it is), not
+   hover-only as before; a hover-only thumb gave no clue the list scrolls
+   until you happened to mouse over it. */
+.tv-pal-list {
   scrollbar-width: thin;
   scrollbar-color: var(--tv-scrollthumb) transparent;
 }
-.tv-pal-list:hover::-webkit-scrollbar,
-.tv-pal-list:focus-within::-webkit-scrollbar { width: 4px; display: block; }
-.tv-pal-list:hover::-webkit-scrollbar-track,
-.tv-pal-list:focus-within::-webkit-scrollbar-track { background: transparent; }
-.tv-pal-list:hover::-webkit-scrollbar-thumb,
-.tv-pal-list:focus-within::-webkit-scrollbar-thumb {
+.tv-pal-list::-webkit-scrollbar { width: 4px; }
+.tv-pal-list::-webkit-scrollbar-track { background: transparent; }
+.tv-pal-list::-webkit-scrollbar-thumb {
   background: var(--tv-scrollthumb) !important;
   border-radius: 4px;
+}
+/* C-10: bottom fade when the list overflows its 360px cap, so a group
+   header (or any row) at the clipped edge doesn't read as the end of the
+   list. Toggled by the palette JS (.is-overflowing) when scrollHeight >
+   clientHeight. */
+.tv-pal-list.is-overflowing {
+  -webkit-mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
+  mask-image: linear-gradient(to bottom, #000 calc(100% - 24px), transparent);
 }
 .tv-content {
   max-width: var(--tv-content-max);
@@ -528,13 +626,37 @@ html, body, #tv-root {
    overflowing and being clipped by .tv-scroll overflow-x:hidden. */
 .md { color: var(--tv-text-primary) !important; font-size: 16px; line-height: 1.72; overflow-wrap: break-word; }
 .md > *:first-child { margin-top: 0; }
-.md h1 { font-size: 28px; font-weight: 700; line-height: 1.25; letter-spacing: -.5px; margin: 0 0 var(--tv-s4); }
-.md h2 { font-size: 22px; font-weight: 700; line-height: 1.3; letter-spacing: -.3px; margin: var(--tv-s7) 0 var(--tv-s3); }
-.md h3 { font-size: 18px; font-weight: 600; margin: var(--tv-s5) 0 var(--tv-s2); }
-.md h4 { font-size: 16px; font-weight: 600; margin: var(--tv-s5) 0 var(--tv-s2); color: var(--tv-text-secondary) !important; }
+/* C-20: sizes expressed in em of --tv-md-font (default 16px) so the whole
+   scale — headings, table, code — moves together when the reading-font
+   zoom changes, instead of only body text scaling while headings stayed
+   fixed px. Values are unchanged at the 16px default: 1.75em=28px,
+   1.375em=22px, 1.125em=18px, 1em=16px — identical to the old px ramp. */
+.md h1 { font-size: 1.75em; font-weight: 700; line-height: 1.25; letter-spacing: -.5px; margin: 0 0 var(--tv-s4); }
+/* C-22: restored 650 (was 700) — design-bundle tv-app.css:175. */
+.md h2 { font-size: 1.375em; font-weight: 650; line-height: 1.3; letter-spacing: -.3px; margin: var(--tv-s7) 0 var(--tv-s3); }
+/* C-22: 1.4 line-height (was inheriting .md's 1.72 body leading, so a
+   wrapped heading read as two body-spaced lines). */
+.md h3 { font-size: 1.125em; font-weight: 600; line-height: 1.4; margin: var(--tv-s5) 0 var(--tv-s2); }
+.md h4 { font-size: 1em; font-weight: 600; line-height: 1.4; margin: var(--tv-s5) 0 var(--tv-s2); color: var(--tv-text-secondary) !important; }
 .md p  { margin: 0 0 var(--tv-s4); text-wrap: pretty; }
+/* C-23: links were distinguished by hue alone (a 13%-alpha border-bottom,
+   ~1.19:1 contrast against body text) — a real WCAG 1.4.1 gap. The
+   border-bottom stays as the fallback for engines without color-mix()
+   support; @supports below swaps in a real underline once it's available
+   (WKWebView/Safari 16.2+). Table/code/blockquote tokens are untouched
+   (Visual Spec values, out of scope here). */
 .md a  { color: var(--tv-accent-text) !important; text-decoration: none; border-bottom: 1px solid var(--tv-accent-weak); }
-.md strong { font-weight: 700; }
+@supports (text-decoration-color: color-mix(in srgb, red 45%, transparent)) {
+  .md a {
+    border-bottom: 0;
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-decoration-color: color-mix(in srgb, var(--tv-accent) 45%, transparent);
+    text-underline-offset: 3px;
+  }
+}
+/* C-22: restored 650 (was 700) — design-bundle tv-app.css:180. */
+.md strong { font-weight: 650; }
 .md em { font-style: italic; }
 .md hr { border: 0; border-top: 1px solid var(--tv-border); margin: var(--tv-s6) 0; }
 .md ul, .md ol { margin: 0 0 var(--tv-s4); padding-left: 24px; }
@@ -581,7 +703,8 @@ html, body, #tv-root {
   background: var(--tv-scrollthumb) !important;
   border-radius: 4px;
 }
-.md pre code { background: none !important; border: 0; padding: 0; font-size: 13px; font-weight: normal; line-height: 1.6; display: block; }
+/* C-20: .8125em of --tv-md-font (13px at the 16px default — unchanged). */
+.md pre code { background: none !important; border: 0; padding: 0; font-size: .8125em; font-weight: normal; line-height: 1.6; display: block; }
 .md .c-com { color: var(--tv-syn-comment) !important; font-style: italic; }
 .md .c-key { color: var(--tv-syn-key) !important; }
 .md .c-str { color: var(--tv-syn-str) !important; }
@@ -601,7 +724,8 @@ html, body, #tv-root {
    the border-radius clip clean vertically. The outer .tv-scroll keeps overflow-x
    hidden (intentional) — the table self-contains its scroll within .tbl-wrap. */
 .md .tbl-wrap { margin: 0 0 var(--tv-s4); border: 1px solid var(--tv-border); border-radius: var(--tv-radius-md); overflow-x: auto; overflow-y: hidden; }
-.md table { width: 100%; border-collapse: collapse; font-size: 14px; }
+/* C-20: .875em of --tv-md-font (14px at the 16px default — unchanged). */
+.md table { width: 100%; border-collapse: collapse; font-size: .875em; }
 .md th {
   text-align: left; font-weight: 600; color: var(--tv-text-secondary) !important;
   background: var(--tv-table-head) !important; padding: 9px 14px;
@@ -622,9 +746,13 @@ html, body, #tv-root {
   background: var(--tv-bg-sidebar) !important; overflow: hidden; margin: 0 0 var(--tv-s4);
   position: relative;
 }
-/* The actual image — fills width, auto height, capped at 480px */
+/* C-21: natural size, capped by the column — was width:100%, which blew a
+   1×1px test pixel up to a 640×480 slab and visibly interpolated small
+   logos/icons. margin:0 auto centres it inside the full-width card when
+   the image is narrower than the card. */
 .md .md-img > img {
-  display: block; width: 100%; height: auto; max-height: 480px;
+  display: block; width: auto; max-width: 100%; height: auto; max-height: 480px;
+  margin: 0 auto;
   object-fit: contain; background: var(--tv-bg-surface) !important;
 }
 /* Hide the broken-image placeholder until onerror fires */
@@ -718,7 +846,11 @@ html, body, #tv-root {
 .tv-diagram {
   margin: 0 0 var(--tv-s4); border: 1px solid var(--tv-border);
   border-radius: var(--tv-radius-md); background: var(--tv-bg-surface) !important;
-  padding: var(--tv-s5) var(--tv-s4); position: relative; min-height: 132px;
+  /* C-24: same padding as the resolved state below (32px 16px 16px) so the
+     card doesn't reflow when the SVG lands — was 24px 16px while loading,
+     32px 16px 16px once resolved, a visible ~15px jump. min-height also now
+     stays 132px in both states so short diagrams don't shrink the card. */
+  padding: var(--tv-s6) var(--tv-s4) var(--tv-s4); position: relative; min-height: 132px;
   overflow-x: auto;
   /* Isolate diagram text from the .md reading-font zoom */
   font-size: 14px;
@@ -756,11 +888,14 @@ html, body, #tv-root {
   text-transform: uppercase; color: var(--tv-text-muted) !important; font-weight: 600;
 }
 /* UX-18: diagram render-failure state */
+/* C-25 (per modules' request): collapse one nesting level — this used to be
+   its own card (bg/border/radius) nested inside .tv-diagram, which is
+   already a card, with .dg-error-src (below) nested a THIRD level inside
+   that. Now a plain flex container; .tv-diagram (outer) + .dg-error-src
+   (the code block) are the only two card surfaces. */
 .tv-diagram .dg-error {
   display: flex; flex-direction: column; gap: 10px;
-  padding: var(--tv-s4); border-radius: var(--tv-radius-sm);
-  background: var(--tv-bg-sidebar) !important;
-  border: 1px solid var(--tv-border);
+  padding: 0;
 }
 .tv-diagram .dg-error-msg {
   font-size: 12.5px; font-weight: 600;
@@ -838,23 +973,20 @@ html, body, #tv-root {
    - transform-origin:0 0 set by JS so zoom anchors to pointer.
    - overflow:visible avoids clipping arrowheads at SVG edges.
 
-   :has(.tv-diagram-viewport) collapses loading min-height once
-   the viewport wrapper (holding the SVG) arrives.               */
-.tv-diagram:has(.tv-diagram-viewport) {
-  /* remove loading min-height once real SVG is rendered */
-  min-height: auto;
-  /* UX-26-overlap: top padding must clear the absolute-positioned .dg-label
-     (top:10px + ~18px line-height = 28px from border) so the SVG viewport
-     doesn't render on top of the "Diagram" badge. 32px (--tv-s6) gives a
-     4px gap between the label bottom and the viewport top edge. */
-  padding: var(--tv-s6) var(--tv-s4) var(--tv-s4);
-}
-/* The SVG inside the viewport: natural size, scalable by JS transform */
+   UX-26-overlap: the shared padding above already clears the absolute
+   .dg-label (top:10px + ~18px line-height = 28px from border; 32px top
+   padding gives a 4px gap) — no per-state override needed any more.
+   C-24: min-height is NOT reset here (was min-height:auto), so short
+   diagrams keep the loading card's reserved height instead of shrinking
+   it once the SVG resolves. */
+/* The SVG inside the viewport: natural size, scalable by JS transform,
+   centred (C-24: was left-aligned when narrower than the card). */
 .tv-diagram-viewport > svg {
   display: block;
   max-width: 100%;
   height: auto;        /* never force a height — preserves aspect ratio */
   overflow: visible;   /* avoid clipping arrowheads / shadows at edges */
+  margin: 0 auto;
   /* transform + transform-origin are set via CSSOM in _attachPinchZoom */
 }
 /* Fallback: if the SVG lands inside a .dg-flow wrapper
@@ -867,8 +999,12 @@ html, body, #tv-root {
 }
 
 /* ── zoom reset control ─────────────────────────────────────
-   Quiet badge in the bottom-right of the viewport at rest
-   (opacity .38); rises to .82 on viewport hover; full on own :hover.
+   C-24: was permanently visible (opacity .38 at rest) on every diagram
+   even at zoom=1, i.e. a "100%" readout nobody asked to see. Now chrome
+   on demand: invisible until the card is hovered/focused, or zoom has
+   actually changed (data-zoom, kept current by the diagram module) — at
+   which point it's a genuinely useful "you're not at 100%, click to reset"
+   affordance rather than permanent noise.
    Clicking resets zoom to 100%. Double-clicking the viewport also resets.
    Font-size is fixed 11px so it doesn't inherit the .md reading-zoom.  */
 .tv-zoom-ctrl {
@@ -887,14 +1023,19 @@ html, body, #tv-root {
   font-weight: 500;
   color: var(--tv-text-muted) !important;
   cursor: default;
-  opacity: .38;
+  opacity: 0;
   transition: opacity .15s, background .12s;
   -webkit-user-select: none; user-select: none;
   z-index: 2;
   pointer-events: auto;
 }
-.tv-diagram-viewport:hover .tv-zoom-ctrl { opacity: .82; }
-.tv-zoom-ctrl:hover {
+.tv-diagram:hover .tv-zoom-ctrl,
+.tv-diagram:focus-within .tv-zoom-ctrl,
+.tv-diagram[data-zoom]:not([data-zoom="1"]) .tv-zoom-ctrl {
+  opacity: .82;
+}
+.tv-zoom-ctrl:hover,
+.tv-zoom-ctrl:focus-visible {
   opacity: 1;
   background: var(--tv-bg-sel) !important;
   color: var(--tv-text-secondary) !important;
@@ -1286,7 +1427,11 @@ html, body, #tv-root {
    inline; dev1 removes that inline style so this CSS colour wins. */
 .tv-edit-area {
   font-family: var(--tv-font-mono);
-  font-size: 13px;
+  /* C-20: was a hardcoded 13px — the shell now scales this token from
+     setFontSize() so the editor grows/shrinks with the reading-mode zoom
+     instead of staying fixed. MUST stay identical to .tv-edit-mirror's
+     font-size below (see the CRITICAL METRIC CONSTRAINTS note there). */
+  font-size: var(--tv-edit-font, 13px);
   line-height: 1.72;
   tab-size: 2;
   /* fill the .tv-content column */
@@ -1344,9 +1489,10 @@ html, body, #tv-root {
   /* Positioning: absolute so it occupies the same space as the textarea */
   position: absolute;
   top: 0; left: 0; right: 0;
-  /* Match textarea geometry exactly */
+  /* Match textarea geometry exactly — C-20: var(--tv-edit-font), must stay
+     identical to .tv-edit-area's font-size above. */
   font-family: var(--tv-font-mono);
-  font-size: 13px;
+  font-size: var(--tv-edit-font, 13px);
   line-height: 1.72;
   tab-size: 2;
   padding: var(--tv-s6) var(--tv-s7) 80px;
@@ -1356,8 +1502,9 @@ html, body, #tv-root {
   /* Make the mirror's text visible but non-interactive */
   color: var(--tv-text-primary);
   pointer-events: none;
-  /* Hidden from AT — the textarea is the accessible element */
-  aria-hidden: true;
+  /* C-37: the mirror is hidden from AT via the aria-hidden="true" HTML
+     attribute set in markup — "aria-hidden: true" is not a CSS property
+     and this declaration never did anything; removed. */
   /* Allow the textarea (on top) to determine scroll position;
      the mirror just needs to be tall enough to not clip */
   overflow: hidden;
@@ -1458,6 +1605,23 @@ html, body, #tv-root {
   caret-color: var(--tv-accent);
 }
 .tv-pal-input-field::placeholder { color: var(--tv-text-muted) !important; }
+/* C-10: the global input:focus-visible rule (tv-app.css, ACCESSIBILITY
+   section) out-specifies these borderless fields' own outline:0, so focus
+   drew a hard 2px rectangle floating outside the field instead of hugging
+   the row it lives in. Kill that outline on the field itself and draw the
+   ring on its container instead — never removed, just relocated. */
+.tv-pal-input-field:focus-visible,
+.tv-find-input:focus-visible,
+.tv-search-field:focus-visible,
+.tv-search-input:focus-visible {
+  outline: 0 !important;
+}
+.tv-pal-input:focus-within {
+  box-shadow: none;   /* C-10 round 3: ring removed at the user's direction */
+}
+.tv-searchbar .field:focus-within {
+  box-shadow: none;   /* C-10 round 3: ring removed at the user's direction */
+}
 
 /* ── cross-tab search container ─────────────────────────── */
 /* UX-22: layout for the search UI injected by tv-search.js.
@@ -1552,9 +1716,15 @@ html, body, #tv-root {
    Quiet at rest; appears on pre:hover; intensifies on its own :hover.
    "Copied" state via .tv-copy--copied class (set/cleared by JS). */
 .md pre { position: relative; }      /* anchor for absolute copy btn   */
+/* C-32 / DR-58 departure (justified by DR-61 + WCAG 2.1.1): display:none
+   removed the button from the tab order entirely, so a keyboard-only user
+   could never Tab to it without first hovering the <pre> with a mouse —
+   the button has tabindex="0" (tv-markdown.js) but that's moot on a
+   display:none element. opacity+pointer-events keeps it in the tab order
+   at rest (still invisible and inert) so :focus-visible can reveal it. */
 .tv-copy {
   position: absolute; top: 8px; right: 8px;
-  display: none;                     /* hidden until pre hovered        */
+  display: inline-flex;
   align-items: center; gap: 5px;
   padding: 3px 8px;
   font-family: var(--tv-font-ui); font-size: 11.5px; font-weight: 500;
@@ -1564,12 +1734,17 @@ html, body, #tv-root {
   border-radius: var(--tv-radius-sm);
   cursor: default;
   opacity: 0;
+  pointer-events: none;
   transition: opacity .15s, background .12s, color .12s;
   z-index: 2;
   -webkit-user-select: none; user-select: none;
 }
 .md pre:hover .tv-copy,
-.md pre:focus-within .tv-copy { display: inline-flex; opacity: 1; }
+.md pre:focus-within .tv-copy,
+.tv-copy:focus-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
 .tv-copy:hover {
   background: var(--tv-bg-sel) !important;
   color: var(--tv-text-secondary) !important;
@@ -1588,7 +1763,10 @@ html, body, #tv-root {
    of all window chrome. Defensive fallback below handles the legacy
    .tv-root parent (pre-devA) by pushing past titlebar (40px) + tabbar.
    Dev-frontend uses: .tv-find, .tv-find-input, .tv-find-count,
-   .tv-find-nav, .tv-find-close, mark.tv-find-hit, mark.tv-find-current */
+   .tv-find-nav, .tv-find-close, mark[data-find], mark[data-find].current
+   (C-13: the .tv-find-hit / .tv-find-current class names below never
+   matched — the renderer emits the data-find attribute, not those
+   classes; see the correct selectors further down this section). */
 .tv-find {
   /* UV-03 DEFENSIVE: if still appended to .tv root, calc clears
      the 40px titlebar + tabbar height so it never overlaps chrome. */
@@ -1605,6 +1783,11 @@ html, body, #tv-root {
   min-width: 248px; max-width: 360px;
   -webkit-user-select: none; user-select: none;
 }
+/* C-10: focus ring hugs the bar itself (combined with the existing drop
+   shadow) instead of the browser default rectangle around the input. */
+.tv-find:focus-within {
+  box-shadow: var(--tv-shadow-pop);   /* C-10 round 3: accent ring removed */
+}
 .tv-find-input {
   flex: 1; min-width: 0;
   background: transparent; border: 0; outline: 0;
@@ -1617,9 +1800,10 @@ html, body, #tv-root {
   font-size: 11.5px; color: var(--tv-text-muted) !important;
   font-variant-numeric: tabular-nums; white-space: nowrap; flex: 0 0 auto;
 }
+/* C-32: 24×24 hit target (was 22×22, under the 24px a11y floor). */
 .tv-find-nav {
   display: inline-flex; align-items: center; justify-content: center;
-  min-width: 22px; min-height: 22px; border-radius: 5px;
+  min-width: 24px; min-height: 24px; border-radius: 5px;
   color: var(--tv-text-secondary) !important; cursor: default;
   border: 0; background: transparent;
   transition: background .1s;
@@ -1634,30 +1818,17 @@ html, body, #tv-root {
   margin-left: 2px;
 }
 .tv-find-close:hover { background: var(--tv-bg-hover) !important; color: var(--tv-text-secondary) !important; }
-/* Find hit highlights */
-mark.tv-find-hit {
-  background: var(--tv-accent-weak) !important;
-  color: var(--tv-accent-text) !important;
-  border-radius: 2px;
-  padding: 0 1px;
-  /* L-11-aligned: accent-text on accent-weak is AA-compliant after L-07 fix */
-}
 /* UV-03: when devA moves .tv-find into .tv-viewer, top:8px is the
    correct local offset (viewer is already below titlebar+tabbar). */
 .tv-viewer .tv-find { top: 8px; }
 
-mark.tv-find-current {
+/* C-13: current-match highlight. Every match gets the weak accent wash
+   from .md mark (tv-app.css ~1835); only the CURRENT one needs a stronger
+   fill here — !important is required to beat .md mark's own !important.
+   --tv-on-accent carries the UX-23 contrast matrix forward (tv-tokens.css). */
+.md mark[data-find].current {
   background: var(--tv-accent) !important;
-  /* UX-23: use near-black text for maximum contrast across all 6 theme×accent
-     combos. --tv-text-primary (#1d1d1f light / #e5e5ea dark) tested:
-     Light-blue:    #1d1d1f on #2d68d8 = 8.2:1  (≥7:1 target met)
-     Light-graphite:#1d1d1f on #586071 = 5.4:1  (≥4.5:1 AA pass)
-     Light-warm:    #1d1d1f on #c26a3a = 4.6:1  (≥4.5:1 AA pass)
-     Dark-blue:     #1d1d1f on #5a9cff = 7.6:1  (≥7:1 target met)
-     Dark-graphite: #1d1d1f on #9aa3b4 = 6.8:1  (≥4.5:1 AA pass)
-     Dark-warm:     #1d1d1f on #e0905c = 4.6:1  (≥4.5:1 AA pass)
-     All pass with dark text; no per-accent overrides needed. */
-  color: #1d1d1f !important;
+  color: var(--tv-on-accent) !important;
   border-radius: 2px;
   padding: 0 1px;
 }
@@ -1671,6 +1842,12 @@ mark.tv-find-current {
   width: 28px; height: 28px; border-radius: 7px;
   border: 0; background: transparent; cursor: default;
   color: var(--tv-text-muted) !important;
+  /* P0-1: .tv-wintitle no longer holds flex:1 space under html.tauri
+     (tv-tauri.css absolutely positions it), so this button is the titlebar's
+     only in-flow flex child there and would otherwise sit flush left against
+     the traffic-light gutter. margin-left:auto pins it to the right edge in
+     both builds; harmless in the browser where flex:1 already did the job. */
+  margin-left: auto; margin-right: 8px;
   /* UV-06: raised from .55 to .72 — effective non-text contrast:
      light #a4a4a6 on #e9e9e6 was 2.05:1 (fail 3:1 WCAG 1.4.11);
      .72 gives effective ~3.1:1 (pass). Hover still jumps to opacity:1. */
@@ -1684,13 +1861,16 @@ mark.tv-find-current {
   color: var(--tv-text-secondary) !important;
 }
 .tv-titlebtn:focus-visible {
-  outline: 2px solid var(--tv-accent);
-  outline-offset: 2px;
+  outline: var(--tv-focus-ring);
+  outline-offset: var(--tv-focus-offset);
   opacity: 1;
 }
 /* In Tauri overlay mode the titlebar right edge is ~12px from the window frame.
    No additional offset needed as the traffic lights are on the left (84px pad). */
 html.tauri .tv-titlebtn { margin-right: 2px; }
+/* C-37: moved from index.html's inline block, which no longer styles this
+   component at all (see the C-37 note there). */
+.tv-theme-toggle { line-height: 1; }
 
 /* ── sidebar recent files section (.tv-side-recent) ─────── */
 /* F-02 / U-09: "Recent Files" rows — consistent with .tv-tree-row but
@@ -1737,7 +1917,8 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
 /* ── UX-SB5: sidebar per-row close button ────────────────────
    Hidden at rest (opacity:0); visible when the row is hovered
    or carries the keyboard cursor (.kbd-cursor). Flexes to the
-   right edge via margin-left:auto. Hit area is 20×20 px min.
+   right edge via margin-left:auto. C-32: hit area raised to 24×24 min
+   (was 20×20, under the a11y floor; the 30px row from C-28 has room).
    Sits after .mini-bolt in the row flex layout; margin-left:auto
    on .name already pushes trailing items right — the button uses
    its own margin-left:auto so it always reaches the right edge
@@ -1748,9 +1929,9 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
   align-items: center;
   justify-content: center;
   margin-left: auto;
-  width: 20px;
-  min-width: 20px;
-  height: 20px;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
   border-radius: 4px;
   border: 0;
   background: transparent;
@@ -1774,7 +1955,7 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
 /* Active (pressed) state */
 .tv-sb-close:active { background: var(--tv-border) !important; }
 /* Focus ring for keyboard access */
-.tv-sb-close:focus-visible { outline: 2px solid var(--tv-accent); outline-offset: 1px; opacity: 1; }
+.tv-sb-close:focus-visible { outline: var(--tv-focus-ring); outline-offset: var(--tv-focus-offset); opacity: 1; }
 
 /* ── UX-SB6: folder row muted path suffix ────────────────────
    .folder-name is the uppercase basename (already present via > span).
@@ -1814,21 +1995,12 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
 }
 
 /* ── font-size / zoom scaling support ───────────────────── */
-/* F-11 / U-07: if dev-frontend sets --tv-md-font or --tv-content-scale,
-   the .md block scales accordingly. JS should set --tv-md-font on .tv root.
-   Zoom utility classes .tv--zoom-sm / .tv--zoom-md / .tv--zoom-lg provided
-   as an alternative class-based approach. */
+/* F-11 / U-07: dev-frontend sets --tv-md-font on .tv root (setFontSize in
+   tv-app.js); the .md block and its heading ramp (now in em, see above)
+   scale from it automatically.
+   C-20: the .tv--zoom-sm/md/lg class-based alternative was never applied
+   by any JS (setFontSize writes --tv-md-font directly) — dead CSS, removed. */
 .md { font-size: var(--tv-md-font, 16px); }
-.tv--zoom-sm .md { --tv-md-font: 14px; }
-.tv--zoom-md .md { --tv-md-font: 16px; }
-.tv--zoom-lg .md { --tv-md-font: 18px; }
-/* Headings scale proportionally — they already use px so recalc from root */
-.tv--zoom-sm .md h1 { font-size: 24px; }
-.tv--zoom-sm .md h2 { font-size: 19px; }
-.tv--zoom-sm .md h3 { font-size: 16px; }
-.tv--zoom-lg .md h1 { font-size: 32px; }
-.tv--zoom-lg .md h2 { font-size: 25px; }
-.tv--zoom-lg .md h3 { font-size: 20px; }
 
 /* ── <mark> highlight contrast ───────────────────────────── */
 /* Ensure <mark> elements in .md have sufficient contrast.
@@ -1842,16 +2014,24 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
   padding: 0 2px;
 }
 
-/* ── h5 / h6 heading scale (C-06) ───────────────────────── */
+/* ── h5 / h6 heading scale (C-06, corrected by C-22) ─────── */
+/* C-22: h5/h6 were added after the design-bundle's h1–h4 ramp and
+   inverted it — h5 rendered 14px full-black ABOVE h4's 16px secondary
+   grey, so the hierarchy read backwards past h4. Both now descend below
+   h4 in size, weight colour and (h6) case, matching a normal ramp.
+   Sizes in em of --tv-md-font (C-20): .84375em=13.5px, .78125em=12.5px
+   at the 16px default. */
 .md h5 {
-  font-size: 14px; font-weight: 600;
+  font-size: .84375em; font-weight: 600; line-height: 1.35;
+  letter-spacing: .02em;
   margin: var(--tv-s4) 0 var(--tv-s2);
-  color: var(--tv-text-primary) !important;
+  color: var(--tv-text-secondary) !important;
 }
 .md h6 {
-  font-size: 13px; font-weight: 600;
+  font-size: .78125em; font-weight: 600; line-height: 1.35;
+  text-transform: uppercase; letter-spacing: .02em;
   margin: var(--tv-s4) 0 var(--tv-s1);
-  color: var(--tv-text-secondary) !important;
+  color: var(--tv-text-muted) !important;
 }
 
 /* ── strikethrough (C-12) ────────────────────────────────── */
@@ -1901,14 +2081,17 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
    ═══════════════════════════════════════════════════════════ */
 
 /* ── visible keyboard focus rings ───────────────────────── */
+/* C-32: every :focus-visible rule in this file draws the ring from these
+   two tokens (tv-tokens.css) instead of repeating "2px solid var(--tv-accent)"
+   with an inconsistent offset (1px in some older rules, 2px in others). */
 .tv-tab:focus-visible,
 .tv-pal-row:focus-visible,
 .tv-sr-row:focus-visible,
 button:focus-visible,
 input:focus-visible,
 [tabindex]:focus-visible {
-  outline: 2px solid var(--tv-accent);
-  outline-offset: 2px;
+  outline: var(--tv-focus-ring);
+  outline-offset: var(--tv-focus-offset);
 }
 
 /* ── reduced-motion: disable all decorative animations ──── */
@@ -1960,29 +2143,15 @@ input:focus-visible,
     opacity: 1 !important;
     transform: translateX(-50%) !important;
   }
-  /* L-16: suppress micro-transitions (0.10–0.12s) per WCAG 2.3.3 */
-  /* DR-115: .tv-folder-head added — not a .tv-tree-row but shares the cursor cascade */
-  .tv-tab,
-  .tv-newtab,
-  .tv-side-toggle,
-  .tv-close,
-  .tv-prefs-swatch,
-  .tv-prefs-btn,
-  .tv-tree-row,
-  .tv-folder-head,
-  .tv-pal-row { transition: none !important; }
-  /* UV-09: round-5 components with transition — missing from prior block */
-  .tv-titlebtn,
-  .tv-copy,
-  .tv-find-nav,
-  .tv-find-close,
-  .tv-sidebar-resizer { transition: none !important; }
-  /* UX-SB: new sidebar header/search transitions */
-  .tv-side-collapse,
-  .tv-search-box { transition: none !important; }
-  /* UX-SB5: sidebar row close button transition */
-  .tv-sb-close { transition: none !important; }
-  /* F-15: large-file banner auto-dismiss */
+  /* C-32: the old L-16/UV-09/UX-SB* blocks enumerated every transitioning
+     component by name (.tv-tab, .tv-newtab, .tv-close, .tv-titlebtn, ...) —
+     easy to miss a new one (that's exactly why UV-09 existed, to catch
+     components the first pass missed). Replaced by the blanket rule near
+     the top of this file (`.tv *, .tv *::before, .tv *::after`), which
+     covers every element's transitions automatically, present or future.
+     F-15's large-file banner auto-dismiss stays a deliberate exception
+     below: animation:none disables the auto-hide entirely (not just its
+     duration) so reduced-motion users get more time with the banner. */
   .tv-large-banner { animation: none !important; }
 }
 
@@ -2010,7 +2179,12 @@ input:focus-visible,
 .tv-error-badge {
   font-size: 32px;
   line-height: 1;
-  color: #d9920c; /* amber — no warn token defined in the palette */
+  /* C-37: was a hex literal (#d9920c light / #e8b04a dark override below,
+     now removed) — points at the shared warn token; resolves per theme.
+     P1-6: --tv-warn-text is the border/copy shade (#8a5d00 light); the
+     badge needs the brighter, more saturated accent restored as
+     --tv-warn-strong so it does not go muddy against the banner text. */
+  color: var(--tv-warn-strong);
 }
 .tv-error-title {
   font-size: 16px;
@@ -2040,8 +2214,15 @@ input:focus-visible,
   cursor: default;
   transition: background .12s, border-color .12s;
 }
-.tv-error-btn:hover { background: var(--tv-bg-hover) !important; }
-.tv-error-btn:focus-visible { outline: 2px solid var(--tv-accent); outline-offset: 2px; }
+/* C-39: hover swaps to a solid accent fill, never a neutral surface — the
+   button is the primary recovery action on an error tab and should never
+   read as "disabled" or de-emphasised on hover. */
+.tv-error-btn:hover {
+  background: var(--tv-accent) !important;
+  color: var(--tv-on-accent) !important;
+  border-color: var(--tv-accent);
+}
+.tv-error-btn:focus-visible { outline: var(--tv-focus-ring); outline-offset: var(--tv-focus-offset); }
 
 /* ── F-15: large-file banner (non-blocking, auto-dismisses) ── */
 .tv-large-banner {
@@ -2052,9 +2233,11 @@ input:focus-visible,
   max-width: var(--tv-readable-w, 720px);
   padding: 8px 12px;
   font-size: 12.5px;
-  color: #8a5d00;
-  background: #fdf3dc;
-  border: 1px solid #f0d79a;
+  /* C-37: hex literals (light #8a5d00/#fdf3dc/#f0d79a, dark override below,
+     now removed) replaced by the shared warn tokens; resolves per theme. */
+  color: var(--tv-warn-text);
+  background: var(--tv-warn-weak);
+  border: 1px solid var(--tv-warn);
   border-radius: var(--tv-radius-md, 8px);
   animation: tvLargeBannerDismiss .4s ease 6s forwards;
 }
@@ -2075,8 +2258,8 @@ input:focus-visible,
 @keyframes tvLargeBannerDismiss {
   to { opacity: 0; height: 0; margin: 0; padding: 0; border-width: 0; visibility: hidden; }
 }
-.tv--dark .tv-large-banner { color: #e8c884; background: #2e2614; border-color: #4a3c1c; }
-.tv--dark .tv-error-badge { color: #e8b04a; }
+/* C-37: dark overrides removed — --tv-warn-text/-weak/-warn above already
+   resolve to the dark values (tv-tokens.css) via the .tv--dark cascade. */
 
 /* ═══════════════════════════════════════════════════════════
    F-19: MULTI-FOLDER SIDEBAR TREE (DR-33–DR-41)
@@ -2085,7 +2268,17 @@ input:focus-visible,
 /* Folder section header ------------------------------------ */
 .tv-folder-head {
   display: flex; align-items: center; gap: 6px;
-  padding: 5px 8px; margin: 1px 0; border-radius: var(--tv-radius-sm);
+  /* C-28: 30px to match .tv-tree-row.subfolder/.file — was 28px (5px
+     padding-block, no border), a 2px mismatch that made folder headers
+     read as a slightly different control than the rows beneath them.
+     padding-block dropped 5px→3px: the row always renders a .folder-x
+     button, which C-32 grew to 24px — at 5px padding-block the row's
+     hypothetical content height (24 + 5 + 5 = 34px) overrode min-height,
+     so the floor alone wasn't enough here; 3px leaves exactly 30px
+     (24 + 3 + 3). Not touching the 14px rail step / 13px offset /
+     --tv-depth / background-color ordering the sidebar tests pin. */
+  padding: 3px 8px; margin: 1px 0; border-radius: var(--tv-radius-sm);
+  min-height: 30px;
   font-size: 13px; font-weight: 600; color: var(--tv-text-primary) !important;
   cursor: default; -webkit-user-select: none; user-select: none;
 }
@@ -2108,15 +2301,21 @@ input:focus-visible,
 }
 
 /* Folder close × button ------------------------------------ */
+/* C-32: 24×24 hit target (was 18×18). Also drops the permanent opacity:.7
+   — it used to sit visible on every folder header at rest; now it's hidden
+   (opacity:0) until the row is hovered/focused, matching .tv-sb-close's
+   reveal-on-row-interaction pattern elsewhere in the sidebar. */
 .folder-x {
-  width: 18px; height: 18px; border-radius: 4px; margin-left: 4px;
+  width: 24px; height: 24px; border-radius: 4px; margin-left: 4px;
   display: inline-flex; align-items: center; justify-content: center;
-  color: var(--tv-text-muted) !important; opacity: .7; flex: 0 0 auto;
+  color: var(--tv-text-muted) !important; opacity: 0; flex: 0 0 auto;
   transition: opacity .12s, background .12s;
   border: 0; background: transparent; cursor: pointer;
   -webkit-user-select: none; user-select: none;
 }
-.tv-folder-head:hover .folder-x { opacity: 1; }
+.tv-folder-head:hover .folder-x,
+.tv-folder-head:focus-within .folder-x,
+.tv-folder-head.kbd-cursor .folder-x { opacity: 1; }
 .folder-x:hover { background: var(--tv-bg-sel) !important; color: var(--tv-text-primary) !important; }
 @media (prefers-reduced-motion: reduce) { .folder-x { transition: none !important; } }
 
@@ -2132,6 +2331,9 @@ input:focus-visible,
    22px here was the depth-as-a-boolean the design calls DEFECT 1, and it is
    what the flat native tree fell back to. */
 .tv-tree-row.subfolder {
+  /* min-height:30px comes from the shared .subfolder,.file rule above
+     (C-28) — was 26px before that (4px padding-block + 1px top/bottom
+     border), now matching .tv-tree-row.file and .tv-folder-head. */
   padding-top: 4px; padding-right: 8px; padding-bottom: 4px;
   font-weight: 550;
   color: var(--tv-text-secondary) !important; gap: 6px;
@@ -2145,14 +2347,24 @@ input:focus-visible,
    and so misses the transparent 1px borders the gradient paints through).
    Do not reintroduce a ::before rail here. */
 
-/* A4 / B2: empty-folder placeholder + truncation indicator. Muted, italic,
-   non-interactive footer rows inside a folder body. No role=option → the
-   keyboard cursor never lands on them. */
-.tv-tree-empty,
-.tv-tree-truncated {
-  padding-left: 26px;
+/* A4: empty-folder placeholder. Muted, italic, non-interactive footer row
+   inside a folder body. No role=option → the keyboard cursor never lands
+   on it.
+   B2/C-29: .tv-tree-truncated dropped from this selector — C-29 removed its
+   only emitter (the "Some items not shown" footer is now the interactive
+   .tv-tree-more row, owner: shell) so it was dead CSS. */
+.tv-tree-empty {
+  /* C-28: matches the smaller footer-row treatment (was inheriting the
+     13px tree-row size). padding-left: 24px is the depth-0 file indent
+     (8 + 0*14 + 16 gutter = treeIndent()) as a static FALLBACK — shell now
+     gives this row a real data-tv-depth, so applyTreeDepths sets an inline
+     padding-left that wins whenever the attribute is present; this value
+     only applies if it's ever missing. */
+  padding-left: 24px;
   color: var(--tv-text-muted);
   font-style: italic;
+  font-size: 11.5px;
+  line-height: 1.4;
 }
 
 /* SBH-01: the `.nested` one-level alias (padding-left: 42px) is GONE — it was
@@ -2199,8 +2411,10 @@ input:focus-visible,
 .tv-ctx-item .ic { color: var(--tv-text-muted) !important; display: inline-flex; flex: 0 0 auto; }
 .tv-ctx-item:hover { background: var(--tv-accent-weak) !important; color: var(--tv-accent-text) !important; }
 .tv-ctx-item:hover .ic { color: var(--tv-accent-text) !important; }
-.tv-ctx-item.danger:hover { background: rgba(192,69,58,.14) !important; color: #c0453a !important; }
-.tv-ctx-item.danger:hover .ic { color: #c0453a !important; }
+/* C-37: hex/rgba literals replaced by the shared danger tokens; resolves
+   per theme (light #c0453a / dark #ff8a80, tv-tokens.css). */
+.tv-ctx-item.danger:hover { background: var(--tv-danger-weak) !important; color: var(--tv-danger) !important; }
+.tv-ctx-item.danger:hover .ic { color: var(--tv-danger) !important; }
 .tv-ctx-sep { height: 1px; background: var(--tv-border) !important; margin: 5px 6px; }
 .tv-ctx-item.disabled { opacity: .38; pointer-events: none; }
 .tv-ctx-hint { margin-left: auto; font-size: 11px; opacity: .55; letter-spacing: .01em; }
@@ -2241,7 +2455,9 @@ input:focus-visible,
 }
 .tv-sc-col:last-child .tv-sc-row:last-child,
 .tv-sc-col .tv-sc-row:last-child { border-bottom: 0; }
-.tv-sc-keys { flex: 0 0 96px; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+/* C-18: right-align — the keycap column is a fixed 96px slot; contents were
+   left-aligned so a short cap like "?" floated ~90px from its label. */
+.tv-sc-keys { flex: 0 0 96px; display: flex; align-items: center; justify-content: flex-end; gap: 4px; flex-wrap: wrap; }
 .tv-sc-or { color: var(--tv-text-muted) !important; font-size: 11px; }
 .tv-sc-key {
   font: 500 11px var(--tv-font-ui); line-height: 1;
@@ -2250,3 +2466,566 @@ input:focus-visible,
   border: 1px solid var(--tv-border); white-space: nowrap;
 }
 .tv-sc-action { flex: 1; font-size: 13px; color: var(--tv-text-primary) !important; min-width: 0; }
+
+/* ── Polish pass additions (owner: native) ── */
+
+/* C-01 · toast host.
+   Toasts live in <body>, not inside TV.el(): render() replaces that subtree
+   (tv-app.js:2457), so a toast mounted there would disappear on the very
+   renders that follow a save failure or a file-changed event. The host
+   instead carries the app root's own `tv tv--<theme> tv--accent-<accent>`
+   classes (kept in sync by tv-native.js), so every design token resolves.
+   Every rule is scoped under #tv-toasts, so it overrides the older
+   single-toast positioning without editing it. */
+#tv-toasts {
+  /* The host carries the `tv` class so the tokens resolve, which also drags in
+     `.tv`'s root layout (width/height 100%, an !important surface background,
+     overflow:hidden). Neutralise all of it here — the ID wins on specificity,
+     including against the !important background. */
+  height: auto;
+  width: max-content;
+  overflow: visible;
+  background: transparent !important;
+  position: fixed;
+  left: 50%;
+  bottom: 56px;
+  transform: translateX(-50%);
+  z-index: 200;                 /* above every overlay (highest existing: 100) */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  max-width: min(560px, calc(100vw - 48px));
+  pointer-events: none;         /* the host never eats clicks; toasts opt back in */
+}
+
+/* P2-5: the comment that used to sit here ("the token set has no danger
+   colour, written as literals") went stale the moment C-37 added
+   --tv-danger / --tv-danger-weak in the very same pass — see the error
+   toast rule below, which now uses the token instead of a hand-picked
+   near-duplicate of it. */
+
+#tv-toasts .tv-toast {
+  position: static;             /* the host owns placement now */
+  transform: none !important;   /* beats the reduced-motion translateX(-50%) */
+  max-width: 100%;
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  white-space: normal;          /* error copy is a sentence — let it wrap */
+  text-align: left;
+  line-height: 1.45;
+  pointer-events: auto;         /* so the dismiss control is clickable */
+  /* Rise + fade uses the independent `translate` property: `transform` is
+     pinned above, so the reduced-motion override cannot half-apply here. */
+  animation: tv-toast-rise .18s ease forwards;
+}
+#tv-toasts .tv-toast.out { animation: tv-toast-sink .18s ease forwards; }
+
+@keyframes tv-toast-rise { from { opacity: 0; translate: 0 6px; } to { opacity: 1; translate: 0 0; } }
+@keyframes tv-toast-sink { from { opacity: 1; translate: 0 0; } to { opacity: 0; translate: 0 6px; } }
+
+/* Error toasts read as errors, carry a dismiss control and stay ~6s.
+   P2-5: border uses --tv-danger (resolves per theme on its own, so the old
+   separate .tv--dark override — a hand-typed near-duplicate of the same
+   colour, rgba(255,120,112) vs the token's #ff8a80 — is gone) at ~55%
+   alpha via color-mix(), same progressive-enhancement pattern as .md a's
+   underline above; the solid token is the fallback without color-mix(). */
+#tv-toasts .tv-toast--error {
+  border-color: var(--tv-danger);
+  color: var(--tv-text-primary) !important;
+  padding-right: 8px;
+}
+@supports (border-color: color-mix(in srgb, red 55%, transparent)) {
+  #tv-toasts .tv-toast--error {
+    border-color: color-mix(in srgb, var(--tv-danger) 55%, transparent);
+  }
+}
+
+#tv-toasts .tv-toast-text { flex: 1 1 auto; min-width: 0; }
+
+#tv-toasts .tv-toast-x {
+  flex: 0 0 auto;
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;                    /* no native WebKit bezel on a quiet icon button */
+  background: transparent !important;
+  color: var(--tv-text-muted) !important;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+  padding: 0 5px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+#tv-toasts .tv-toast-x:hover {
+  background: var(--tv-bg-sel) !important;
+  color: var(--tv-text-primary) !important;
+}
+
+/* P2-6: .tv-toast-live is gone — #tv-toasts no longer owns its own aria-live
+   region. showToast() (tv-native.js) now calls TV.announce(), which uses
+   the shell's single #tv-live-region (.tv-visually-hidden, below), so there
+   is exactly one polite live region in the app instead of two. */
+
+@media (prefers-reduced-motion: reduce) {
+  #tv-toasts .tv-toast,
+  #tv-toasts .tv-toast.out {
+    animation: none !important;
+    opacity: 1 !important;
+    translate: none !important;
+  }
+}
+
+/* ── Polish pass additions (owner: shell) ── */
+
+/* C-05: middle-truncating file labels.
+   The label is a head that shrinks (and ellipsises) plus a tail that never
+   does, so the extension and the distinguishing last characters always survive
+   — the macOS convention (Finder, the Dock, Xcode). inline-flex so a name that
+   FITS shrink-wraps and shows no ellipsis at all. These live INSIDE the
+   existing .name / .tname / bare-span label slots, which keep their own rules. */
+.tv-lbl {
+  display: inline-flex;
+  align-items: baseline;
+  max-width: 100%;
+  min-width: 0;
+  vertical-align: top;
+}
+.tv-lbl-head {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.tv-lbl-tail {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* C-06: the ⌄ all-open-tabs control. Quiet at rest (DR-07), and JS keeps the
+   `hidden` attribute on it whenever the strip does not overflow — so nothing
+   here may beat [hidden]'s display:none. Flat: a bare <button> otherwise
+   renders a native WebKit bezel. */
+.tv-tab-overflow[hidden] { display: none !important; }
+.tv-tab-overflow {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px; height: 24px;
+  margin: 0 1px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  -webkit-appearance: none;
+  appearance: none;
+  color: var(--tv-text-muted) !important;
+  cursor: pointer;
+}
+.tv-tab-overflow:hover {
+  background: var(--tv-bg-hover) !important;
+  color: var(--tv-text-primary) !important;
+}
+.tv-tab-overflow:focus-visible {
+  outline: var(--tv-focus-ring, 2px solid var(--tv-accent));
+  outline-offset: 1px;
+}
+
+/* C-16: first-run screen.
+   .tv-empty is a ROW flex, so the recent list used to render beside the drop
+   card and the trust line was absolutely pinned to the window bottom, 250 px
+   away from anything it referred to. One column wrapper fixes both. */
+.tv-empty-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 420px;
+}
+.tv-empty-stack > .tv-empty-hint {
+  position: static;
+  left: auto; right: auto; bottom: auto;
+  width: 100%;
+  margin-top: 20px;
+}
+/* The quiet second line on the drop card: the other three ways in. */
+.tv-dropzone .dz-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  margin-top: 14px;
+  font-size: 11.5px;
+  color: var(--tv-text-muted) !important;
+}
+/* Each hint is one unbreakable unit, so the line wraps AT the middle dots
+   rather than orphaning "shortcuts" onto its own row. */
+.tv-dropzone .dz-more-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  white-space: nowrap;
+}
+.tv-dropzone .dz-more .kbd { font-size: 10.5px; padding: 1px 5px; }
+.tv-dropzone .dz-sep { opacity: .55; }
+
+/* C-29: "Show N more files" replaces the dead "Some items not shown" footer.
+   It inherits the muted footer treatment but is a real control, so it gets a
+   pointer, a hover and a focus/cursor state. Not italic: it is an action, and
+   italic in this panel means "transient". */
+.tv-tree-more {
+  display: flex;
+  align-items: center;
+  min-height: 28px;
+  padding: 5px 8px 5px 24px;
+  font-size: 11.5px;
+  color: var(--tv-text-secondary) !important;
+  cursor: pointer;
+  user-select: none;
+}
+.tv-tree-more:hover { background-color: var(--tv-bg-hover) !important; }
+.tv-tree-more.loading {
+  color: var(--tv-text-muted) !important;
+  cursor: default;
+  pointer-events: none;
+}
+.tv-tree-more.kbd-cursor {
+  background-color: var(--tv-bg-sel) !important;
+  color: var(--tv-text-primary) !important;
+}
+
+/* C-33: Esc now discards, so the exit button says "Discard" the moment there
+   is something to discard. Tinted, not filled: it is the quiet secondary
+   action beside Save, and shouting at the user would be worse than the silence
+   it replaces. On a clean document the class is absent and it reads "Done". */
+.tv-edit-btn.danger {
+  color: var(--tv-danger) !important;
+  border-color: var(--tv-danger-weak);
+}
+.tv-edit-btn.danger:hover { background: var(--tv-danger-weak) !important; }
+
+/* C-32: the shell's persistent polite live region — announced, never seen. */
+.tv-visually-hidden {
+  position: absolute;
+  width: 1px; height: 1px;
+  margin: -1px; padding: 0; border: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* C-32: .tv-close is now a real <button>. Flatten the native WebKit bezel —
+   a bare <button> otherwise paints a border and background of its own. The
+   existing .tv-tab .tv-close rules (opacity, hover, focus ring) still apply. */
+.tv-tab button.tv-close {
+  border: 0;
+  padding: 0;
+  font: inherit;
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+/* C-39: last-known path on the error card. Selectable so it can be copied;
+   monospace so a path reads as a path. Kept off the printed page — U-15
+   deliberately writes only the basename into shared PDFs. */
+.tv-error-path {
+  margin-top: 2px;
+  font-family: var(--tv-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11.5px;
+  color: var(--tv-text-muted) !important;
+  word-break: break-all;
+  user-select: text;
+  -webkit-user-select: text;
+}
+@media print { .tv-error-path { display: none !important; } }
+
+/* C-39: the ⚠ lead glyph in the tab strip, sharing the bolt/dot slot. */
+.tv-tab .tv-tab-warn {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--tv-danger, #b33128) !important;
+}
+
+/* C-30: the muted parent segment appended to a colliding folder header. */
+.tv-hdr-parent {
+  color: var(--tv-text-muted) !important;
+  font-weight: 400;
+}
+
+/* C-18: folded into the original .tv-sc-keys rule (css-polish owns it). */
+
+/* C-16: placeholder for a sidebar with nothing in it yet. */
+.tv-side-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 34px 16px;
+  text-align: center;
+}
+.tv-side-empty-ic { color: var(--tv-text-muted) !important; opacity: .6; }
+.tv-side-empty-title {
+  font-size: 12.5px;
+  color: var(--tv-text-secondary) !important;
+}
+.tv-side-empty-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  padding: 5px 10px;
+  border: 0;
+  border-radius: 7px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: var(--tv-bg-hover) !important;
+  color: var(--tv-text-primary) !important;
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.tv-side-empty-btn:hover { background: var(--tv-bg-sel) !important; }
+.tv-side-empty-btn:focus-visible {
+  outline: var(--tv-focus-ring, 2px solid var(--tv-accent));
+  outline-offset: 1px;
+}
+
+/* The list itself reuses .tv-ctx / .tv-ctx-item; only the row accents are new. */
+.tv-tab-overflow-menu { min-width: 200px; max-height: 60vh; overflow-y: auto; }
+.tv-tab-overflow-menu .tv-tof-active { font-weight: 650; }
+.tv-tab-overflow-menu .tv-tof-live { color: var(--tv-live) !important; }
+.tv-tab-overflow-menu .tv-tof-dot {
+  color: var(--tv-accent) !important;
+  font-size: 9px;
+  line-height: 1;
+}
+
+/* ── Polish pass additions (owner: modules) ── */
+
+/* C-12: cross-tab search close button — same 24×24 floor as the already-
+   hardened .tv-find-nav (WCAG 2.5.8), placed after .scope in the bar. */
+.tv-search-close {
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 24px; min-height: 24px; border-radius: 5px;
+  color: var(--tv-text-muted) !important; cursor: default;
+  border: 0; background: transparent;
+  transition: background .1s;
+  flex: 0 0 auto; margin-left: 4px;
+}
+.tv-search-close:hover { background: var(--tv-bg-hover) !important; color: var(--tv-text-secondary) !important; }
+.tv-search-close:focus-visible {
+  outline: var(--tv-focus-ring, 2px solid var(--tv-accent));
+  outline-offset: 1px;
+}
+
+/* C-12: "Show N more" — a plain text row, not a full button chrome, so it
+   reads as an extension of the file's hit list rather than a new control. */
+.tv-sr-more {
+  padding: 6px 12px 6px 34px;
+  font-size: 12px; font-weight: 500;
+  color: var(--tv-accent-text) !important;
+  cursor: default;
+}
+.tv-sr-more:hover, .tv-sr-more:focus-visible {
+  background: var(--tv-bg-hover) !important;
+  outline: 0;
+}
+
+/* C-41: labelled drop-target card — .tv-drag-over previously tinted the
+   whole window with no text (unlabelled wash); this names the outcome and
+   accepted types. pointer-events:none so it never swallows the drop it is
+   advertising. Positioned via CSS classes only (CLAUDE.md CSP rule: no
+   inline style="left/top" under the Tauri WKWebView). */
+.tv-drag-card {
+  position: fixed;
+  top: 50%; left: 50%;
+  transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 26px 34px 24px;
+  border-radius: 14px;
+  background: var(--tv-bg-elev) !important;
+  border: 1px solid var(--tv-border-strong);
+  box-shadow: var(--tv-shadow-pop);
+  pointer-events: none;
+  /* C-41 (round 2): the wash at .tv-drag-over::after is z-index 100, so the
+     card sat UNDER its own tint and read as unfinished. It now sits above. */
+  z-index: 120;
+  text-align: center;
+}
+/* The icon gets a tinted disc so the card has a focal point instead of a
+   bare glyph floating over the headline. */
+.tv-drag-card-ring {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 52px; height: 52px; margin-bottom: 6px;
+  border-radius: 50%;
+  background: var(--tv-accent-weak) !important;
+}
+.tv-drag-card .ic { width: 24px; height: 24px; color: var(--tv-accent) !important; }
+.tv-drag-card .ic svg { width: 100%; height: 100%; }
+.tv-drag-card-title {
+  font-size: 16px; font-weight: 600; letter-spacing: -.01em;
+  color: var(--tv-text-primary) !important;
+}
+.tv-drag-card-msg {
+  font-size: 12px; font-weight: 400;
+  color: var(--tv-text-muted) !important;
+}
+@media (prefers-reduced-motion: no-preference) {
+  .tv-drag-card { animation: tv-drag-card-in .18s cubic-bezier(.2,.8,.3,1); }
+  /* Slow breathe on the disc: immediate feedback that the window is armed,
+     without the card itself moving under the cursor. */
+  .tv-drag-card-ring { animation: tv-drag-pulse 1.8s ease-in-out infinite; }
+}
+@keyframes tv-drag-card-in {
+  from { opacity: 0; transform: translate(-50%, -50%) scale(.96); }
+  to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+}
+@keyframes tv-drag-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 var(--tv-accent-weak); }
+  50%      { box-shadow: 0 0 0 12px transparent; }
+}
+}
+
+/* C-25: warn glyph + --tv-warn-text title on the diagram error state.
+   Additive classes (.tv-warn / .tv-warn-line) so the base .dg-error-msg /
+   .dg-error-src-line rules stay css-polish's alone; scoped under
+   .tv-diagram for unambiguous specificity over the existing rule. */
+.tv-diagram .dg-error-msg.tv-warn {
+  display: flex; align-items: center; gap: 6px;
+  color: var(--tv-warn-text) !important;
+}
+.tv-diagram .dg-error-ic { color: var(--tv-warn-text) !important; flex: 0 0 auto; }
+.tv-diagram .dg-error-src-line.tv-warn-line {
+  display: inline-block;
+  background: var(--tv-warn-weak) !important;
+  color: var(--tv-warn-text) !important;
+  border-radius: 2px;
+}
+
+/* C-27: the failed image src, in muted monospace under the glyph, shown
+   only while the placeholder is showing (.tv-img-missing) — and the
+   duplicate alt-text caption is suppressed in that state so the same
+   string is not shown twice. Hidden under print for consistency with
+   U-15's no-full-paths-in-PDFs choice (tv-app.js buildPrintHeader). */
+.md .md-img.tv-img-missing .cap { display: none; }
+.md .md-img .tv-img-placeholder-src {
+  font-family: var(--tv-font-mono); font-size: 11px;
+  color: var(--tv-text-muted) !important;
+}
+@media print {
+  .tv-img-placeholder-src { display: none !important; }
+}
+
+/* C-32: .tv-pin became a <button> (was a <span>) for keyboard/AT
+   reachability; reset the native button chrome a <span> never had to
+   preserve the existing pill look exactly (button-bezel gotcha). */
+button.tv-pin {
+  appearance: none; -webkit-appearance: none;
+  font: inherit;
+  cursor: pointer;
+}
+
+/* C-26 / P1-2: right-edge fade cueing more horizontally-scrollable content,
+   for .md pre / .md .tbl-wrap / .tv-diagram.
+   P1-2 fix: the original ::after pseudo-element was `position:absolute` on
+   the scroll container itself — absolutely positioned descendants are part
+   of their scroller's own scrollable overflow, so the fade slid left with
+   the content instead of staying pinned to the visible right edge. A
+   mask-image lives on the element's border box and is repainted at the
+   current viewport on every frame regardless of scrollLeft, so it cannot
+   drift. Gradients are alpha-only masks (transparent = hidden, black =
+   shown); a second, solid mask layer unions in (default source-over/`add`
+   compositing) to force full opacity over the 40px band that holds
+   .tv-copy (pre) / .tv-zoom-ctrl (diagram) so the fade can never wash them
+   out even though they are real children of the masked element. */
+.md pre[data-overflow="1"],
+.tv-diagram[data-overflow="1"] {
+  -webkit-mask-repeat: no-repeat, no-repeat;
+  mask-repeat: no-repeat, no-repeat;
+  -webkit-mask-image:
+    linear-gradient(to left, transparent, black 28px),
+    linear-gradient(black, black);
+  mask-image:
+    linear-gradient(to left, transparent, black 28px),
+    linear-gradient(black, black);
+}
+.md pre[data-overflow="1"] {
+  /* clear .tv-copy (top-right, ~40px tall) */
+  -webkit-mask-size: 100% 100%, 100% 40px;
+  mask-size: 100% 100%, 100% 40px;
+  -webkit-mask-position: 0 0, 0 0;
+  mask-position: 0 0, 0 0;
+}
+.md .tbl-wrap[data-overflow="1"] {
+  /* tables have no top/bottom-right control to clear — single-layer fade */
+  -webkit-mask-repeat: no-repeat;
+  mask-repeat: no-repeat;
+  -webkit-mask-image: linear-gradient(to left, transparent, black 28px);
+  mask-image: linear-gradient(to left, transparent, black 28px);
+}
+.tv-diagram[data-overflow="1"] {
+  /* clear .tv-zoom-ctrl (bottom-right, ~40px tall) */
+  -webkit-mask-size: 100% 100%, 100% 40px;
+  mask-size: 100% 100%, 100% 40px;
+  -webkit-mask-position: 0 0, 0 100%;
+  mask-position: 0 0, 0 100%;
+}
+
+/* ── Round-2 polish (owner: shell) — from the verification review ─────────
+   Five items came back marked "needs work" on the verification gallery. The
+   rules below are the design half of those fixes; the behaviour half lives in
+   tv-app.js / tv-files.js and is commented there with the same C-id. */
+
+/* C-06: the overflow list is now a way to CLOSE files too. The ✕ stays quiet
+   until the row is hovered or focused, matching the tab strip's own close. */
+.tv-tof-row { position: relative; padding-right: 30px; }
+.tv-tof-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tv-tof-close {
+  position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px;                 /* C-32 hit-target floor */
+  border: 0; padding: 0; border-radius: 5px;
+  background: transparent; appearance: none; -webkit-appearance: none;
+  font-size: 10px; line-height: 1; cursor: default;
+  color: var(--tv-text-muted) !important;
+  opacity: 0;
+}
+.tv-tof-row:hover .tv-tof-close,
+.tv-tof-row:focus-within .tv-tof-close { opacity: 1; }
+.tv-tof-close:hover {
+  background: var(--tv-bg-sel) !important;
+  color: var(--tv-text-primary) !important;
+}
+.tv-tof-close:focus-visible { opacity: 1; outline: var(--tv-focus-ring); outline-offset: var(--tv-focus-offset); }
+
+/* C-16: the three hints read as loose debris on the first-run screen. Give
+   each one a chip so the row scans as one deliberate group, and drop the
+   middle dots the chips make redundant. */
+.tv-dropzone .dz-more { gap: 5px; margin-top: 16px; flex-wrap: nowrap; font-size: 11px; }
+.tv-dropzone .dz-more-item {
+  padding: 3px 9px 3px 5px;
+  border: 1px solid var(--tv-border);
+  border-radius: 999px;
+  background: var(--tv-bg-surface) !important;
+  color: var(--tv-text-secondary) !important;
+}
+
+/* C-10 (round 3): the focus ring on these fields is removed at the user's
+   explicit direction — no inner rectangle, no halo. The caret, the selected
+   row and the panel itself carry focus instead. This is a deliberate
+   departure from Visual Spec §05 ("never removed"); the spec line is
+   superseded by that instruction, recorded here so it is not "fixed" back. */
+.tv-pal-input:focus-within,
+.tv-searchbar .field:focus-within,
+.tv-find:focus-within {
+  box-shadow: none;
+}
+.tv-find:focus-within { box-shadow: var(--tv-shadow-pop); }

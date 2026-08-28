@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta name="color-scheme" content="light dark">
-  <title>tiny-viewer</title>
+  <title>Galley</title>
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%232d68d8'/%3E%3Cpath d='M4.5 5h7M4.5 8h7M4.5 11h4.5' stroke='white' stroke-width='1.3' stroke-linecap='round'/%3E%3C/svg%3E">
   <link rel="stylesheet" href="css/tv-tokens.css">
   <link rel="stylesheet" href="css/tv-app.css">
@@ -23,24 +23,12 @@
     }
     /* ── Minimal fallback styles for new elements (dev-design owns full CSS) ── */
 
-    /* U-02: Theme toggle button in titlebar */
-    .tv-titlebtn {
-      background: none;
-      border: none;
-      cursor: pointer;
-      padding: 4px 6px;
-      border-radius: 4px;
-      color: inherit;
-      opacity: 0.4;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      margin-left: auto;
-      margin-right: 8px;
-      flex-shrink: 0;
-    }
-    .tv-titlebtn:hover { opacity: 0.9; }
-    .tv-theme-toggle { line-height: 1; }
+    /* C-37: .tv-titlebtn / .tv-theme-toggle removed from here — this inline
+       block loads AFTER tv-app.css and silently won every tie (the ISS-002
+       cascade gotcha, CLAUDE.md), so its opacity:0.4 was overriding
+       tv-app.css's carefully-tuned opacity:.72 (UV-06, tuned to pass WCAG
+       1.4.11 non-text contrast). tv-app.css now owns the component
+       entirely, .tv-theme-toggle's line-height:1 included. */
 
     /* F-07: Find bar — full styling lives in tv-app.css (.tv-find et al.).
        ISS-002: the old inline fallback below set `bottom: 12px` and loaded
@@ -48,17 +36,10 @@
        `top` — stretched the bar to full viewport height. Removed so the
        canonical top-anchored, compact .tv-find in tv-app.css wins. */
 
-    /* Find marks */
-    .md mark[data-find] {
-      background: var(--tv-accent-weak, rgba(45,104,216,.15));
-      color: inherit;
-      border-radius: 2px;
-      padding: 0 1px;
-    }
-    .md mark[data-find].current {
-      background: var(--tv-accent, #2d68d8);
-      color: #fff;
-    }
+    /* C-13: the duplicate find-mark rules that used to live here are gone —
+       same ISS-002 cascade problem (this block loads after tv-app.css and
+       wins ties), and they fought tv-app.css's `.md mark[data-find].current`
+       rule instead of matching it. tv-app.css owns .md mark[data-find] now. */
 
     /* F-02: Recent sidebar section */
     .tv-side-recent { opacity: 0.75; }

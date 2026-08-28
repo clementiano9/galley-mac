@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · Tauri / macOS native window chrome overrides
+   Galley · Tauri / macOS native window chrome overrides
    Scoped entirely to html.tauri — no effect in plain browser.
 
    The Tauri window uses macOS Overlay title bar (real native
@@ -19,21 +19,26 @@ html.tauri .tv-traffic {
   display: none;
 }
 
-/* 2. Clear space for native traffic lights on the left.
-      The counterweight margin-right on .tv-wintitle is
-      already 52 px in tv-app.css; bump the left padding
-      so both sides balance with the larger native offset. */
+/* 2. Clear space for native traffic lights on the left. */
 html.tauri .tv-titlebar {
   padding-left: 84px;
+  /* C-38: positioning context for the absolutely-centred title below. */
+  position: relative;
 }
 
-/* L-14: Re-balance wintitle centering.
-   Left padding = 84px (traffic lights clearance).
-   margin-right was 52px → yields 16px rightward offset.
-   Setting margin-right: 84px makes both sides equal → exact visual center.
-   (wintitle flex:1 space shrinks by 32px but remains fully legible.) */
+/* C-38: absolutely centre .tv-wintitle within .tv-titlebar so it stays
+   dead-centre regardless of how wide the traffic-light gutter or the
+   right-side buttons end up being — it no longer depends on the two sides
+   balancing. Supersedes the old margin-right:84px counterweight (L-14),
+   which only balanced two specific widths (52px base + 84px tauri) and
+   would drift the moment either one changed. */
 html.tauri .tv-wintitle {
-  margin-right: 84px;
+  position: absolute;
+  left: 50%; top: 50%;
+  transform: translate(-50%, -50%);
+  margin-right: 0;
+  flex: none;
+  max-width: calc(100% - 168px); /* clear the 84px gutter on both sides */
 }
 
 /* 3. Draggable region visual affordance.

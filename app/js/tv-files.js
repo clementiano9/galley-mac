@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · file open / drag-drop / save
+   Galley · file open / drag-drop / save
    window.TVFiles = { init(), openPicker(), writeFile(tab) }
 
    DR-06: open real .md files from disk; never write anything
@@ -34,14 +34,63 @@
   //              and .tv-drag-over .tv-dropzone { border-color: var(--tv-accent) !important; }
 
   var _dragCounter = 0; // use a counter so child-leave doesn't flicker
+  var _lastDragCount = 0; // C-41: dataTransfer.items.length from the last dragenter, when known
+  var _dragCardEl = null; // C-41: the labelled drop-target card
+
+  // C-41: "Drop to open N files", pluralised when a count is known; an
+  // invariant fallback otherwise (no dashes per the app's copy rules).
+  // C-41 (round 2): the card carries a hierarchy now — a headline the user
+  // reads first, then the quiet detail line. The count belongs in the detail,
+  // so the headline never changes shape as files are dragged in and out.
+  function _dragCardMessage(count) {
+    if (count > 0) {
+      return count === 1 ? 'Opens 1 file' : 'Opens ' + count + ' files';
+    }
+    return 'Markdown, .markdown or .txt';
+  }
+
+  // Named a public function (not a closure) so it can be called from any
+  // code path that toggles .tv-drag-over — currently only this module's own
+  // dragenter/dragleave/drop handlers below. tv-native.js maintains its OWN
+  // separate .tv-drag-over toggle for Tauri's tauri://drag-* events (browser
+  // dragenter never fires for Finder drags in a WKWebView); it does not yet
+  // call into this, so the labelled card is a browser-path improvement today
+  // — see plan/requests-modules.md for the native-side hookup this enables.
+  function showDragCard(count) {
+    var root = getTVRoot();
+    if (!root) return;
+    // The empty state's own .tv-dropzone already carries explanatory copy —
+    // don't stack a second card on top of it.
+    if (root.querySelector('.tv-dropzone')) return;
+    if (_dragCardEl) return; // already shown
+    var I = window.TV_ICONS || {};
+    var card = document.createElement('div');
+    card.className = 'tv-drag-card';
+    card.setAttribute('aria-hidden', 'true'); // decorative — drag-and-drop is not AT-operable
+    card.innerHTML =
+      '<span class="tv-drag-card-ring"><span class="ic">' + (I.doc || '') + '</span></span>' +
+      '<span class="tv-drag-card-title">Drop it like it&#39;s hot</span>' +
+      '<span class="tv-drag-card-msg">' + _dragCardMessage(count || 0) + '</span>';
+    root.appendChild(card);
+    _dragCardEl = card;
+  }
+
+  function hideDragCard() {
+    if (_dragCardEl && _dragCardEl.parentNode) _dragCardEl.parentNode.removeChild(_dragCardEl);
+    _dragCardEl = null;
+  }
 
   function setDragHint(on) {
     var root = getTVRoot();
     if (!root) return;
     if (on) {
       root.classList.add('tv-drag-over');
+      // C-41: a labelled card instead of an unlabelled tint.
+      showDragCard(_lastDragCount);
     } else {
       root.classList.remove('tv-drag-over');
+      hideDragCard();
+      _lastDragCount = 0;
     }
   }
 
@@ -107,6 +156,10 @@
     document.addEventListener('dragenter', function (e) {
       e.preventDefault();
       if (hasMdItems(e.dataTransfer)) {
+        // C-41: capture the item count while we still have a real dataTransfer
+        // (native Tauri drops never reach this handler at all, so the card
+        // falls back to the invariant message there — see showDragCard).
+        _lastDragCount = (e.dataTransfer && e.dataTransfer.items) ? e.dataTransfer.items.length : 0;
         _dragCounter++;
         if (_dragCounter === 1) setDragHint(true);
       }
@@ -254,8 +307,15 @@
       }).then(function () {
         if (tv) tv.markDirty(tab.id, false);
       }).catch(function (err) {
-        if (err && err.name === 'AbortError') return;
-        console.error('[TVFiles] writeFile (handle) error', err);
+        // requests-shell.md #2: rethrow (was resolving on failure/cancel,
+        // making a failed or cancelled save indistinguishable from a real
+        // one at the call site — C-03 needs writeFile's promise to be the
+        // witness). Keep AbortError silent in the console; it still rejects
+        // so the shell can tell "cancelled" from "disk error".
+        if (!(err && err.name === 'AbortError')) {
+          console.error('[TVFiles] writeFile (handle) error', err);
+        }
+        throw err;
       });
     }
 
@@ -285,8 +345,11 @@
           }
         });
       }).catch(function (err) {
-        if (err && err.name === 'AbortError') return;
-        console.error('[TVFiles] writeFile (save picker) error', err);
+        // requests-shell.md #2: same rethrow as path A, same reasoning.
+        if (!(err && err.name === 'AbortError')) {
+          console.error('[TVFiles] writeFile (save picker) error', err);
+        }
+        throw err;
       });
     }
 
@@ -301,12 +364,15 @@
         a.style.cssText = 'position:absolute;width:0;height:0;opacity:0;pointer-events:none';
         document.body.appendChild(a);
         a.click();
+        if (tv) tv.markDirty(tab.id, false);
+        // requests-shell.md #3: resolve right away — markDirty(false) has
+        // already run, so making the caller wait out a 10s cleanup timer
+        // before acknowledging the save left the UI in edit mode that long.
+        resolve();
         setTimeout(function () {
           URL.revokeObjectURL(url);
           if (a.parentNode) a.parentNode.removeChild(a);
-          resolve();
         }, 10000);
-        if (tv) tv.markDirty(tab.id, false);
       } catch (err) {
         console.error('[TVFiles] writeFile (download) error', err);
         resolve();
@@ -319,5 +385,10 @@
     init: init,
     openPicker: openPicker,
     writeFile: writeFile,
+    // C-41: exposed so another drag-over toggle path (e.g. a future
+    // tv-native.js hookup for the Tauri tauri://drag-* events) can show the
+    // same labelled card instead of maintaining its own copy.
+    showDragCard: showDragCard,
+    hideDragCard: hideDragCard,
   };
 })();

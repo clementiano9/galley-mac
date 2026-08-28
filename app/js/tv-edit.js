@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · edit mode
+   Galley · edit mode
    Exposes: window.TVEdit
      .wordCount(src)             → number
      .renderSource(tab)          → htmlString (content body for edit mode)
@@ -617,7 +617,11 @@
           // is actually visible — it was landing correctly but often off-screen.
           // Measure the caret's true pixel Y (robust to soft-wrapped lines) and
           // place it ~a third down the viewport.
-          var scrollContainer = rootEl.closest ? rootEl.closest(".tv-scroll") : null;
+          // requests-shell.md #1: rootEl is the .tv ROOT (wire(rootEl, tab) is
+          // called with tvRoot), and .tv-scroll is a DESCENDANT of it — .closest()
+          // only walks upward and always returned null, so this whole block was
+          // dead code in every real path (C-35). querySelector walks down instead.
+          var scrollContainer = rootEl.querySelector ? rootEl.querySelector(".tv-scroll") : null;
           if (scrollContainer) {
             var caretTop      = _caretTopPx(textarea, word[0]);
             var taTop         = textarea.getBoundingClientRect().top;

@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · live-watch + status bar
+   Galley · live-watch + status bar
    window.TVLive = { start(tabId), stop(tabId), stopAll(), refresh() }
 
    DR-05/DR-10: watch files live without scrolljacking.
@@ -55,6 +55,12 @@
 
     var bar = document.createElement('div');
     bar.className = 'tv-status tv-live-status';
+    // C-32: the status bar is the app's only live-watch announcement channel —
+    // give it a persistent live region so a screen reader hears elapsed/change
+    // updates instead of only sighted users. DR-10 (no scroll-jack) is
+    // unaffected: this is an attribute, not a render/scroll path change.
+    bar.setAttribute('role', 'status');
+    bar.setAttribute('aria-live', 'polite');
 
     bar.innerHTML =
       // DR-66: neutral initial text; injectStatusBarOnly() immediately repaints
@@ -64,15 +70,19 @@
       '<span class="sep">—</span>' +
       '<span data-elapsed>updating…</span>' +
       '<span class="spacer"></span>' +
-      '<span class="tv-pin" data-tv-pin>' +
+      // C-32: a real <button> (was a <span>) so it is Tab-reachable and
+      // announces as a toggle; aria-pressed mirrors the .on class.
+      '<button type="button" class="tv-pin" data-tv-pin aria-pressed="false"' +
+        ' title="Follow new content as the file grows">' +
         '<span class="ic">' + pinSvg + '</span> Pin scroll' +
-      '</span>';
+      '</button>';
 
     // Wire Pin toggle
     var pin = bar.querySelector('[data-tv-pin]');
     if (pin) {
       pin.addEventListener('click', function () {
-        pin.classList.toggle('on');
+        var on = pin.classList.toggle('on');
+        pin.setAttribute('aria-pressed', on ? 'true' : 'false');
       });
     }
 
@@ -346,7 +356,9 @@
             onFileChange(watchState);
             var tv = getTV();
             if (tv && window.TVNative && typeof TVNative.showToast === 'function') {
-              TVNative.showToast((tab.name || 'File') + ' changed on disk — save or discard your edits first');
+              // requests-native.md #1: no em dash, error kind (was silently
+              // unreadable/invisible per C-01 before showToast({kind}) existed).
+              TVNative.showToast((tab.name || 'File') + ' changed on disk. Save or discard your edits first.', { kind: 'error' });
             }
             return;
           }

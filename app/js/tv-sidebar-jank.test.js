@@ -435,9 +435,18 @@ assert('_doActivateTab latches the pill scroll instead of querying inline',
   doActivateFn.indexOf('_pendingTabScrollId = id') !== -1);
 assert('_doActivateTab no longer queries [data-tab-id] itself',
   doActivateFn.indexOf('data-tab-id') === -1);
+// C-04 (round 2): the flush no longer calls scrollIntoView. That API nudges
+// ancestors and shifted the strip even when the pill was ALREADY fully visible,
+// which the user reported on the verification pass. The latch invariant this
+// test exists to protect is unchanged — render() still consumes
+// _pendingTabScrollId — only the mechanism moved to a direct scrollLeft write.
 assert('render() flushes the latched pill scroll',
   renderFn.indexOf('_pendingTabScrollId') !== -1 &&
-  renderFn.indexOf("scrollIntoView({ block: 'nearest', inline: 'nearest' })") !== -1);
+  renderFn.indexOf('scrollLeft') !== -1);
+assert('the flush only scrolls when the pill is actually out of view',
+  /pillL < viewL/.test(renderFn) && /pillR > viewR/.test(renderFn));
+assert('the flush no longer calls scrollIntoView on the pill',
+  renderFn.indexOf('pillEl.scrollIntoView') === -1);
 
 /* ══ JANK-03 · no reflow when the pointer enters the sidebar ═════════════ */
 console.log('\nJANK-03 — hovering the list must not reflow it\n');

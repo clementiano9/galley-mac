@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · post-render image path resolver
+   Galley · post-render image path resolver
    Exposes: window.tvResolveImages(rootEl, docPath)
 
    After tvRenderMarkdown() injects HTML, relative <img> elements carry
@@ -63,6 +63,57 @@
     return nativePath.slice(0, idx + 1);
   }
 
+  /* ── C-26: overflow cue for wide blocks ───────────────────────
+     .md pre / .md .tbl-wrap are already horizontally scrollable
+     (overflow-x:auto) but give no sign that there is more content off to
+     the right — a clipped line just stops. We only track WHETHER there is
+     more to scroll (data-overflow="1"); the right-edge fade itself is CSS
+     (appended block, owner: modules). Re-evaluated on resize (ResizeObserver)
+     and on scroll, so the cue correctly clears once the user reaches the
+     right edge instead of lying there forever. One observer per rendered
+     document — disconnected before the next render's elements are set up. */
+  var _overflowObserver = null;
+  var _overflowScrollEls = [];
+
+  function _clearOverflowCues() {
+    if (_overflowObserver) { _overflowObserver.disconnect(); _overflowObserver = null; }
+    _overflowScrollEls.forEach(function (rec) {
+      rec.el.removeEventListener('scroll', rec.handler);
+    });
+    _overflowScrollEls = [];
+  }
+
+  function _updateOverflowAttr(el) {
+    var remaining = el.scrollWidth - el.scrollLeft - el.clientWidth;
+    if (remaining > 1) {
+      el.setAttribute('data-overflow', '1');
+    } else {
+      el.removeAttribute('data-overflow');
+    }
+  }
+
+  function _setupOverflowCues(rootEl) {
+    if (!rootEl) return;
+    _clearOverflowCues(); // disconnect the previous render's observer first
+    var targets = rootEl.querySelectorAll('.md pre, .md .tbl-wrap');
+    if (!targets.length) return;
+
+    var hasRO = typeof window.ResizeObserver === 'function';
+    if (hasRO) {
+      _overflowObserver = new ResizeObserver(function (entries) {
+        entries.forEach(function (entry) { _updateOverflowAttr(entry.target); });
+      });
+    }
+
+    Array.prototype.forEach.call(targets, function (el) {
+      _updateOverflowAttr(el); // initial state
+      if (hasRO) _overflowObserver.observe(el);
+      var handler = function () { _updateOverflowAttr(el); };
+      el.addEventListener('scroll', handler);
+      _overflowScrollEls.push({ el: el, handler: handler });
+    });
+  }
+
   // Wire the broken-image handler onto an img after its src is set.
   // For block images the figure parent gets .tv-img-missing.
   // For inline images the img itself gets .tv-img-broken.
@@ -88,6 +139,13 @@
   //   Tauri mode:   tab.nativePath (absolute fs path of the .md file)
   function tvResolveImages(rootEl, docPath) {
     if (!rootEl) return;
+
+    // C-26: this is the post-render hook the shell already calls once per
+    // render regardless of whether the document has images, so it doubles
+    // as the wiring point for the overflow cue. Must run BEFORE the
+    // images-empty early return below, or an image-less document with a
+    // wide code block would never get the cue.
+    _setupOverflowCues(rootEl);
 
     // Only target imgs that have data-img-raw-src but NO src yet.
     // Absolute srcs were set by the renderer and are skipped here.

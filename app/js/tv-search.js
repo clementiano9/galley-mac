@@ -1,9 +1,16 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · cross-tab search
+   Galley · cross-tab search
    window.TVSearch = { open(), close(), isOpen() }
 
    Replaces .tv-scroll with a searchbar + results view in the
    active .tv-viewer.  Restored on close().
+
+   C-11: clicking a result marks the actual match text in the destination
+         tab and centres it, instead of a proportional scroll guess.
+   C-12: a close button, a 2-char minimum before searching, a 20-hit
+         per-file cap with "Show N more", and readable (marker-stripped,
+         word-trimmed) snippets.
+   C-32: role="dialog" aria-modal + Tab trap + focus restore.
    ─────────────────────────────────────────────────────────── */
 (function () {
   'use strict';
@@ -14,6 +21,9 @@
   var _debounceTimer = null;
   var _selIndex    = 0;
   var _prevFocusEl = null;   // UI-03: element focused before search opened
+  var _expandedFiles = {};   // C-12: tab.id -> true once "Show N more" is clicked
+  var MIN_QUERY_LEN  = 2;    // C-12: below this we don't search at all
+  var HITS_PER_FILE_CAP = 20; // C-12
 
   /* ── HTML escape (do NOT skip this — snippets are user content) ──*/
   function _esc(s) {
@@ -24,6 +34,73 @@
       .replace(/"/g, '&quot;');
   }
 
+  /* ── C-12: strip inline markdown markers from a snippet ──────
+     Mirrors tv-edit.js's _stripInlineMarkers (each module stays
+     self-contained per CONTRACT.md — no cross-module import). A raw
+     "**is**" in a search snippet reads as noise; strip to plain text. */
+  function _stripInlineMarkers(s) {
+    return s
+      .replace(/!\[.*?\]\(.*?\)/g, '')
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/`([^`]*)`/g, '$1')
+      .replace(/\*\*([^*]*)\*\*/g, '$1')
+      .replace(/__([^_]*)__/g, '$1')
+      .replace(/\*([^*]*)\*/g, '$1')
+      .replace(/_([^_]*)_/g, '$1')
+      .replace(/~~([^~]*)~~/g, '$1');
+  }
+
+  /* ── C-12: trim to maxLen at the nearest word boundary ───────
+     A hard character cut lands mid-word ("…htweight"); prefer breaking on
+     a nearby space so the snippet reads as prose. Falls back to a hard
+     cut when no space is close enough (e.g. a long URL). */
+  function _trimPreBoundary(s, maxLen) {
+    if (s.length <= maxLen) return s;
+    var cut = s.slice(s.length - maxLen);
+    var sp = cut.indexOf(' ');
+    if (sp > -1 && sp < maxLen * 0.5) cut = cut.slice(sp + 1);
+    return '…' + cut;
+  }
+  function _trimPostBoundary(s, maxLen) {
+    if (s.length <= maxLen) return s;
+    var cut = s.slice(0, maxLen);
+    var sp = cut.lastIndexOf(' ');
+    if (sp > maxLen * 0.5) cut = cut.slice(0, sp);
+    return cut + '…';
+  }
+
+  /* ── C-32: Tab trap ───────────────────────────────────────
+     Same approach as tv-palette.js: only real, already-focusable controls
+     (input/button) are ever targeted — never a div[tabindex] — because
+     programmatic .focus() on one is a no-op in WKWebView when macOS Full
+     Keyboard Access is off.
+     P2-7: the selector used to include `[tabindex]:not([disabled])`, which
+     contradicted the comment above it — it matched .tv-sr-more
+     (role="button" tabindex="0"), a div, so .focus() on it silently did
+     nothing with Full Keyboard Access off and Tab appeared to stop moving.
+     Matches tv-palette.js's selector now. */
+  function _focusables() {
+    if (!_containerEl) return [];
+    var sel = 'input:not([disabled]), button:not([disabled]), select, textarea, a[href]';
+    return Array.prototype.slice.call(_containerEl.querySelectorAll(sel)).filter(function (el) {
+      return el.offsetParent !== null || el === document.activeElement;
+    });
+  }
+
+  function _trapTab(e) {
+    var list = _focusables();
+    e.preventDefault();
+    if (list.length < 2) {
+      if (list.length === 1 && list[0] !== document.activeElement) list[0].focus();
+      return;
+    }
+    var idx = list.indexOf(document.activeElement);
+    var next = e.shiftKey
+      ? (idx <= 0 ? list.length - 1 : idx - 1)
+      : (idx === -1 || idx === list.length - 1 ? 0 : idx + 1);
+    list[next].focus();
+  }
+
   /* ── keyboard handler ────────────────────────────────────*/
   function _onKeyDown(e) {
     if (!_open) return;
@@ -31,6 +108,21 @@
       e.preventDefault();
       e.stopPropagation();
       TVSearch.close();
+      return;
+    }
+    if (e.key === 'Tab') {
+      // C-32: modal dialog — focus must not leak to the page behind.
+      e.stopPropagation();
+      _trapTab(e);
+      return;
+    }
+    // C-12: Enter/Space on a focused "Show N more" row activates it (ARIA
+    // APG button pattern) instead of falling through to _activateSel below.
+    if ((e.key === 'Enter' || e.key === ' ') &&
+        document.activeElement && document.activeElement.classList &&
+        document.activeElement.classList.contains('tv-sr-more')) {
+      e.preventDefault();
+      document.activeElement.click();
       return;
     }
     if (e.key === 'ArrowDown') {
@@ -68,28 +160,43 @@
       var hits  = [];
 
       for (var li = 0; li < lines.length; li++) {
-        var line = lines[li];
-        var idx  = line.toLowerCase().indexOf(lq);
-        if (idx === -1) continue;
+        var line  = lines[li];
+        var lLine = line.toLowerCase();
+        // P1-3: walk EVERY occurrence in the line, not just the first. The
+        // renderer can merge several source lines into one text node (a
+        // soft-wrapped paragraph), so _markOccurrence's per-node occurrence
+        // count only lines up with this file's occurrence count when both
+        // sides count every match rather than one-per-unit.
+        var idx = lLine.indexOf(lq);
+        while (idx !== -1) {
+          // Build snippet: pre + <mark>hit</mark> + post
+          // C-12: strip markdown markers and trim at word boundaries so the
+          // snippet reads as prose instead of raw "**is**"/mid-word cuts.
+          var pre  = line.slice(0, idx);
+          var hit  = line.slice(idx, idx + query.length);
+          var post = line.slice(idx + query.length);
 
-        // Build snippet: pre + <mark>hit</mark> + post
-        // Trim pre/post to keep snippet readable (max ~40 chars each side)
-        var pre  = line.slice(0, idx);
-        var hit  = line.slice(idx, idx + query.length);
-        var post = line.slice(idx + query.length);
+          var maxCtx = 45;
+          pre  = _stripInlineMarkers(pre);
+          post = _stripInlineMarkers(post);
+          pre  = _trimPreBoundary(pre, maxCtx);
+          post = _trimPostBoundary(post, maxCtx);
 
-        var maxCtx = 45;
-        if (pre.length > maxCtx)  pre  = '…' + pre.slice(pre.length - maxCtx);
-        if (post.length > maxCtx) post = post.slice(0, maxCtx) + '…';
+          hits.push({
+            ln:   li + 1,
+            pre:  pre,
+            hit:  hit,
+            post: post,
+            lineIndex: li,
+            tabId: tab.id,
+            // C-11: this hit's rank among all occurrences of the query in this
+            // file's rendered text, in document order — lets the click handler
+            // find the SAME occurrence in the rendered .md content.
+            occurrence: hits.length,
+          });
 
-        hits.push({
-          ln:   li + 1,
-          pre:  pre,
-          hit:  hit,
-          post: post,
-          lineIndex: li,
-          tabId: tab.id,
-        });
+          idx = lLine.indexOf(lq, idx + lq.length);
+        }
       }
 
       if (hits.length) {
@@ -108,6 +215,14 @@
 
     if (!query) {
       html = '<div class="tv-sr-count tv-sr-count--hint">Type to search across all open tabs…</div>';
+      return html;
+    }
+
+    // C-12: require at least MIN_QUERY_LEN characters before searching — a
+    // single character matches so much of any document that showing every
+    // hit is pure cost with no signal.
+    if (result.tooShort) {
+      html = '<div class="tv-sr-count tv-sr-count--hint">Type at least ' + MIN_QUERY_LEN + ' characters to search</div>';
       return html;
     }
 
@@ -133,13 +248,22 @@
         ' <span class="cnt">(' + file.hits.length + ' match' + (file.hits.length === 1 ? '' : 'es') + ')</span>' +
       '</div>';
 
-      for (var hi = 0; hi < file.hits.length; hi++) {
-        var h = file.hits[hi];
+      // C-12: cap rendered hits per file at HITS_PER_FILE_CAP; a "Show N more"
+      // row expands the rest (tracked per tab.id in _expandedFiles).
+      var expanded = !!_expandedFiles[tab.id];
+      var hitsToRender = (!expanded && file.hits.length > HITS_PER_FILE_CAP)
+        ? file.hits.slice(0, HITS_PER_FILE_CAP)
+        : file.hits;
+
+      for (var hi = 0; hi < hitsToRender.length; hi++) {
+        var h = hitsToRender[hi];
         var isSel = (globalRowIdx === 0);
         html += '<div class="tv-sr-row' + (isSel ? ' sel' : '') + '"' +
           ' data-tab-id="' + _esc(tab.id) + '"' +
           ' data-line="' + h.lineIndex + '"' +
           ' data-heading="' + _esc(h.hit) + '"' +
+          ' data-occurrence="' + h.occurrence + '"' +
+          ' data-query="' + _esc(query) + '"' +
           '>' +
           '<span class="ln">L' + h.ln + '</span>' +
           '<span class="snip">' +
@@ -147,6 +271,13 @@
           '</span>' +
           '</div>';
         globalRowIdx++;
+      }
+
+      if (!expanded && file.hits.length > HITS_PER_FILE_CAP) {
+        var more = file.hits.length - HITS_PER_FILE_CAP;
+        html += '<div class="tv-sr-more" data-expand-file="' + _esc(tab.id) + '" role="button" tabindex="0">' +
+          'Show ' + more + ' more' +
+        '</div>';
       }
 
       html += '</div>';
@@ -178,6 +309,75 @@
     // the rs[0] fallback below is untriggerable under normal usage.
     var row = rs[_selIndex] || rs[0];
     if (row) _activateRow(row);
+  }
+
+  /* ── C-11: local marking pass over rendered .md text nodes ───
+     tv-search.js is self-contained (CONTRACT.md file ownership) so this
+     does not reach into tv-app.js's private find-bar state; it is a small,
+     scoped walk that only needs to locate ONE known occurrence, not build a
+     stepping index like ⌘F does. Recurses over childNodes rather than
+     document.createTreeWalker so it is trivially testable with a plain DOM
+     stub (see tv-search.runtime.test.js). */
+  function _collectTextNodes(root, out) {
+    out = out || [];
+    var kids = root.childNodes || [];
+    for (var i = 0; i < kids.length; i++) {
+      var node = kids[i];
+      if (node.nodeType === 3) {
+        out.push(node);
+      } else if (node.nodeType === 1) {
+        var tag = node.nodeName;
+        if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'MARK') continue;
+        _collectTextNodes(node, out);
+      }
+    }
+    return out;
+  }
+
+  // Find the `occurrence`-th (0-based) match of `query` in the rendered
+  // text (case-insensitive), wrap it in the SAME mark[data-find].current
+  // treatment the ⌘F find bar uses (tv-app.css already styles it — C-14's
+  // .current rule), and centre it. Returns true on success, false when not
+  // found (the caller falls back to the proportional scroll).
+  // P1-3: walks EVERY match inside each node before advancing `seen`,
+  // mirroring _runSearch's per-line loop — a soft-wrapped source paragraph
+  // renders as ONE text node holding several of the file's occurrences, so
+  // counting only the first match per node let the two sides' indices
+  // diverge on the most ordinary content there is.
+  function _markOccurrence(mdEl, query, occurrence) {
+    if (!mdEl || !query || occurrence < 0) return false;
+    var lq = query.toLowerCase();
+    var nodes = _collectTextNodes(mdEl);
+    var seen = 0;
+    for (var i = 0; i < nodes.length; i++) {
+      var node = nodes[i];
+      var text  = node.textContent || '';
+      var lText = text.toLowerCase();
+      var pos = lText.indexOf(lq);
+      while (pos !== -1) {
+        if (seen === occurrence) {
+          var before = text.slice(0, pos);
+          var hit    = text.slice(pos, pos + query.length);
+          var after  = text.slice(pos + query.length);
+          var parent = node.parentNode;
+          if (!parent) return false;
+          var frag = document.createDocumentFragment();
+          if (before) frag.appendChild(document.createTextNode(before));
+          var mk = document.createElement('mark');
+          mk.setAttribute('data-find', '');
+          mk.className = 'current';
+          mk.textContent = hit;
+          frag.appendChild(mk);
+          if (after) frag.appendChild(document.createTextNode(after));
+          parent.replaceChild(frag, node);
+          if (mk.scrollIntoView) mk.scrollIntoView({ block: 'center' });
+          return true;
+        }
+        seen++;
+        pos = lText.indexOf(lq, pos + lq.length);
+      }
+    }
+    return false;
   }
 
   function _activateRow(row) {
@@ -214,7 +414,16 @@
         return;
       }
 
-      // Proportional scroll fallback
+      // C-11: mark and centre the actual occurrence in the rendered content.
+      var occurrence = parseInt(row.getAttribute('data-occurrence'), 10);
+      var query = row.getAttribute('data-query') || '';
+      var mdEl = window.TV.el() && window.TV.el().querySelector('.md');
+      if (query && !isNaN(occurrence) && mdEl && _markOccurrence(mdEl, query, occurrence)) {
+        return;
+      }
+
+      // Proportional scroll fallback — only when the mark could not be
+      // found (e.g. the hit fell inside markup the renderer transformed).
       var scrollEl = window.TV.el() && window.TV.el().querySelector('.tv-scroll');
       if (!scrollEl) return;
       var lineCount = tab.source ? tab.source.split('\n').length : 1;
@@ -231,7 +440,15 @@
     if (!_containerEl) return;
     var resultsEl = _containerEl.querySelector('.tv-search-results');
     if (!resultsEl) return;
-    var result = query ? _runSearch(query) : { totalMatches: 0, fileCount: 0, files: [] };
+    var result;
+    if (!query) {
+      result = { totalMatches: 0, fileCount: 0, files: [] };
+    } else if (query.length < MIN_QUERY_LEN) {
+      // C-12: below the minimum, we have not searched — say so, not "No results".
+      result = { totalMatches: 0, fileCount: 0, files: [], tooShort: true };
+    } else {
+      result = _runSearch(query);
+    }
     resultsEl.innerHTML = _renderResults(query, result);
     _selIndex = 0;
   }
@@ -275,6 +492,14 @@
 
       _containerEl = document.createElement('div');
       _containerEl.className = 'tv-search-container';
+      // C-32: same dialog semantics as the palette — announced boundary,
+      // focus restored to _prevFocusEl on close (below).
+      _containerEl.setAttribute('role', 'dialog');
+      _containerEl.setAttribute('aria-modal', 'true');
+      _containerEl.setAttribute('aria-label', 'Search all tabs');
+
+      // C-12: a fresh search session starts collapsed.
+      _expandedFiles = {};
 
       var barHtml =
         '<div class="tv-searchbar">' +
@@ -284,6 +509,8 @@
               ' placeholder="Search…" aria-label="Search across all open tabs">' +
           '</div>' +
           '<span class="scope">All open tabs · ⌘⇧F</span>' +
+          // C-12: an explicit exit — mirrors the find bar's .tv-find-close.
+          '<button class="tv-search-close" data-search-close type="button" aria-label="Close search">&#10005;</button>' +
         '</div>';
 
       var resultsHtml =
@@ -307,14 +534,32 @@
         inputEl.addEventListener('input', function () {
           clearTimeout(_debounceTimer);
           var q = inputEl.value;
+          // C-12: a new query starts each file collapsed again.
+          _expandedFiles = {};
           _debounceTimer = setTimeout(function () {
             _refreshResults(q);
           }, 80);
         });
       }
 
-      // Click on result row → activate
+      // C-12: close button
+      var closeBtn = _containerEl.querySelector('[data-search-close]');
+      if (closeBtn) {
+        closeBtn.addEventListener('click', function () { TVSearch.close(); });
+      }
+
+      // Click on result row → activate; click on "Show N more" → expand in place
       _containerEl.addEventListener('click', function (e) {
+        var more = e.target.closest('.tv-sr-more');
+        if (more) {
+          var fileId = more.getAttribute('data-expand-file');
+          if (fileId) {
+            _expandedFiles[fileId] = true;
+            var inp = _containerEl.querySelector('.tv-search-field');
+            _refreshResults(inp ? inp.value : '');
+          }
+          return;
+        }
         var row = e.target.closest('.tv-sr-row');
         if (row) _activateRow(row);
       });

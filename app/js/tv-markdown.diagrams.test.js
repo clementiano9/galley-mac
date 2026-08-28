@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · diagram render-cache RUNTIME test harness (ISS-003)
+   Galley · diagram render-cache RUNTIME test harness (ISS-003)
    Run: node app/js/tv-markdown.diagrams.test.js
 
    Like tv-live.runtime.test.js, this LOADS and EXECUTES app/js/tv-markdown.js
@@ -118,6 +118,10 @@ function Element(tagName) {
   this.id = '';
   this.style = makeStyle();
   this.offsetWidth = 0;
+  // C-26: overflow-cue reads these; 0/0/0 → never "overflowing" in tests.
+  this.scrollWidth = 0;
+  this.clientWidth = 0;
+  this.scrollLeft = 0;
   var self = this;
   this._syncClassName = function () { self._className = Object.keys(self._classes).join(' '); };
   this.classList = makeClassList(this);
@@ -222,6 +226,7 @@ Element.prototype.getAttribute = function (k) {
   return this._attrs[k] !== undefined ? this._attrs[k] : null;
 };
 Element.prototype.hasAttribute = function (k) { return this._attrs[k] !== undefined; };
+Element.prototype.removeAttribute = function (k) { delete this._attrs[k]; };
 
 Element.prototype.appendChild = function (child) {
   if (child.parentNode) {
@@ -498,7 +503,7 @@ async function run() {
    ═══════════════════════════════════════════════════════════ */
 run().then(function () {
   console.log('\n══════════════════════════════════════════════════════');
-  console.log(' tiny-viewer diagram render-cache test harness (ISS-003)');
+  console.log(' Galley diagram render-cache test harness (ISS-003)');
   console.log('══════════════════════════════════════════════════════\n');
 
   var order = ['SETUP', 'ISS-003'];

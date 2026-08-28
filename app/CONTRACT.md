@@ -1,7 +1,7 @@
-# tiny-viewer — Implementation Contract (read before coding)
+# Galley — Implementation Contract (read before coding)
 
 We are building a **real, working single-window** markdown viewer web app that
-recreates the `tiny-viewer Mockups.html` design **pixel-perfectly** and makes it
+recreates the `Galley Mockups.html` design **pixel-perfectly** and makes it
 genuinely functional. Pure vanilla HTML/CSS/JS — **no build step, no framework**.
 Opening `app/index.html` in a browser must "just work".
 
@@ -57,7 +57,11 @@ window.TV.state = {
 ```js
 TV.state                         // the object above
 TV.render()                      // full repaint of current state into #tv-root; preserves scroll
-                                 // (content pane per DR-03, AND the sidebar list — JANK-01)
+                                 // for all THREE scrollers it destroys: the content pane
+                                 // (DR-03), the sidebar list + capped folder bodies (JANK-01),
+                                 // and the tab strip's horizontal offset (C-04). The strip may
+                                 // move on exactly one occasion: activating a tab whose pill is
+                                 // off screen. None of the three is persisted to disk (DR-06).
 TV.batch(fn) -> fn's return      // JANK-02: coalesce renders. Any number of render() calls
                                  // inside fn produce ONE repaint, emitted synchronously
                                  // before batch() returns — so reading the DOM after

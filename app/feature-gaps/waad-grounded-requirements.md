@@ -71,7 +71,7 @@
 | DR | Requirement | URD | MoSCoW |
 |----|-------------|-----|--------|
 | DR-16 | Pressing `?` in Reading Mode (no modifier, no text input focused, no overlay open) opens a compact shortcut-reference overlay. | URD-08 | Must |
-| DR-17 | The overlay lists all application shortcuts in a two-column layout (key / action), max **18 rows**. | URD-08 | Must |
+| DR-17 | The overlay lists all application shortcuts in a two-column layout (key / action), max **20 rows** (raised from 18 — see amendment below). | URD-08 | Must |
 | DR-18 | The overlay closes on any keypress, click outside its bounds, or Esc. No explicit close button required. | URD-08 | Must |
 | DR-19 | The overlay must NOT auto-activate on first launch, file open, or any action other than explicit `?` or `Help > Keyboard Shortcuts`. | URD-05 | Must |
 | DR-20 | `Help > Keyboard Shortcuts` opens the identical overlay as DR-16. | URD-08 | Must |
@@ -79,9 +79,27 @@
 | DR-22 | The overlay is static read-only — no navigation, links, or interactive elements beyond the close behaviour (DR-18). | URD-08 | Should |
 | DR-23 | The overlay must include, at minimum: `⌘K` Command Palette, `⌘O` Open File, `⌘⇧O` Open Folder, `⌘T` New Tab, `⌘W` Close Tab, `⌘1–9` Jump to Tab, `⌘[`/`⌘]` Previous/Next Tab, `⌘⇧F` Search All Tabs, `⌘F` Find in File, `⌘⌥O` Outline (per U-16), `⌘E` Toggle Edit, `⌘S` Save, `⌘=`/`⌘−` Larger/Smaller Text, `⌘0` Reset Text Size, `⌘B` Toggle Sidebar, `Esc` Exit/Close, `?` This overlay. | URD-08 | Must |
 
+**Amendment · 2026-08-21 (polish pass, cluster C-18) — user-directed**
+
+DR-17's row cap is raised from **18 to 20**, and DR-23's minimum list gains two
+entries. The audit found two shortcuts that the app binds but the overlay never
+mentions: `⌘P` Print / Export PDF (bound in the keyboard router and listed in the
+command palette) and `⌘G` / `⇧⌘G` Find Next / Previous (added in this pass, and
+mirrored by the native Edit ▸ Find menu items). The sheet is the app's only
+discovery surface for keyboard-first use, so a shortcut that exists and is not
+listed is a documentation defect; the cap moves rather than the shortcuts.
+Shipped list is now **19 rows** in a 10/9 split, one row under the new cap.
+
+DR-18 is narrowed by the same cluster: the overlay no longer closes on a **bare
+modifier** keydown (Shift, ⌘, ⌥, Ctrl, Caps Lock and friends). "Closes on any
+keypress" was dismissing the sheet the instant a reader held the very modifier
+the sheet was teaching. Every non-modifier key still closes it, as does a click
+outside and Esc.
+
 **Acceptance criteria**
 - `?` with a file open (no overlay, no input focused) opens the overlay; `?` on the empty-state dropzone also opens it.
-- The overlay lists every DR-23 entry (≤18 rows).
+- The overlay lists every DR-23 entry plus `⌘P` and `⌘G`/`⇧⌘G` (≤20 rows).
+- Holding Shift or ⌘ alone while the overlay is open leaves it open.
 - Any key while open closes it (Esc, space, `?`, letters — all close); click outside closes it.
 - `?` while the palette is open does NOT open the overlay (the `?` is typed into the palette field); `?` in the edit textarea inserts `?` and does not open the overlay; `?` while search/find bar open does nothing.
 - `Help > Keyboard Shortcuts` opens an indistinguishable overlay.
@@ -100,7 +118,7 @@
 - **Font size** — IN, as `⌘=`/`⌘−`/`⌘0` + palette rows. An in-session reading-comfort adjustment, not a config task; one keystroke beats open-panel→adjust→close (WAN-007/009).
 - **Mermaid on/off** — IN, as a ⌘K toggle command only. Earns its place (CPU cost during AI streaming, URD-03/WAN-072) but is an infrequent expert action — "hidden until invoked" (URD-08).
 - **Line numbers** — **OUT.** Editor affordance; this is a viewer ("Preview.app for markdown," URD-05). No WAN/review/forum evidence requests it in reading mode. A toggle for a feature that shouldn't exist is the overconfiguration trap in pure form (WAN-046, Cluster E).
-- **Settings panel** — **OUT.** After ruling Line Numbers out and Theme to the View menu, only Font size + Mermaid remain — both inline palette commands with immediate effect. WAN-046 (two weeks lost to Obsidian's settings) is the anti-pattern tiny-viewer's identity depends on avoiding. The `Settings…` command (F-18) is renamed **`Preferences & Shortcuts…`** and opens the `?` shortcut overlay (DR-16), accurately signalling its content.
+- **Settings panel** — **OUT.** After ruling Line Numbers out and Theme to the View menu, only Font size + Mermaid remain — both inline palette commands with immediate effect. WAN-046 (two weeks lost to Obsidian's settings) is the anti-pattern Galley's identity depends on avoiding. The `Settings…` command (F-18) is renamed **`Preferences & Shortcuts…`** and opens the `?` shortcut overlay (DR-16), accurately signalling its content.
 
 **Refined problem statement:** Developer and Knowledge Worker need to toggle Mermaid and adjust font size without a settings panel, because these are session-level reading adjustments — not configuration — and a panel would impose the burden the app exists to eliminate (URD-05, Cluster E, WAN-045/046).
 

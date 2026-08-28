@@ -214,6 +214,31 @@ console.log('\n#4 ISS-002: zero-result + with-result render correctly (real fns)
 })();
 
 /* ═══════════════════════════════════════════════════════════
+   TEST #5 — P2-7: _focusables() must never target a div[tabindex]
+   The comment above it says "never a div[tabindex]" (WKWebView: .focus() on
+   one is a no-op with Full Keyboard Access off), but the selector used to
+   include `[tabindex]:not([disabled])` anyway, matching .tv-sr-more
+   (role="button" tabindex="0") and silently breaking the Tab trap. Must
+   match tv-palette.js's selector, which was already correct.
+   ═══════════════════════════════════════════════════════════ */
+console.log('\n#5 P2-7: _focusables() selector matches tv-palette.js, excludes [tabindex]\n');
+
+(function () {
+  var searchSrc = fs.readFileSync(__dirname + '/tv-search.js', 'utf8');
+  var paletteSrc = fs.readFileSync(__dirname + '/tv-palette.js', 'utf8');
+
+  var searchSel = (searchSrc.match(/function _focusables\(\) \{[\s\S]{0,300}?var sel = '([^']+)'/) || [])[1];
+  var paletteSel = (paletteSrc.match(/function _focusables\(\) \{[\s\S]{0,300}?var sel = '([^']+)'/) || [])[1];
+
+  assert('tv-search.js _focusables() selector found', !!searchSel, searchSrc.slice(0, 0));
+  assert('tv-palette.js _focusables() selector found', !!paletteSel, paletteSrc.slice(0, 0));
+  assert('the two selectors are identical', searchSel === paletteSel,
+    JSON.stringify({ search: searchSel, palette: paletteSel }));
+  assert('the selector does not match a div[tabindex]',
+    !!searchSel && searchSel.indexOf('[tabindex]') === -1, searchSel);
+})();
+
+/* ═══════════════════════════════════════════════════════════
    REPORT
    ═══════════════════════════════════════════════════════════ */
 console.log('\n' + (fail === 0 ? 'ALL PASSED' : 'FAILURES: ' + fail) +

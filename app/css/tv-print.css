@@ -1,8 +1,14 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · print / PDF export stylesheet
+   Galley · print / PDF export stylesheet
    U-15 · DR-99–106
    All rules are inside @media print — zero effect on screen.
    ─────────────────────────────────────────────────────────── */
+
+/* C-40: printable-area margins — was relying on the browser/OS print
+   dialog default, which varies. 18mm top/bottom, 16mm sides. */
+@page {
+  margin: 18mm 16mm;
+}
 
 @media print {
 
@@ -55,6 +61,23 @@
     --tv-syn-fn:              #2d68d8;
     background: #ffffff !important;
     color: #1d1d1f !important;
+    /* C-40: force the browser to actually print backgrounds/colours
+       instead of silently dropping them (Chrome/WebKit default). */
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+
+  /* C-40: same for the surfaces that carry a background or ink colour
+     users would expect on paper — code wells, table striping/heads,
+     diagram cards. Without this WebKit prints them plain white. */
+  .md,
+  .md pre,
+  .md code,
+  .md th,
+  .md tbody tr,
+  .tv-diagram {
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
   }
 
   /* ── 3. Full-width layout (DR-104) ─────────────────────── */

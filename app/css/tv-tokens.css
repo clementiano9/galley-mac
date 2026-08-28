@@ -1,5 +1,5 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · design tokens
+   Galley · design tokens
    Semantic colour system. Scope every app window with:
      class="tv tv--light tv--accent-blue"   (or --dark / --graphite / --warm)
    Tokens are CSS custom properties so the whole UI re-skins by
@@ -21,15 +21,45 @@
   --tv-s5: 24px; --tv-s6: 32px; --tv-s7: 40px; --tv-s8: 48px;
 
   /* chrome dimensions */
+  /* C-37: kept at 40px — this is what shipped and what the find bar's
+     top offset (calc(40px + tabbar-h + 8px)) is built against. The Visual
+     Spec's 38px is superseded by this value; do not "fix" it back to 38. */
   --tv-tabbar-h: 40px;
   --tv-sidebar-w: 224px;
   --tv-toolbar-h: 40px;
   --tv-status-h: 32px;
   --tv-content-max: 720px;
 
-  --tv-radius-win: 11px;
+  /* C-20: editor font size, independently settable from the reading-mode
+     --tv-md-font. The shell scales it from setFontSize(); default matches
+     the old hardcoded 13px on .tv-edit-area/.tv-edit-mirror. */
+  --tv-edit-font: 13px;
+
   --tv-radius-sm: 6px;
   --tv-radius-md: 8px;
+
+  /* C-32: one focus-ring definition every :focus-visible rule in tv-app.css
+     draws from, so the ring is consistent everywhere instead of each
+     component picking its own offset (1px in some places, 2px in others).
+     The inset variant on .tv-tree-row.kbd-cursor is a deliberate exception
+     (a positive offset would spill outside the row) and keeps its own
+     negative offset rather than using --tv-focus-offset. */
+  --tv-focus-ring: 2px solid var(--tv-accent);
+  --tv-focus-offset: 2px;
+
+  /* C-13: ink for text/icons drawn on top of a solid --tv-accent fill
+     (e.g. the current ⌘F match). UX-23 already tested near-black #1d1d1f
+     against all 6 theme×accent combinations for this exact purpose — the
+     values below are unchanged, so the matrix carries over verbatim:
+       Light-blue     #1d1d1f on #2d68d8 = 8.2:1
+       Light-graphite #1d1d1f on #586071 = 5.4:1
+       Light-warm     #1d1d1f on #c26a3a = 4.6:1
+       Dark-blue      #1d1d1f on #5a9cff = 7.6:1
+       Dark-graphite  #1d1d1f on #9aa3b4 = 6.8:1
+       Dark-warm      #1d1d1f on #e0905c = 4.6:1
+     All ≥4.5:1 AA — one value works for every combo, no per-theme override
+     needed. */
+  --tv-on-accent: #1d1d1f;
 
   font-family: var(--tv-font-ui);
   color: var(--tv-text-primary) !important;
@@ -94,6 +124,22 @@
   --tv-syn-str:     #236523;
   --tv-syn-num:     #8f4213;
   --tv-syn-fn:      #2d68d8;
+
+  /* C-37: warn/danger tokens — replace the literal hex values scattered
+     across tv-app.css (large-file banner, error badge, danger context-menu
+     item). Values are the amber/red already in use, just centralised.
+     Text/weak-bg pair verified ≥4.5:1: #8a5d00 on #fdf3dc.
+     P1-6: the consolidation gave --tv-warn (border role) and --tv-warn-text
+     (text role) the SAME value, so the large-file banner's border regressed
+     from a soft amber ring to the dark brown text colour. Restored to the
+     original border value; --tv-warn-strong is the original badge/icon
+     accent (brighter than the text colour), also lost in the merge. */
+  --tv-warn:        #f0d79a;
+  --tv-warn-weak:   #fdf3dc;
+  --tv-warn-text:   #8a5d00;
+  --tv-warn-strong: #d9920c;
+  --tv-danger:     #c0453a;
+  --tv-danger-weak:rgba(192,69,58,.14);
 }
 
 /* ── DARK THEME ──────────────────────────────────────────── */
@@ -152,6 +198,18 @@
   --tv-syn-str:     #7fce7f;
   --tv-syn-num:     #e2a96a;
   --tv-syn-fn:      #6fa8ff;
+
+  /* C-37: dark warn/danger — text/weak-bg pair verified ≥4.5:1: #e8c884 on
+     rgba(232,200,132,.14) over #1c1c1e (≈ #302a1c effective) ≈ 8.6:1.
+     P1-6: --tv-warn restored to its own subtle border value (was collapsed
+     onto --tv-warn-text, giving the banner a bright amber ring instead of a
+     subtle outline); --tv-warn-strong restored as the badge/icon accent. */
+  --tv-warn:        #4a3c1c;
+  --tv-warn-weak:   rgba(232,200,132,.14);
+  --tv-warn-text:   #e8c884;
+  --tv-warn-strong: #e8b04a;
+  --tv-danger:     #ff8a80;
+  --tv-danger-weak:rgba(255,138,128,.16);
 }
 
 /* ── ACCENTS (per theme) ─────────────────────────────────── */
