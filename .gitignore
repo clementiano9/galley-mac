@@ -13,5 +13,13 @@ tauri-app/src-tauri/gen/
 # Tooling artifacts
 .playwright-mcp/
 
-# Loose QA screenshots (regenerated on demand)
-/tv-*.png
+# Agent runtime state (Foreman issue queue) — regenerated per run
+.claude/queue.json
+.claude/queue.config.json
+.claude/queue-state/
+
+# QA screenshots — evidence, regenerated on demand
+.claude/docs/qa/screenshots/
+
+# Personal drafts — kept local
+.claude/docs/notes/

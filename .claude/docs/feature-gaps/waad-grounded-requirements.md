@@ -1,6 +1,6 @@
 # WAAD-Grounded Requirements — Gap Iteration
 
-*UxPipeline **Step 3 (Problem Definition)** supplement to `ux-steps/step-3-problem-definition.md`. Seven gaps that the design-classification flagged as needing WAAD iteration (●●/●●●) plus U-04 were traced back through the URD → WAAD cluster → research-stream sources and resolved to crystal-clear, build-ready requirements.*
+*UxPipeline **Step 3 (Problem Definition)** supplement to `../ux/step-3-problem-definition.md`. Seven gaps that the design-classification flagged as needing WAAD iteration (●●/●●●) plus U-04 were traced back through the URD → WAAD cluster → research-stream sources and resolved to crystal-clear, build-ready requirements.*
 
 **Method:** three analyst passes (chrome/config · navigation/state · AI-output workflow) + one adversarial UX-lead critique pass. Every requirement cites a URD; every decision resolves a design tension from the WAAD.
 

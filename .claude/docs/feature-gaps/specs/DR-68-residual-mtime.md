@@ -1,6 +1,6 @@
 # DR-68 Residual — Live-Watch Open-Time Recency Uses Wrong Clock
 
-*UxPipeline **Step 3 (Problem Definition)** supplement to `app/feature-gaps/waad-grounded-requirements.md` Part 4 "Live-Watch Recency Label". This spec closes the single open residual identified in the DR-68 Iteration note (2026-06-21): a just-opened static file shows the recency bar for its first 90 s because the recency clock is seeded from open time rather than the file's real on-disk last-modified timestamp.*
+*UxPipeline **Step 3 (Problem Definition)** supplement to `../waad-grounded-requirements.md` Part 4 "Live-Watch Recency Label". This spec closes the single open residual identified in the DR-68 Iteration note (2026-06-21): a just-opened static file shows the recency bar for its first 90 s because the recency clock is seeded from open time rather than the file's real on-disk last-modified timestamp.*
 
 **Status:** CLEAR — implementable with zero open product questions.
 

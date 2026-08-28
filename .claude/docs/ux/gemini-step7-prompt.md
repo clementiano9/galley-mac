@@ -3,9 +3,9 @@
 ## FILES TO UPLOAD WITH THIS PROMPT
 Upload these 4 files:
 - `UX-DESIGN-SYSTEM.md`
-- `ux-steps/step-3-problem-definition.md`
-- `ux-steps/step-5-ia.md`
-- `ux-steps/step-6-wireframes.md`
+- `step-3-problem-definition.md`
+- `step-5-ia.md`
+- `step-6-wireframes.md`
 
 ---
 

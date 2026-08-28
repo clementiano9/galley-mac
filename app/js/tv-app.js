@@ -1625,7 +1625,7 @@
   // shortcuts C-18 found missing: ⌘P (bound in the router and in the palette
   // but listed nowhere) and ⌘G / ⇧⌘G. DR-17's row cap was raised from 18 to 20
   // by the user on 2026-08-21 to make room — see the DR-17 amendment note in
-  // app/feature-gaps/waad-grounded-requirements.md. 19 rows → a 10/9 split.
+  // .claude/docs/feature-gaps/waad-grounded-requirements.md. 19 rows → a 10/9 split.
   var SHORTCUTS = [
     { keys: ['⌘K'], action: 'Command palette' },
     { keys: ['⌘O'], action: 'Open file' },
