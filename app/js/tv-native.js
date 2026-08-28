@@ -1,9 +1,11 @@
 /* ───────────────────────────────────────────────────────────
-   tiny-viewer · native Tauri bridge
+   Galley · native Tauri bridge
    window.TVNative = {
      available, init(), openPicker(), openFolder(),
      saveTab(tab), startWatch(tab), stopWatch(tab),
-     openInto(doc), showToast(msg)
+     openInto(doc), showToast(msg),
+     readDirTree(path, opts), notifyTheme(choice), syncAppearanceMenu(),
+     syncRecentMenu()
    }
 
    Uses window.__TAURI__ (withGlobalTauri: true in tauri.conf.json).
@@ -63,7 +65,7 @@
     if (!available || !path) return;
     invoke('reveal_in_finder', { path: path }).catch(function (err) {
       console.warn('[TVNative] reveal_in_finder failed', path, err);
-      showToast('Could not reveal file in Finder');
+      showToast('Could not reveal file in Finder', { kind: 'error' });
     });
   }
 
@@ -86,27 +88,120 @@
     return path.slice(0, idx);
   }
 
-  /* ── toast: transient bottom-center notice (uses .tv-toast css) ── */
-  function showToast(msg) {
+  /* ── toast: transient bottom-center notice (C-01) ─────────────
+        Toasts used to be appended straight to <body>. Every design token is
+        declared on `.tv` (tv-tokens.css), never on :root, so a body-mounted
+        toast resolved none of them: black Times New Roman on a transparent
+        background, i.e. invisible over the dark theme. Mounting inside
+        TV.el() does NOT fix it either — render() replaces that whole subtree
+        (tv-app.js:2457), so the toast would vanish on the very renders that
+        follow a save-failure or a file-changed event.
+        So: ONE persistent host in <body> that carries the same
+        `tv tv--<theme> tv--accent-<accent>` classes as the app root, kept in
+        sync on every render. Column layout, newest at the bottom.
+        P2-6: the WCAG 4.1.3 announcement itself goes through TV.announce()
+        (tv-app.js's #tv-live-region) rather than a second aria-live region
+        owned here — see showToast() below. */
+  var TOAST_MS_INFO = 3000;
+  var TOAST_MS_ERROR = 6000;   // long enough to read and act on
+  var TOAST_MAX = 4;           // hard cap so a burst cannot fill the screen
+  var _toastHost = null;
+  var _toastSyncWired = false;
+
+  // Mirror the app root's theme/accent classes onto the host so the design
+  // tokens resolve. state.theme is already the RESOLVED value ('light'|'dark').
+  function syncToastHost() {
+    if (!_toastHost) return;
+    var tv = getTV();
+    var theme = (tv && tv.state && tv.state.theme) || 'light';
+    var accent = (tv && tv.state && tv.state.accent) || 'blue';
+    var cls = 'tv tv--' + theme + ' tv--accent-' + accent;
+    if (_toastHost.className !== cls) _toastHost.className = cls;
+  }
+
+  // TV may not exist yet when the first toast fires, so keep trying until the
+  // subscription actually lands. 'render' covers setTheme/setAccent (both call
+  // render); 'themechange' is picked up too if the shell emits one.
+  function wireToastSync() {
+    if (_toastSyncWired) return;
+    var tv = getTV();
+    if (!tv || typeof tv.on !== 'function') return;
+    _toastSyncWired = true;
+    tv.on('render', syncToastHost);
+    tv.on('themechange', syncToastHost);
+  }
+
+  function toastHost() {
+    if (!_toastHost || !_toastHost.parentNode) {
+      _toastHost = document.createElement('div');
+      _toastHost.id = 'tv-toasts';
+      document.body.appendChild(_toastHost);
+    }
+    wireToastSync();
+    syncToastHost();
+    return _toastHost;
+  }
+
+  // showToast(msg)                    → info,  ~3 s, auto-dismiss
+  // showToast(msg, { kind:'error' })  → error, ~6 s, dismissible with ✕
+  // The second argument also accepts the bare string 'error'.
+  function showToast(msg, opts) {
+    var kind = (typeof opts === 'string') ? opts : (opts && opts.kind) || 'info';
+    var isError = (kind === 'error');
+    var host = toastHost();
+
     var t = document.createElement('div');
-    t.className = 'tv-toast';
+    t.className = 'tv-toast' + (isError ? ' tv-toast--error' : '');
     t.setAttribute('role', 'status');
-    t.textContent = msg;
-    document.body.appendChild(t);
-    setTimeout(function () {
+
+    var label = document.createElement('span');
+    label.className = 'tv-toast-text';
+    label.textContent = msg;
+    t.appendChild(label);
+
+    var timer = null;
+    var removed = false;
+    function removeSelf() {
+      if (removed) return;
+      removed = true;
+      if (t.parentNode) t.parentNode.removeChild(t);
+    }
+    function dismiss() {
+      if (timer) { clearTimeout(timer); timer = null; }
       t.classList.add('out');
-      // UX-17: animationend may never fire when prefers-reduced-motion disables
-      // the animation. setTimeout fallback ensures removal regardless.
-      var removed = false;
-      function removeSelf() {
-        if (!removed && t.parentNode) {
-          removed = true;
-          t.parentNode.removeChild(t);
-        }
-      }
+      // UX-17: animationend never fires when prefers-reduced-motion disables
+      // the animation, so keep the timeout fallback.
       t.addEventListener('animationend', removeSelf);
-      setTimeout(removeSelf, 400); // fallback: remove after animation duration
-    }, 3000);
+      setTimeout(removeSelf, 400);
+    }
+
+    if (isError) {
+      var x = document.createElement('button');
+      x.type = 'button';
+      x.className = 'tv-toast-x';
+      x.setAttribute('aria-label', 'Dismiss notice');
+      x.textContent = '✕';
+      x.addEventListener('click', dismiss);
+      t.appendChild(x);
+    }
+
+    // Column order = arrival order, newest at the bottom.
+    host.appendChild(t);
+    // P2-6: WCAG 4.1.3 announcement goes through the shell's ONE persistent
+    // polite live region (#tv-live-region) instead of a second one that used
+    // to live inside #tv-toasts — two independent aria-live regions could
+    // both fire on the same turn.
+    var tv = getTV();
+    if (tv && typeof tv.announce === 'function') tv.announce(msg);
+
+    // Cap the stack: drop the oldest visible toast immediately.
+    var live = host.querySelectorAll('.tv-toast');
+    for (var i = 0; i < live.length - TOAST_MAX; i++) {
+      if (live[i].parentNode) live[i].parentNode.removeChild(live[i]);
+    }
+
+    timer = setTimeout(dismiss, isError ? TOAST_MS_ERROR : TOAST_MS_INFO);
+    return t;
   }
 
   /* ── openInto: register a FileDoc returned by Rust ──────── */
@@ -186,6 +281,7 @@
     // Persist this path in recent files (E-02)
     if (doc.path && typeof tv.saveRecentPath === 'function') {
       tv.saveRecentPath(doc.path);
+      syncRecentMenu(); // C-36: keep File > Open Recent current
     }
 
     // R7-FIX: do NOT call startWatch(tab) directly here. TVLive.start() (below) calls
@@ -223,7 +319,7 @@
           if (tv && typeof tv.openErrorTab === 'function') {
             tv.openErrorTab(fileName, path, classifyReadError(err));
           } else {
-            showToast('Cannot open "' + fileName + '": ' + (err || 'read failed'));
+            showToast('Cannot open "' + fileName + '": ' + (err || 'read failed'), { kind: 'error' });
           }
           console.error('[TVNative] drag-drop read_md_file failed', path, err);
         });
@@ -257,7 +353,8 @@
       if (window.TVLive && typeof TVLive.notifyChange === 'function') {
         TVLive.notifyChange(tab.id, payload.modified);
       }
-      showToast((tab.name || 'File') + ' changed on disk — save or discard your edits first');
+      // C-01 copy: no dashes in user-facing strings.
+      showToast((tab.name || 'File') + ' changed on disk. Save or discard your edits first.', { kind: 'error' });
       return;
     }
 
@@ -334,7 +431,7 @@
     // S-10 fix: set dirty directly (no render), then call render once below
     tab.dirty = true;
 
-    showToast((tab.name || 'File') + ' was deleted on disk — Save to restore it');
+    showToast((tab.name || 'File') + ' was deleted on disk. Save to restore it.', { kind: 'error' });
 
     // S-10: single render (previously was markDirty→render + explicit render = 2 renders)
     if (typeof tv.render === 'function') tv.render();
@@ -370,9 +467,17 @@
   //   subfolders: [{name, files:[{name, path}]}],
   //   deep: [{name, path, from}]
   // }
-  function readDirTree(absFolderPath) {
+  //   truncated: bool,   // a cap dropped something
+  //   skipped: number    // how many matching entries were dropped (C-29)
+  // }
+  // C-29: readDirTree(path, { uncapped: true }) re-scans with a much higher
+  // (still bounded) budget so the sidebar's "Show N more files" row can deliver
+  // what the first pass dropped. Omitting opts keeps the previous behaviour.
+  function readDirTree(absFolderPath, opts) {
     if (!available) return Promise.resolve(null);
-    return invoke('read_dir_tree', { path: absFolderPath });
+    var args = { path: absFolderPath };
+    if (opts && opts.uncapped) args.uncapped = true;
+    return invoke('read_dir_tree', args);
   }
 
   /* ── public: openFolder (F-03) ──────────────────────────── */
@@ -425,7 +530,7 @@
     if (!absFolderPath) return Promise.reject(new Error('no folder path'));
     return readDirTree(absFolderPath).then(function (tree) {
       if (!tree) {
-        showToast('Could not open folder — it may have moved or been deleted');
+        showToast('Could not open folder. It may have moved or been deleted.', { kind: 'error' });
         return Promise.reject(new Error('read_dir_tree returned null'));
       }
       // Register the tree so the sidebar folder section renders.
@@ -434,7 +539,7 @@
       }
       return tree;
     }, function (err) {
-      showToast('Could not open folder — it may have moved or been deleted');
+      showToast('Could not open folder. It may have moved or been deleted.', { kind: 'error' });
       console.warn('[TVNative] reopenFolder read_dir_tree failed', absFolderPath, err);
       return Promise.reject(err);
     });
@@ -455,7 +560,7 @@
         .catch(function (err) {
           // N-06: surface save failure as toast; do NOT silently swallow
           if (err) {
-            showToast('Save failed: ' + (typeof err === 'string' ? err : 'disk error'));
+            showToast('Save failed: ' + (typeof err === 'string' ? err : 'disk error'), { kind: 'error' });
             console.warn('[TVNative] saveTab (save_md_file) failed', err);
           }
           // Re-throw so handleSave() knows to keep edit mode open
@@ -468,13 +573,21 @@
         suggested_name: tab.name || 'document.md',
       })
         .then(function (d) {
-          // d is Option<FileDoc> — null when user cancelled
+          // d is Option<FileDoc> — null when user cancelled.
+          // C-02 fix: markDirty(false) used to run UNCONDITIONALLY here, so
+          // cancelling the save dialog still cleared the dirty flag — nothing
+          // was written, but the tab looked clean. That is exactly the silent
+          // discard C-02's quit guard exists to prevent: "Save All" calls this
+          // same path per dirty tab, and NATIVE-CONTRACT.md's quit contract
+          // requires the close to proceed "only if nothing is still dirty" —
+          // which only means something if a cancelled Save As stays dirty.
           if (d) {
             tab.nativePath = d.path;
             tab.name = d.name;
             // Persist the new path in recents
             if (d.path && typeof tv.saveRecentPath === 'function') {
               tv.saveRecentPath(d.path);
+              syncRecentMenu(); // C-36: keep File > Open Recent current
             }
             // S-04: start watching the newly saved file (it now has a nativePath).
             // R7-FIX: TVLive.start() calls TVNative.startWatch() internally — do NOT
@@ -485,12 +598,12 @@
             }
             // Re-render to update tab name + live indicator
             if (tv && typeof tv.render === 'function') tv.render();
+            if (tv) tv.markDirty(tab.id, false);
           }
-          if (tv) tv.markDirty(tab.id, false);
         })
         .catch(function (err) {
           if (err) {
-            showToast('Save failed: ' + (typeof err === 'string' ? err : 'disk error'));
+            showToast('Save failed: ' + (typeof err === 'string' ? err : 'disk error'), { kind: 'error' });
             console.warn('[TVNative] saveTab (save_md_file_as) failed', err);
           }
           return Promise.reject(err);
@@ -524,6 +637,177 @@
     if (!available || !path) return;
     invoke('unwatch_file', { path: path })
       .catch(function () { /* nothing watched under this path — ignore */ });
+  }
+
+  /* ── C-02: quit / close window with unsaved edits ─────────
+        Rust intercepts WindowEvent::CloseRequested (and routes ⌘Q and ⇧⌘W
+        through the same place) and emits `tv-close-requested`. Only the
+        frontend knows which tabs are dirty, so the decision lives here.
+        Every branch ends in either confirm_close or a deliberate stay. */
+  function dirtyTabs() {
+    var tv = getTV();
+    if (!tv || !tv.state || !Array.isArray(tv.state.tabs)) return [];
+    return tv.state.tabs.filter(function (t) { return t && t.dirty; });
+  }
+
+  // P1-7: every quit route emits tv-close-requested, and Rust's
+  // prevent_close() does not stop a second one arriving while the first is
+  // still being answered (e.g. a second ⌘Q, or ⌘Q then the red button) — an
+  // in-flight guard keeps two confirm_quit_dialog sheets from stacking on
+  // the same window with contradictory outcomes. Cleared on every branch
+  // that does NOT end the process (closeNow's own failure path clears it
+  // too, so a failed confirm_close does not leave the app stuck forever).
+  var _quitInFlight = false;
+  // P1-8: consecutive confirm_quit_dialog failures — see handleCloseRequested.
+  var _quitDialogFailures = 0;
+
+  function closeNow() {
+    return invoke('confirm_close').catch(function (err) {
+      console.error('[TVNative] confirm_close failed', err);
+      // The window did NOT close — re-arm so the next quit attempt is not
+      // silently swallowed by the in-flight guard.
+      _quitInFlight = false;
+    });
+  }
+
+  // Sequential on purpose: an untitled tab hits save_md_file_as, which opens a
+  // native panel — two of those at once would fight over the main thread.
+  function saveAllDirty() {
+    return dirtyTabs().reduce(function (chain, tab) {
+      return chain.then(function () { return saveTab(tab); });
+    }, Promise.resolve());
+  }
+
+  function handleCloseRequested() {
+    if (_quitInFlight) return; // P1-7: a sheet is already up — ignore the re-entrant call
+    _quitInFlight = true;
+
+    var count = 0;
+    try {
+      var tv = getTV();
+      count = (tv && typeof tv.hasDirtyTabs === 'function')
+        ? tv.hasDirtyTabs()
+        : dirtyTabs().length;
+    } catch (e) {
+      // A broken shell must not make the app unquittable.
+      count = 0;
+    }
+
+    if (!count) { closeNow(); return; }
+
+    invoke('confirm_quit_dialog', { count: count })
+      .then(function (choice) {
+        _quitDialogFailures = 0; // a successful round-trip resets the failure streak
+        if (choice === 'discard') return closeNow();
+        if (choice !== 'save') { _quitInFlight = false; return; } // Cancel: stay exactly as we are
+        return saveAllDirty().then(function () {
+          // A cancelled Save As leaves the tab dirty. Quitting now would throw
+          // away the very edits the user just declined to discard.
+          if (dirtyTabs().length) {
+            showToast('Quit cancelled. Some documents are still unsaved.', { kind: 'error' });
+            _quitInFlight = false;
+            return;
+          }
+          return closeNow();
+        }, function () {
+          showToast('Quit cancelled. Save failed, so your edits are still here.', { kind: 'error' });
+          _quitInFlight = false;
+        });
+      })
+      .catch(function (err) {
+        console.error('[TVNative] confirm_quit_dialog failed', err);
+        _quitDialogFailures++;
+        // P1-8: NATIVE-CONTRACT.md says any failure here falls through to
+        // confirm_close. The first failure instead asks the user to retry —
+        // a transient dialog glitch should not quit out from under them
+        // without asking. But a window that keeps failing to even ASK about
+        // unsaved changes must not become permanently unquittable (⌘Q,
+        // ⇧⌘W, and the red button would all be dead), which is worse than
+        // the data-loss case the dialog exists to prevent — so the SECOND
+        // consecutive failure falls through to closeNow() per the contract.
+        if (_quitDialogFailures >= 2) {
+          _quitDialogFailures = 0;
+          showToast('Could not ask about unsaved changes. Quitting anyway.', { kind: 'error' });
+          closeNow();
+          return;
+        }
+        showToast('Could not ask about unsaved changes. Save your work, then quit again.', { kind: 'error' });
+        _quitInFlight = false;
+      });
+  }
+
+  /* ── C-36: keep View ▸ Appearance truthful ────────────────
+        DR-14 wants the active choice checked at all times, not only when the
+        choice came from the menu. Push the USER'S choice (not the resolved
+        colour) so "System" stays checked while the OS flips underneath it:
+        tv-app.js removes the tv-theme key for System and writes it otherwise. */
+  var _lastAppearance = null;
+
+  // The user's CHOICE, derived from storage: tv-app.js removes the tv-theme key
+  // for "System" and writes 'light'/'dark' otherwise.
+  function currentAppearanceChoice() {
+    var choice;
+    try { choice = localStorage.getItem('tv-theme') || 'system'; } catch (e) { choice = 'system'; }
+    return (choice === 'light' || choice === 'dark') ? choice : 'system';
+  }
+
+  // The single push point. Memoised, so the render-driven caller costs nothing
+  // when nothing changed — and that also breaks the native-menu round trip
+  // (menu click → TV.setTheme → notifyTheme → here) after one hop. Rust only
+  // sets the checkmark and never echoes back, so there is no loop to close.
+  function pushAppearance(choice) {
+    if (!available) return;
+    if (choice !== 'light' && choice !== 'dark' && choice !== 'system') return;
+    if (choice === _lastAppearance) return;
+    _lastAppearance = choice;
+    invoke('set_appearance_check', { choice: choice }).catch(function (err) {
+      // The menu may not be built yet on the very first render. Clear the memo
+      // so the next render retries instead of leaving a stale checkmark.
+      _lastAppearance = null;
+      console.warn('[TVNative] set_appearance_check failed', err);
+    });
+  }
+
+  // Accepts the shell's `themechange` payload ({ theme, choice }) when there is
+  // one, and falls back to reading storage for the render-driven path.
+  function syncAppearanceMenu(payload) {
+    pushAppearance((payload && payload.choice) || currentAppearanceChoice());
+  }
+
+  // Direct hook: tv-app.js setTheme() calls notifyTheme(choice, resolvedTheme).
+  // The resolved paint is deliberately ignored — sending it would uncheck
+  // "System" the moment the OS flipped underneath it.
+  function notifyTheme(choice) {
+    pushAppearance(choice);
+  }
+
+  /* ── C-36: File ▸ Open Recent ───────────────────────────── */
+  // The 20-entry MRU lives in localStorage, so Rust cannot read it. Push the
+  // first 10 file paths whenever they change; Rust rebuilds the submenu.
+  var _lastRecentKey = null;
+  function syncRecentMenu() {
+    if (!available) return;
+    var tv = getTV();
+    if (!tv || typeof tv.loadRecentPaths !== 'function') return;
+    var paths;
+    try { paths = (tv.loadRecentPaths() || []).slice(0, 10); } catch (e) { return; }
+    var key = paths.join('\n');
+    if (key === _lastRecentKey) return;      // render() fires a lot; this is cheap
+    _lastRecentKey = key;
+    invoke('set_recent_files', { paths: paths }).catch(function (err) {
+      _lastRecentKey = null;                 // retry on the next render
+      console.warn('[TVNative] set_recent_files failed', err);
+    });
+  }
+
+  // Both syncs are render-driven: setTheme() and every open/close call render().
+  function wireMenuSync() {
+    var tv = getTV();
+    if (!tv || typeof tv.on !== 'function') return;
+    tv.on('render', function () { syncAppearanceMenu(); syncRecentMenu(); });
+    tv.on('themechange', syncAppearanceMenu);
+    syncAppearanceMenu();
+    syncRecentMenu();
   }
 
   /* ── titlebar drag-region: set data-tauri-drag-region
@@ -576,6 +860,18 @@
       if (tvEl) tvEl.classList.toggle('tv-drag-over', on);
       // Also toggle on body for the empty-state dropzone path
       document.body.classList.toggle('tv-drag-over', on);
+      // C-41 (modules request #1): the labelled drop card is built in
+      // tv-files.js and was only wired into the browser dragenter/dragleave
+      // path — Tauri's own tauri://drag-* events (this function's only
+      // callers) never touch it, so the native build showed just the old
+      // unlabelled tint. No item count is available from tauri://drag-enter,
+      // so call showDragCard() with none; it falls back to the invariant
+      // "Drop to open .md, .markdown or .txt files" message.
+      if (on && window.TVFiles && typeof TVFiles.showDragCard === 'function') {
+        TVFiles.showDragCard();
+      } else if (!on && window.TVFiles && typeof TVFiles.hideDragCard === 'function') {
+        TVFiles.hideDragCard();
+      }
     }
 
     listen('tauri://drag-enter', function () { setDragHint(true); })
@@ -625,7 +921,7 @@
             if (tvFb && typeof tvFb.openErrorTab === 'function') {
               tvFb.openErrorTab(fileName, path, classifyReadError(err));
             } else {
-              showToast('Cannot open "' + fileName + '": ' + (err || 'read failed'));
+              showToast('Cannot open "' + fileName + '": ' + (err || 'read failed'), { kind: 'error' });
             }
             console.error('[TVNative] open-files read_md_file failed', path, err);
           });
@@ -637,6 +933,14 @@
     }).catch(function (err) {
       console.error('[TVNative] failed to register open-files listener', err);
     });
+
+    // C-02: register this BEFORE take_pending_opens below. That call is what
+    // arms the Rust close guard, so registering first guarantees there is never
+    // a window where a close is prevented with nothing listening to release it.
+    listen('tv-close-requested', handleCloseRequested)
+      .catch(function (err) {
+        console.error('[TVNative] failed to register tv-close-requested listener', err);
+      });
 
     // U-18 (cold-start fix): a double-click / "Open With" on a COLD app delivers
     // RunEvent::Opened long before the listener above exists, and Tauri's emit
@@ -687,6 +991,42 @@
       console.error('[TVNative] failed to register menu:keyboard-shortcuts listener', err);
     });
 
+    // C-36: File ▸ Print… ⌘P. The menu accelerator means macOS eats the key
+    // before the WebView sees it, so tv-app.js's own ⌘P handler cannot also
+    // fire — both routes end at the same print_page command.
+    listen('menu:print', function () {
+      invoke('print_page').catch(function (err) {
+        console.warn('[TVNative] print_page failed', err);
+        showToast('Could not open the print dialog', { kind: 'error' });
+      });
+    }).catch(function (err) {
+      console.error('[TVNative] failed to register menu:print listener', err);
+    });
+
+    // C-36: File ▸ Reveal in Finder — acts on the active tab's file.
+    listen('menu:reveal-in-finder', function () {
+      var tab = getActiveTab();
+      if (tab && tab.nativePath) revealInFinder(tab.nativePath);
+      else showToast('Save this document first, then reveal it in Finder', { kind: 'error' });
+    }).catch(function (err) {
+      console.error('[TVNative] failed to register menu:reveal-in-finder listener', err);
+    });
+
+    // C-36: Edit ▸ Find ▸ Find Next ⌘G / Find Previous ⇧⌘G. TV.findStep is
+    // added by the shell; until it lands these are quiet no-ops rather than
+    // errors, so the menu items never throw.
+    function findStep(dir) {
+      var tv = getTV();
+      if (tv && typeof tv.findStep === 'function') tv.findStep(dir);
+    }
+    listen('menu:find-next', function () { findStep(1); })
+      .catch(function (err) { console.error('[TVNative] failed to register menu:find-next listener', err); });
+    listen('menu:find-prev', function () { findStep(-1); })
+      .catch(function (err) { console.error('[TVNative] failed to register menu:find-prev listener', err); });
+
+    // C-36: keep Appearance checkmarks and Open Recent in step with the app.
+    wireMenuSync();
+
     // Wire titlebar drag region (waits for TV to be ready)
     wireTitlebarDragRegion();
   }
@@ -732,6 +1072,15 @@
     classifyReadError: classifyReadError,
     showToast: showToast,      // exposed so tv-app.js handleSave can surface errors
     readDirTree: readDirTree,  // F-19: directory tree for sidebar folder section
+    // C-36: pushed to Rust on every render; exposed so the shell can force a
+    // refresh right after it mutates the MRU, without waiting for a repaint.
+    syncRecentMenu: syncRecentMenu,
+    syncAppearanceMenu: syncAppearanceMenu,
+    // C-36: tv-app.js's setTheme() calls TVNative.notifyTheme(choice, resolved)
+    // directly, so the checkmark updates on the same tick instead of waiting
+    // for the render-driven sync above to catch it. Takes the explicit choice
+    // rather than re-deriving it from storage.
+    notifyTheme: notifyTheme,
   };
 
   /* ── wire boot on DOM ready ──────────────────────────────── */

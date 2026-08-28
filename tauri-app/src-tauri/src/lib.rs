@@ -3,12 +3,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::menu::{
     CheckMenuItem, Menu, MenuItem, PredefinedMenuItem, Submenu,
 };
 use tauri::Emitter;
 use tauri::Manager;
-use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind, MessageDialogResult};
 
 // ── Shared state ────────────────────────────────────────────────────────────
 
@@ -41,6 +42,26 @@ pub struct AppearanceMenuState {
     pub light: CheckMenuItem<tauri::Wry>,
     pub dark: CheckMenuItem<tauri::Wry>,
     pub system: CheckMenuItem<tauri::Wry>,
+}
+
+/// C-02: the quit / close-window guard.
+///
+/// `CloseRequested` is intercepted so unsaved edits are never discarded
+/// silently — the frontend is asked first (see the `tv-close-requested` event).
+/// `confirmed` flips only when JS calls `confirm_close`, i.e. the user has
+/// answered the sheet, at which point the close is allowed through.
+pub struct CloseGuard {
+    pub confirmed: AtomicBool,
+}
+
+/// C-36: the File ▸ Open Recent submenu plus the paths its items map to.
+///
+/// The MRU lives in the frontend's localStorage, so Rust cannot build this at
+/// startup — JS pushes the list in via `set_recent_files` and the submenu is
+/// rebuilt in place. `paths[i]` is the file behind menu id `menu:recent-<i>`.
+pub struct RecentMenuState {
+    pub submenu: Submenu<tauri::Wry>,
+    pub paths: Mutex<Vec<String>>,
 }
 
 // ── Data shapes ─────────────────────────────────────────────────────────────
@@ -107,6 +128,20 @@ pub struct DirTree {
     /// (MAX_TOTAL / MAX_DIRECT / MAX_SUBFOLDERS / MAX_SUB_FILES / MAX_DEEP) was hit.
     /// Drives the sidebar's "Some items not shown" footer row.
     pub truncated: bool,
+    /// C-29: how many MATCHING entries the scan dropped, counted at the sites
+    /// where the scanner actually saw them (the max_direct / max_sub_files /
+    /// max_deep push-guards). `truncated` stays the authoritative "there is
+    /// more" flag: render a count only when `skipped > 0`.
+    pub skipped: u32,
+    /// C-29: whether `skipped` is the WHOLE truth.
+    ///
+    /// True when every drop was counted one by one, so "Show N more files" is
+    /// exact. False when the walk stopped blind — the visit budget ran out, the
+    /// subfolder cap skipped a directory without opening it, or the depth limit
+    /// cut the recursion — in which case `skipped` is a LOWER BOUND and the UI
+    /// should say "N+" rather than "N". Serialised as `skippedExact` for JS.
+    #[serde(rename = "skippedExact")]
+    pub skipped_exact: bool,
 }
 
 /// A file nested more than one level below the scanned root.
@@ -315,11 +350,146 @@ fn print_page(window: tauri::WebviewWindow) -> Result<(), String> {
 /// could be buffered *and* emitted, which would open the file twice.
 #[tauri::command]
 fn take_pending_opens(state: tauri::State<PendingOpens>) -> Vec<String> {
-    state
-        .ready
-        .store(true, std::sync::atomic::Ordering::SeqCst);
+    state.ready.store(true, Ordering::SeqCst);
     let mut paths = state.paths.lock().unwrap();
     std::mem::take(&mut *paths)
+}
+
+/// C-02: the frontend has decided it is safe to quit. Flip the guard so the
+/// close is not intercepted a second time, then exit.
+///
+/// Called after the user answered the unsaved-changes sheet (or immediately,
+/// when no tab was dirty). Exiting rather than closing the window keeps one
+/// code path for the red close button, ⇧⌘W and ⌘Q, which on a single-window
+/// document app all mean the same thing.
+#[tauri::command]
+fn confirm_close(app: tauri::AppHandle, state: tauri::State<CloseGuard>) -> Result<(), String> {
+    state.confirmed.store(true, Ordering::SeqCst);
+    app.exit(0);
+    Ok(())
+}
+
+/// C-02: ask the user what to do about unsaved edits before quitting.
+///
+/// Returns "save" | "discard" | "cancel". Uses the NON-blocking callback API
+/// with a oneshot channel, matching pick_md_files / save_md_file_as — a
+/// blocking dialog here would stall the main thread (E-01).
+#[tauri::command]
+async fn confirm_quit_dialog(app: tauri::AppHandle, count: u32) -> Result<String, String> {
+    let (tx, rx) = tokio::sync::oneshot::channel::<MessageDialogResult>();
+
+    let noun = if count == 1 { "document" } else { "documents" };
+    let message = format!(
+        "Save changes to {} {} before quitting? Your edits will be lost if you do not save them.",
+        count, noun
+    );
+
+    app.dialog()
+        .message(message)
+        .title("Unsaved changes")
+        .kind(MessageDialogKind::Warning)
+        // macOS orders these right to left: Save All is the default button.
+        .buttons(MessageDialogButtons::YesNoCancelCustom(
+            "Save All".to_string(),
+            "Discard".to_string(),
+            "Cancel".to_string(),
+        ))
+        .show_with_result(move |result| {
+            let _ = tx.send(result);
+        });
+
+    let result = rx.await.map_err(|e| format!("dialog channel error: {}", e))?;
+
+    Ok(match result {
+        MessageDialogResult::Custom(label) => match label.as_str() {
+            "Save All" => "save",
+            "Discard" => "discard",
+            _ => "cancel",
+        },
+        MessageDialogResult::Yes | MessageDialogResult::Ok => "save",
+        MessageDialogResult::No => "discard",
+        MessageDialogResult::Cancel => "cancel",
+    }
+    .to_string())
+}
+
+/// C-36: keep View ▸ Appearance truthful.
+///
+/// DR-14 wants the active choice checked AT ALL TIMES, not only when the choice
+/// was made from the menu. The frontend calls this whenever the theme changes by
+/// any route (⌘K palette, the titlebar button, a system appearance switch), with
+/// the USER'S choice — "light" | "dark" | "system" — not the resolved colour, so
+/// "System" stays checked while the OS flips underneath it.
+#[tauri::command]
+fn set_appearance_check(app: tauri::AppHandle, choice: String) -> Result<(), String> {
+    let state = app
+        .try_state::<AppearanceMenuState>()
+        .ok_or_else(|| "appearance menu not built yet".to_string())?;
+    state
+        .light
+        .set_checked(choice == "light")
+        .map_err(|e| e.to_string())?;
+    state
+        .dark
+        .set_checked(choice == "dark")
+        .map_err(|e| e.to_string())?;
+    state
+        .system
+        .set_checked(choice == "system")
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// C-36: rebuild File ▸ Open Recent from the frontend's MRU.
+///
+/// The list lives in localStorage, so only JS can supply it; it re-sends on
+/// every change. Items are capped at RECENT_MENU_MAX and identified by index
+/// (`menu:recent-<i>`), with the path table kept alongside so on_menu_event can
+/// resolve a click back to a file. An empty list leaves a single disabled row so
+/// the submenu never looks broken.
+#[tauri::command]
+fn set_recent_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
+    const RECENT_MENU_MAX: usize = 10;
+
+    let state = app
+        .try_state::<RecentMenuState>()
+        .ok_or_else(|| "recent menu not built yet".to_string())?;
+
+    let kept: Vec<String> = paths.into_iter().take(RECENT_MENU_MAX).collect();
+
+    // Clear the submenu. remove_at(0) returns Ok(None) once it is empty.
+    loop {
+        match state.submenu.remove_at(0) {
+            Ok(Some(_)) => continue,
+            Ok(None) => break,
+            Err(e) => return Err(format!("open-recent clear failed: {}", e)),
+        }
+    }
+
+    if kept.is_empty() {
+        let empty = MenuItem::with_id(&app, "menu:recent-none", "No recent files", false, None::<&str>)
+            .map_err(|e| e.to_string())?;
+        state.submenu.append(&empty).map_err(|e| e.to_string())?;
+    } else {
+        for (i, path) in kept.iter().enumerate() {
+            let label = std::path::Path::new(path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| path.clone());
+            let item = MenuItem::with_id(
+                &app,
+                format!("menu:recent-{}", i),
+                label,
+                true,
+                None::<&str>,
+            )
+            .map_err(|e| e.to_string())?;
+            state.submenu.append(&item).map_err(|e| e.to_string())?;
+        }
+    }
+
+    *state.paths.lock().map_err(|e| e.to_string())? = kept;
+    Ok(())
 }
 
 /// Native save-as dialog; writes content; returns Some(FileDoc) or None if cancelled.
@@ -528,16 +698,21 @@ fn unwatch_file(
 /// Unreadable entries are skipped with eprintln, matching pick_folder behaviour.
 /// Non-directory, non-matching-extension entries are silently skipped.
 #[tauri::command]
-fn read_dir_tree(path: String) -> Result<DirTree, String> {
-    const MAX_TOTAL: usize = 200;
-    const MAX_DIRECT: usize = 50;
-    const MAX_SUBFOLDERS: usize = 10;
-    const MAX_SUB_FILES: usize = 50;
-    const MAX_DEEP: usize = 50;
+fn read_dir_tree(path: String, uncapped: Option<bool>) -> Result<DirTree, String> {
+    // C-29: the DEFAULT scan is byte-for-byte the previous behaviour. Passing
+    // `uncapped: true` re-runs the same walk with a much higher (still bounded)
+    // budget, so the sidebar can offer "Show N more files" and actually deliver
+    // them. Nothing else about the returned shape changes.
+    let wide = uncapped.unwrap_or(false);
+    let max_total: usize = if wide { 5000 } else { 200 };
+    let max_direct: usize = if wide { 5000 } else { 50 };
+    let max_subfolders: usize = if wide { 200 } else { 10 };
+    let max_sub_files: usize = if wide { 5000 } else { 50 };
+    let max_deep: usize = if wide { 5000 } else { 50 };
     // QA D5: how many levels BELOW a subfolder the deep walk descends. 1 was the
     // old hardcoded behavior (and could not represent the design's depth-4 case);
     // 6 covers real note trees while still bounding a pathological hierarchy.
-    const MAX_DEPTH: usize = 6;
+    let max_depth: usize = if wide { 12 } else { 6 };
 
     let root = PathBuf::from(&path);
 
@@ -570,9 +745,9 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
     // with `truncated` still false, i.e. silently. The JS side already splits an
     // arbitrary-depth `from` prefix, so nesting renders at any depth.
     //
-    // Bounded three ways: MAX_DEPTH levels, the shared MAX_TOTAL visit budget,
-    // and MAX_DEEP collected entries. Hitting ANY of them sets `truncated`, so
-    // the sidebar's "Some items not shown" footer tells the truth.
+    // Bounded three ways: max_depth levels, the shared max_total visit budget,
+    // and max_deep collected entries. Hitting ANY of them sets `truncated`, so
+    // the sidebar's truncation footer tells the truth.
     #[allow(clippy::too_many_arguments)]
     fn collect_deep(
         dir: &std::path::Path,
@@ -584,9 +759,12 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
         deep: &mut Vec<DeepEntry>,
         total_visited: &mut usize,
         truncated: &mut bool,
+        skipped: &mut u32,
+        exact: &mut bool,
     ) {
         if depth > max_depth {
             *truncated = true;
+            *exact = false;   // C-29: never opened this level, so nothing counted
             return;
         }
         let entries = match std::fs::read_dir(dir) {
@@ -601,8 +779,9 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
             }
         };
         for result in entries {
-            if *total_visited >= max_total || deep.len() >= max_deep {
+            if *total_visited >= max_total {
                 *truncated = true;
+                *exact = false;   // C-29: stopped blind, the rest is uncounted
                 return;
             }
             let entry = match result {
@@ -617,6 +796,13 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
             let p = entry.path();
             if p.is_file() {
                 if is_matching(&p) {
+                    // C-29: past max_deep we keep WALKING but stop COLLECTING, so
+                    // the count stays exact instead of stopping at the cap.
+                    if deep.len() >= max_deep {
+                        *truncated = true;
+                        *skipped += 1;
+                        continue;
+                    }
                     deep.push(DeepEntry {
                         name: p
                             .file_name()
@@ -642,6 +828,8 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
                     deep,
                     total_visited,
                     truncated,
+                    skipped,
+                    exact,
                 );
             }
         }
@@ -651,22 +839,27 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
     let mut subfolders: Vec<SubfolderEntry> = Vec::new();
     let mut deep: Vec<DeepEntry> = Vec::new();
     let mut total_visited: usize = 0;
-    // B2: flips to true at EVERY cap-drop site (the three MAX_TOTAL breaks, the
-    // MAX_SUBFOLDERS continue, and the two silent push-guards MAX_DIRECT /
-    // MAX_SUB_FILES / MAX_DEEP). Surfaced on DirTree.truncated → sidebar footer.
+    // B2: flips to true at EVERY cap-drop site (the three max_total breaks, the
+    // max_subfolders continue, and the three push-guards max_direct /
+    // max_sub_files / max_deep). Surfaced on DirTree.truncated → sidebar footer.
     let mut truncated = false;
+    // C-29: how many matching entries the caps dropped where we could see them,
+    // and whether that count is the whole truth (see DirTree::skipped_exact).
+    let mut skipped: u32 = 0;
+    let mut skipped_exact = true;
 
     // Read the root directory entries.
     let root_entries = std::fs::read_dir(&root)
         .map_err(|e| format!("read_dir_tree: cannot read '{}': {}", path, e))?;
 
     for entry_result in root_entries {
-        if total_visited >= MAX_TOTAL {
+        if total_visited >= max_total {
             eprintln!(
                 "read_dir_tree: hit entry cap ({}) scanning '{}'",
-                MAX_TOTAL, path
+                max_total, path
             );
-            truncated = true; // B2 cap-site 1/6 (root MAX_TOTAL)
+            truncated = true; // B2 cap-site 1/6 (root max_total)
+            skipped_exact = false; // C-29: the rest of the folder is uncounted
             break;
         }
         let entry = match entry_result {
@@ -683,20 +876,24 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
         if entry_path.is_file() {
             // Depth-0 matching file.
             if is_matching(&entry_path) {
-                if files.len() < MAX_DIRECT {
+                if files.len() < max_direct {
                     files.push(make_entry(&entry_path));
                 } else {
-                    truncated = true; // B2 cap-site 2/6 (MAX_DIRECT push-guard)
+                    truncated = true; // B2 cap-site 2/6 (max_direct push-guard)
+                    skipped += 1;     // C-29: exact for the flat-folder case
                 }
             }
         } else if entry_path.is_dir() {
             // Depth-1 subdirectory: collect its matching files and recurse deeper.
-            if subfolders.len() >= MAX_SUBFOLDERS {
+            if subfolders.len() >= max_subfolders {
                 eprintln!(
                     "read_dir_tree: subfolder cap ({}) reached in '{}'",
-                    MAX_SUBFOLDERS, path
+                    max_subfolders, path
                 );
-                truncated = true; // B2 cap-site 3/6 (MAX_SUBFOLDERS continue)
+                truncated = true; // B2 cap-site 3/6 (max_subfolders continue)
+                // C-29: this subfolder is skipped WITHOUT being opened, so its
+                // matching files are dropped uncounted.
+                skipped_exact = false;
                 continue;
             }
 
@@ -721,8 +918,9 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
             };
 
             for sub_result in sub_entries {
-                if total_visited >= MAX_TOTAL {
-                    truncated = true; // B2 cap-site 4/6 (sub-loop MAX_TOTAL)
+                if total_visited >= max_total {
+                    truncated = true; // B2 cap-site 4/6 (sub-loop max_total)
+                    skipped_exact = false; // C-29: stopped blind
                     break;
                 }
                 let sub_entry = match sub_result {
@@ -743,15 +941,16 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
                 if sub_path.is_file() {
                     // Depth-1 matching file → belongs to this subfolder.
                     if is_matching(&sub_path) {
-                        if sub_files.len() < MAX_SUB_FILES {
+                        if sub_files.len() < max_sub_files {
                             sub_files.push(make_entry(&sub_path));
                         } else {
-                            truncated = true; // B2 cap-site 5/6 (MAX_SUB_FILES push-guard)
+                            truncated = true; // B2 cap-site 5/6 (max_sub_files push-guard)
+                            skipped += 1;     // C-29
                         }
                     }
                 } else if sub_path.is_dir() {
                     // Depth-2+ — recurse to collect deep entries (flat list).
-                    // QA D5: this now descends to MAX_DEPTH levels instead of
+                    // QA D5: this now descends to max_depth levels instead of
                     // exactly one, and flags `truncated` when it stops early.
                     let deeper_name = sub_path
                         .file_name()
@@ -762,12 +961,14 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
                         &sub_path,
                         &deep_prefix,
                         1,
-                        MAX_DEPTH,
-                        MAX_TOTAL,
-                        MAX_DEEP,
+                        max_depth,
+                        max_total,
+                        max_deep,
                         &mut deep,
                         &mut total_visited,
                         &mut truncated,
+                        &mut skipped,
+                        &mut skipped_exact,
                     );
                 }
             }
@@ -788,6 +989,8 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
         subfolders,
         deep,
         truncated, // B2: any cap-drop above flipped this
+        skipped,   // C-29: how many of those drops we could count
+        skipped_exact, // C-29: false when the walk stopped blind → render "N+"
     })
 }
 
@@ -796,17 +999,20 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
 /// Build the native macOS menu bar (U-01 / F-08).
 ///
 /// Menu structure:
-///   App (tiny-viewer)  — About, separator, Services, separator, Hide, Hide Others,
+///   App (Galley)  — About, separator, Services, separator, Hide, Hide Others,
 ///                        Show All, separator, Quit
-///   File               — Open File… ⌘O, Open Folder… ⌘⇧O, separator,
-///                        Save ⌘S, separator, Close Tab ⌘W
+///   File               — Open File… ⌘O, Open Folder… ⌘⇧O, Open Recent ▶,
+///                        separator, Save ⌘S, separator, Print… ⌘P,
+///                        Reveal in Finder, separator, Close Tab ⌘W
 ///   Edit               — Undo, Redo, separator, Cut, Copy, Paste, Select All,
-///                        separator, Find ⌘F, Find in Files ⌘⇧F
+///                        separator, Find ▶ (Find… ⌘F, Find Next ⌘G,
+///                        Find Previous ⇧⌘G, Find in Files ⌘⇧F)
 ///   View               — Command Palette ⌘K, Toggle Sidebar ⌘B, separator,
 ///                        Appearance ▶ Light / Dark / System (U-02, DR-11–14),
-///                        separator, Toggle Dark Mode (legacy toggle kept for now),
 ///                        separator, Zoom In ⌘+, Zoom Out ⌘-, Actual Size ⌘0
 ///   Go                 — Previous Tab ⌘[, Next Tab ⌘]
+///   Window             — Minimize ⌘M, Zoom, separator, Close Window ⇧⌘W,
+///                        separator, Bring All to Front (C-36)
 ///
 /// Custom items emit Tauri app-level events that the frontend listens for.
 /// Predefined Edit items (Undo/Redo/Cut/Copy/Paste/SelectAll) are left native
@@ -820,9 +1026,11 @@ fn read_dir_tree(path: String) -> Result<DirTree, String> {
 ///
 /// Returns the Menu AND the AppearanceMenuState so the caller can manage the
 /// CheckMenuItem handles for checkmark toggling (DR-14).
-fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, AppearanceMenuState)> {
+fn build_menu(
+    app: &tauri::AppHandle,
+) -> tauri::Result<(Menu<tauri::Wry>, AppearanceMenuState, RecentMenuState)> {
     // ── App menu (macOS: first submenu is the app menu) ──────────────────
-    let app_menu = Submenu::with_id(app, "app", "tiny-viewer", true)?;
+    let app_menu = Submenu::with_id(app, "app", "Galley", true)?;
     app_menu.append(&PredefinedMenuItem::about(app, None, None)?)?;
     app_menu.append(&PredefinedMenuItem::separator(app)?)?;
     app_menu.append(&PredefinedMenuItem::services(app, None)?)?;
@@ -831,7 +1039,16 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Appear
     app_menu.append(&PredefinedMenuItem::hide_others(app, None)?)?;
     app_menu.append(&PredefinedMenuItem::show_all(app, None)?)?;
     app_menu.append(&PredefinedMenuItem::separator(app)?)?;
-    app_menu.append(&PredefinedMenuItem::quit(app, None)?)?;
+    // C-02: NOT PredefinedMenuItem::quit — that exits immediately and takes any
+    // unsaved edits with it. This item routes ⌘Q through the same
+    // tv-close-requested handshake as the red close button and ⇧⌘W.
+    app_menu.append(&MenuItem::with_id(
+        app,
+        "menu:quit",
+        "Quit Galley",
+        true,
+        Some("CmdOrCtrl+Q"),
+    )?)?;
 
     // ── File menu ────────────────────────────────────────────────────────
     let file_menu = Submenu::with_id(app, "file", "File", true)?;
@@ -849,6 +1066,17 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Appear
         true,
         Some("CmdOrCtrl+Shift+O"),
     )?)?;
+    // C-36: Open Recent ▸ — filled in by the frontend via set_recent_files
+    // (the 20-entry MRU lives in localStorage, so Rust cannot build it here).
+    let recent_submenu = Submenu::with_id(app, "file:open-recent", "Open Recent", true)?;
+    recent_submenu.append(&MenuItem::with_id(
+        app,
+        "menu:recent-none",
+        "No recent files",
+        false,
+        None::<&str>,
+    )?)?;
+    file_menu.append(&recent_submenu)?;
     file_menu.append(&PredefinedMenuItem::separator(app)?)?;
     file_menu.append(&MenuItem::with_id(
         app,
@@ -856,6 +1084,24 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Appear
         "Save",
         true,
         Some("CmdOrCtrl+S"),
+    )?)?;
+    file_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    // C-36: ⌘P was bound in JS and in the palette but in no menu. The
+    // accelerator here means macOS consumes the key before the WebView sees it,
+    // so the JS ⌘P handler cannot double-fire — both routes end at print_page.
+    file_menu.append(&MenuItem::with_id(
+        app,
+        "menu:print",
+        "Print\u{2026}",
+        true,
+        Some("CmdOrCtrl+P"),
+    )?)?;
+    file_menu.append(&MenuItem::with_id(
+        app,
+        "menu:reveal-in-finder",
+        "Reveal in Finder",
+        true,
+        None::<&str>,
     )?)?;
     file_menu.append(&PredefinedMenuItem::separator(app)?)?;
     file_menu.append(&MenuItem::with_id(
@@ -878,20 +1124,39 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Appear
     edit_menu.append(&PredefinedMenuItem::paste(app, None)?)?;
     edit_menu.append(&PredefinedMenuItem::select_all(app, None)?)?;
     edit_menu.append(&PredefinedMenuItem::separator(app)?)?;
-    edit_menu.append(&MenuItem::with_id(
+    // C-36: Find ▸ submenu. Find Next / Find Previous were missing entirely,
+    // so ⌘G — the macOS-wide "again" key — did nothing.
+    let find_submenu = Submenu::with_id(app, "edit:find", "Find", true)?;
+    find_submenu.append(&MenuItem::with_id(
         app,
         "menu:find",
-        "Find",
+        "Find\u{2026}",
         true,
         Some("CmdOrCtrl+F"),
     )?)?;
-    edit_menu.append(&MenuItem::with_id(
+    find_submenu.append(&MenuItem::with_id(
+        app,
+        "menu:find-next",
+        "Find Next",
+        true,
+        Some("CmdOrCtrl+G"),
+    )?)?;
+    find_submenu.append(&MenuItem::with_id(
+        app,
+        "menu:find-prev",
+        "Find Previous",
+        true,
+        Some("CmdOrCtrl+Shift+G"),
+    )?)?;
+    find_submenu.append(&PredefinedMenuItem::separator(app)?)?;
+    find_submenu.append(&MenuItem::with_id(
         app,
         "menu:find-in-files",
         "Find in Files",
         true,
         Some("CmdOrCtrl+Shift+F"),
     )?)?;
+    edit_menu.append(&find_submenu)?;
 
     // ── View menu ────────────────────────────────────────────────────────
     let view_menu = Submenu::with_id(app, "view", "View", true)?;
@@ -915,8 +1180,9 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Appear
     // Three CheckMenuItems: Light, Dark, System. Default on launch: System (checked).
     // DR-14 (menu-driven checkmark): on_menu_event reads AppearanceMenuState to
     // uncheck the previous item and check the newly selected one.
-    // Note: bidirectional sync (palette/titlebar toggle → native checkmark) is
-    // NOT implemented to avoid over-engineering (DR-14 "Should/best-effort").
+    // C-36: bidirectional sync IS implemented now — the frontend calls
+    // set_appearance_check() on every theme change, whatever triggered it, so
+    // the checkmark can no longer contradict the actual appearance (DR-14).
     let appear_light = CheckMenuItem::with_id(
         app,
         "menu:appearance-light",
@@ -947,17 +1213,11 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Appear
     appearance_submenu.append(&appear_system)?;
     view_menu.append(&appearance_submenu)?;
 
-    view_menu.append(&PredefinedMenuItem::separator(app)?)?;
-    // BUG-3 FIX: Replace two separate Light/Dark items with a single toggle.
-    // Emits "menu:theme-toggle"; the JS listener in wireNativeMenuEvents flips
-    // state.theme between 'light' and 'dark' via setTheme().
-    view_menu.append(&MenuItem::with_id(
-        app,
-        "menu:theme-toggle",
-        "Toggle Dark Mode",
-        true,
-        None::<&str>,
-    )?)?;
+    // C-36: the old "Toggle Dark Mode" item is GONE. It competed with the
+    // Appearance group above it and the two could disagree, because nothing kept
+    // the checkmarks in sync. Appearance is now the single truthful control:
+    // set_appearance_check() re-checks the right row whatever route the user
+    // took (menu, ⌘K palette, titlebar button, OS appearance switch).
     view_menu.append(&PredefinedMenuItem::separator(app)?)?;
     view_menu.append(&MenuItem::with_id(
         app,
@@ -998,6 +1258,25 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Appear
         Some("CmdOrCtrl+]"),
     )?)?;
 
+    // ── Window menu (C-36) ───────────────────────────────────────────────
+    // The HIG requires a Window menu for a document app and App Store review
+    // flags its absence; U-01 names ⌘M specifically. Close Window is ⇧⌘W, NOT
+    // the predefined item, because that one claims ⌘W and would collide with
+    // File ▸ Close Tab; it also has to run the C-02 unsaved-changes check.
+    let window_menu = Submenu::with_id(app, "window", "Window", true)?;
+    window_menu.append(&PredefinedMenuItem::minimize(app, None)?)?;
+    window_menu.append(&PredefinedMenuItem::maximize(app, Some("Zoom"))?)?;
+    window_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    window_menu.append(&MenuItem::with_id(
+        app,
+        "menu:close-window",
+        "Close Window",
+        true,
+        Some("CmdOrCtrl+Shift+W"),
+    )?)?;
+    window_menu.append(&PredefinedMenuItem::separator(app)?)?;
+    window_menu.append(&PredefinedMenuItem::bring_all_to_front(app, None)?)?;
+
     // ── Help menu (F-22, DR-20) ──────────────────────────────────────────
     // DR-20: "Help > Keyboard Shortcuts" opens the identical overlay as `?`.
     // Emits "menu:keyboard-shortcuts"; tv-native.js listens and calls
@@ -1019,6 +1298,7 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Appear
     menu.append(&edit_menu)?;
     menu.append(&view_menu)?;
     menu.append(&go_menu)?;
+    menu.append(&window_menu)?;
     menu.append(&help_menu)?;
 
     let appearance_state = AppearanceMenuState {
@@ -1027,7 +1307,12 @@ fn build_menu(app: &tauri::AppHandle) -> tauri::Result<(Menu<tauri::Wry>, Appear
         system: appear_system,
     };
 
-    Ok((menu, appearance_state))
+    let recent_state = RecentMenuState {
+        submenu: recent_submenu,
+        paths: Mutex::new(Vec::new()),
+    };
+
+    Ok((menu, appearance_state, recent_state))
 }
 
 // ── App entry point ───────────────────────────────────────────────────────────
@@ -1040,7 +1325,10 @@ pub fn run() {
         .manage(WatcherState(Mutex::new(HashMap::new())))
         .manage(PendingOpens {
             paths: Mutex::new(Vec::new()),
-            ready: std::sync::atomic::AtomicBool::new(false),
+            ready: AtomicBool::new(false),
+        })
+        .manage(CloseGuard {
+            confirmed: AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![
             pick_md_files,
@@ -1054,15 +1342,51 @@ pub fn run() {
             take_pending_opens,
             watch_file,
             unwatch_file,
+            confirm_close,
+            confirm_quit_dialog,
+            set_appearance_check,
+            set_recent_files,
         ])
         .setup(|app| {
             // Build and register the native macOS menu bar (U-01 / F-08).
-            // build_menu returns (Menu, AppearanceMenuState) so we can manage
-            // the CheckMenuItem handles for DR-14 checkmark toggling.
-            let (menu, appearance_state) = build_menu(app.handle())?;
+            // build_menu returns (Menu, AppearanceMenuState, RecentMenuState) so
+            // we can manage the CheckMenuItem handles for DR-14 checkmark
+            // toggling and the Open Recent submenu handle for C-36.
+            let (menu, appearance_state, recent_state) = build_menu(app.handle())?;
             app.set_menu(menu)?;
             app.manage(appearance_state);
+            // C-36: the Open Recent submenu handle, so set_recent_files can
+            // rebuild it once the frontend hands over its MRU.
+            app.manage(recent_state);
             Ok(())
+        })
+        // C-02: never let the window close on unsaved edits without asking.
+        //
+        // The frontend owns the dirty state, so Rust cannot answer the question
+        // itself: prevent the close, hand it to JS, and wait for confirm_close.
+        // Two escape hatches keep this from becoming an unquittable app:
+        //   1. the guard only arms once the frontend has drained
+        //      take_pending_opens, i.e. tv-native.js booted and its
+        //      tv-close-requested listener is registered;
+        //   2. tv-native.js closes anyway on any error in its own handler.
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let app = window.app_handle();
+                if app.state::<CloseGuard>().confirmed.load(Ordering::SeqCst) {
+                    return; // the user already answered — let it through
+                }
+                if !app
+                    .state::<PendingOpens>()
+                    .ready
+                    .load(Ordering::SeqCst)
+                {
+                    return; // frontend never booted; do not trap the user
+                }
+                api.prevent_close();
+                if let Err(e) = app.emit("tv-close-requested", ()) {
+                    eprintln!("tv-close-requested emit error: {}", e);
+                }
+            }
         })
         // Handle menu item events: emit app-level Tauri events so the frontend
         // (tv-native.js) can listen via window.__TAURI__.event.listen().
@@ -1079,16 +1403,20 @@ pub fn run() {
                 // Edit menu
                 | "menu:find"
                 | "menu:find-in-files"
+                | "menu:find-next"
+                | "menu:find-prev"
                 // View menu
                 | "menu:command-palette"
                 | "menu:toggle-sidebar"
-                | "menu:theme-toggle"
                 | "menu:zoom-in"
                 | "menu:zoom-out"
                 | "menu:zoom-reset"
                 // Go menu
                 | "menu:prev-tab"
                 | "menu:next-tab"
+                // C-36: File ▸ Print… / Reveal in Finder
+                | "menu:print"
+                | "menu:reveal-in-finder"
                 // Help menu (F-22, DR-20)
                 | "menu:keyboard-shortcuts" => {
                     // Emit the id as the event name so the frontend can listen
@@ -1122,6 +1450,42 @@ pub fn run() {
                         }
                         if let Err(e) = state.system.set_checked(system_checked) {
                             eprintln!("appearance checkmark update failed (system): {}", e);
+                        }
+                    }
+                }
+
+                // C-02: ⌘Q and ⇧⌘W both go through the same unsaved-changes
+                // handshake as the red close button. Neither exits directly.
+                //
+                // Same escape hatch as the CloseRequested guard: this is a
+                // CUSTOM Quit item, so if the frontend never booted there would
+                // be nothing listening and ⌘Q would do nothing at all. Exit
+                // outright in that case — there can be no unsaved edits in a
+                // frontend that never ran.
+                "menu:quit" | "menu:close-window" => {
+                    if !app.state::<PendingOpens>().ready.load(Ordering::SeqCst) {
+                        app.exit(0);
+                        return;
+                    }
+                    if let Err(e) = app.emit("tv-close-requested", ()) {
+                        eprintln!("tv-close-requested emit error: {}", e);
+                    }
+                }
+
+                // C-36: File ▸ Open Recent ▸ <file>. Resolve the index back to
+                // its path and reuse the existing "open-files" handler in
+                // tv-native.js, which already reads and opens a path list.
+                other if other.starts_with("menu:recent-") => {
+                    let idx = other
+                        .trim_start_matches("menu:recent-")
+                        .parse::<usize>()
+                        .ok();
+                    if let (Some(i), Some(state)) = (idx, app.try_state::<RecentMenuState>()) {
+                        let path = state.paths.lock().ok().and_then(|p| p.get(i).cloned());
+                        if let Some(path) = path {
+                            if let Err(e) = app.emit("open-files", vec![path]) {
+                                eprintln!("open-recent emit error: {}", e);
+                            }
                         }
                     }
                 }
@@ -1170,7 +1534,7 @@ pub fn run() {
                     // always worked). ready is only ever set by that drain, so a
                     // path is never both buffered and emitted.
                     let pending = app_handle.state::<PendingOpens>();
-                    if pending.ready.load(std::sync::atomic::Ordering::SeqCst) {
+                    if pending.ready.load(Ordering::SeqCst) {
                         if let Err(e) = app_handle.emit("open-files", &paths) {
                             eprintln!("RunEvent::Opened emit error: {}", e);
                         }
@@ -1204,7 +1568,7 @@ mod tests {
         fs::write(base.join("sub").join("b.markdown"), "x").unwrap();
         fs::write(base.join("sub").join("deeper").join("d.md"), "x").unwrap();
 
-        let tree = read_dir_tree(base.to_string_lossy().to_string()).expect("read_dir_tree ok");
+        let tree = read_dir_tree(base.to_string_lossy().to_string(), None).expect("read_dir_tree ok");
 
         // DR-33: top-level md + txt listed, png excluded
         let names: Vec<&str> = tree.files.iter().map(|f| f.name.as_str()).collect();
@@ -1252,7 +1616,7 @@ mod tests {
         fs::create_dir_all(&deeper_still).unwrap();
         fs::write(deeper_still.join("way-down.md"), "x").unwrap();
 
-        let tree = read_dir_tree(base.to_string_lossy().to_string()).expect("read_dir_tree ok");
+        let tree = read_dir_tree(base.to_string_lossy().to_string(), None).expect("read_dir_tree ok");
 
         let find = |n: &str| tree.deep.iter().find(|d| d.name == n).cloned();
 
@@ -1289,10 +1653,41 @@ mod tests {
             fs::write(base.join(format!("f{:02}.md", i)), "x").unwrap();
         }
 
-        let tree = read_dir_tree(base.to_string_lossy().to_string()).expect("read_dir_tree ok");
+        let tree = read_dir_tree(base.to_string_lossy().to_string(), None).expect("read_dir_tree ok");
 
         assert_eq!(tree.files.len(), 50, "files capped at MAX_DIRECT");
         assert!(tree.truncated, "exceeding MAX_DIRECT flips truncated");
+        // C-29: the sidebar needs the NUMBER, not just a boolean. 60 matching
+        // files, 50 kept → exactly 10 skipped.
+        assert_eq!(tree.skipped, 10, "skipped counts the dropped entries");
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // C-29: `uncapped: true` re-scans with a much higher budget so the sidebar's
+    // "Show N more files" row can actually deliver them. Same folder, same
+    // shape, nothing dropped.
+    #[test]
+    fn read_dir_tree_uncapped_returns_everything() {
+        let mut base = std::env::temp_dir();
+        base.push(format!("tv_rdt_uncapped_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).unwrap();
+        for i in 0..60 {
+            fs::write(base.join(format!("f{:02}.md", i)), "x").unwrap();
+        }
+
+        let capped = read_dir_tree(base.to_string_lossy().to_string(), None)
+            .expect("capped read_dir_tree ok");
+        assert_eq!(capped.files.len(), 50);
+        assert!(capped.truncated);
+        assert_eq!(capped.skipped, 10);
+
+        let wide = read_dir_tree(base.to_string_lossy().to_string(), Some(true))
+            .expect("uncapped read_dir_tree ok");
+        assert_eq!(wide.files.len(), 60, "uncapped scan returns every file");
+        assert!(!wide.truncated, "uncapped scan is not truncated");
+        assert_eq!(wide.skipped, 0, "nothing dropped, nothing to report");
 
         let _ = fs::remove_dir_all(&base);
     }

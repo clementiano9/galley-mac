@@ -1,4 +1,4 @@
-# tiny-viewer — Native (Tauri) Integration Contract
+# Galley — Native (Tauri) Integration Contract
 
 We are turning the working web frontend (`../app/`) into a **native macOS app** via
 Tauri v2 (Rust shell + system WKWebView). This satisfies the platform requirements:
@@ -22,11 +22,82 @@ capabilities come from Rust commands + events.
 | `save_md_file_as` | `content: String, suggested_name: String` | `Option<FileDoc>` | Native save dialog; returns new path (null if cancelled) |
 | `watch_file` | `path: String` | `()` | Start an FSEvents watch (notify crate). On change, re-read and emit `file-changed` |
 | `unwatch_file` | `path: String` | `()` | Stop watching that path |
+| `read_dir_tree` | `path: String, uncapped: Option<bool>` | `DirTree` | Scan a folder for the sidebar tree. `uncapped: true` re-scans with a far higher (still bounded) budget — see C-29 below |
+| `confirm_close` | — | `()` | C-02: the frontend has cleared the quit; releases the guard and exits |
+| `confirm_quit_dialog` | `count: u32` | `"save" \| "discard" \| "cancel"` | C-02: native unsaved-changes sheet (Save All / Discard / Cancel) |
+| `set_appearance_check` | `choice: String` | `()` | C-36: check the matching View ▸ Appearance row. `"light" \| "dark" \| "system"` — the USER'S choice, not the resolved colour |
+| `set_recent_files` | `paths: Vec<String>` | `()` | C-36: rebuild File ▸ Open Recent from the frontend MRU (first 10) |
 
 ### Events (Rust → JS via `app.emit` / `Emitter`)
 - `file-changed` — payload `{ path: String, content: String }` (fired by the watcher).
+- `file-removed` — payload `{ path: String }` when a watched file is deleted.
+- `open-files` — payload `string[]`; Finder "Open With" / double-click, and File ▸ Open Recent.
+- `tv-close-requested` — payload `()`. **C-02**: emitted for EVERY quit route (red
+  close button, ⌘Q, ⇧⌘W). See the quit contract below.
+- `menu:*` — one event per custom menu item id (`menu:print`, `menu:find-next`,
+  `menu:find-prev`, `menu:reveal-in-finder`, `menu:appearance-*`, …).
 - Native drag-drop uses Tauri's built-in `tauri://drag-drop` window event
   (payload `{ paths: string[], position }`) — the bridge listens for it.
+
+## C-02 · The quit contract (BINDING)
+
+Edits live only in `tab.source`; the session store persists `{nativePath, scrollTop}`
+and re-reads from disk on restore (U-13 keeps draft persistence out of scope). So
+quitting with a dirty tab used to discard typed work silently — WKWebView does not
+fire `beforeunload` on ⌘Q or Dock-Quit. The guard closes that hole:
+
+1. Rust intercepts `WindowEvent::CloseRequested`, calls `api.prevent_close()` and
+   emits `tv-close-requested`. The App menu's Quit is a **custom** item
+   (`menu:quit`, ⌘Q) rather than `PredefinedMenuItem::quit`, and Window ▸ Close
+   Window (`menu:close-window`, ⇧⌘W) emits the same event, so all three routes
+   converge.
+2. `tv-native.js` counts dirty tabs (`TV.hasDirtyTabs()` when the shell exports it,
+   otherwise `TV.state.tabs`). None dirty → `confirm_close` immediately.
+3. Dirty → `confirm_quit_dialog { count }`. **Save All** saves each dirty tab
+   sequentially through the normal save path, then `confirm_close` — but only if
+   nothing is still dirty (a cancelled Save As must not become a silent discard).
+   **Discard** → `confirm_close`. **Cancel** → nothing happens.
+4. `tv-native.js` guards against a second `tv-close-requested` arriving while a
+   sheet is already up (P1-7) — every route emits the event and Rust's
+   `prevent_close()` does not stop a second one, so without the guard two
+   `confirm_quit_dialog` sheets could stack on the same window with
+   contradictory outcomes.
+5. `confirm_quit_dialog` failing asks the user to retry on the FIRST failure (a
+   transient glitch should not quit out from under them without asking), then
+   falls through to `confirm_close` on the SECOND CONSECUTIVE failure (P1-8) — a
+   window that cannot even ask about unsaved changes must not become
+   permanently unquittable, which is worse than the data-loss case the dialog
+   exists to prevent. The Rust guard only arms once `take_pending_opens` has
+   been called (i.e. `tv-native.js` booted and registered its listener, which it
+   does BEFORE that call). A frontend that never loads therefore cannot make the
+   app unquittable.
+
+`confirm_close` sets the guard flag and calls `app.exit(0)`: on a single-window
+document app the red button, ⇧⌘W and ⌘Q all mean the same thing.
+
+## C-29 · DirTree truncation
+
+```
+DirTree = { path, files[], subfolders[], deep[], truncated: bool, skipped: u32 }
+```
+`skipped` is how many MATCHING entries the caps dropped, counted where the scanner
+saw them. It is exact for the common case (one big flat folder) and a LOWER BOUND
+when the visit budget or the depth limit stopped the walk early — so `truncated`
+stays the authoritative "there is more" flag and the UI should only show a number
+when `skipped > 0`. `TVNative.readDirTree(path, { uncapped: true })` re-scans the
+same folder with 5000-entry caps (depth 12) to back a "Show N more files" row.
+
+## C-36 · Menu ⇄ frontend
+
+- **Appearance is the single appearance control** — the old "Toggle Dark Mode" item
+  is gone. `tv-native.js` calls `set_appearance_check` on every render when the
+  choice changed, reading `localStorage['tv-theme']` (absent = `system`), so the
+  checkmark is truthful whatever route the user took (DR-14).
+- **Open Recent** is pushed from JS via `set_recent_files` (the MRU is localStorage,
+  unreadable from Rust). Clicking an entry emits `open-files` with that one path, so
+  it reuses the existing open handler.
+- ⌘P, ⌘G and ⇧⌘G are now menu accelerators. macOS consumes the key before the
+  WebView sees it, so the JS keydown handlers cannot double-fire.
 
 ## Frontend bridge (`app/js/tv-native.js` → `window.TVNative`)
 ```js
@@ -36,6 +107,14 @@ TVNative.openPicker()         // invoke pick_md_files → TV.openDoc(...) each +
 TVNative.saveTab(tab)         // tab.nativePath ? save_md_file : save_md_file_as; updates tab name/path; clears dirty
 TVNative.startWatch(tab)      // invoke watch_file(tab.nativePath)
 TVNative.stopWatch(tab)       // invoke unwatch_file(tab.nativePath)
+TVNative.readDirTree(p, opts) // read_dir_tree; opts.uncapped -> wide rescan (C-29)
+TVNative.showToast(msg, opts) // opts.kind 'error' -> dismissible, ~6s (C-01)
+TVNative.syncRecentMenu()     // push the MRU into File > Open Recent (C-36)
+TVNative.syncAppearanceMenu() // re-check the View > Appearance row (C-36)
+TVNative.notifyTheme(choice)  // direct hook: tv-app.js's setTheme() calls this on
+                               // every theme change so the checkmark updates the
+                               // same tick, instead of waiting one 'render' event
+                               // for syncAppearanceMenu() above to catch it (C-36)
 ```
 - `tab.nativePath` = absolute fs path; the bridge sets it AFTER `TV.openDoc` returns
   (find tab by id, assign). Do NOT change shell's openDoc signature.
