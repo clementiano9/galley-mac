@@ -1552,6 +1552,45 @@ mod tests {
     use super::*;
     use std::fs;
 
+    // ISS-006: the README's `.github/media/*.png` rendered as the broken-image
+    // placeholder because Tauri builds the asset-protocol scope with
+    // `require_literal_leading_dot: true` on unix by default (scope/fs.rs —
+    // "dotfiles are not supposed to be exposed by default on unix"), so the glob
+    // `**` never matches a path with a dot-leading component.
+    //
+    // The array form `"scope": ["**"]` CANNOT express the override: it
+    // deserializes to `FsScope::AllowedPaths`, a variant with nowhere to carry the
+    // flag. Only the struct form can — and omitting the flag there is equally
+    // broken, because `None` falls through to the unix default. Both regressions
+    // are silent at build time and only show up as a broken image at runtime,
+    // which is why this asserts on the parsed config rather than on file text.
+    #[test]
+    fn asset_scope_serves_dot_leading_paths() {
+        use tauri::utils::config::{Config, FsScope};
+
+        let cfg: Config = serde_json::from_str(include_str!("../tauri.conf.json"))
+            .expect("tauri.conf.json parses");
+
+        match &cfg.app.security.asset_protocol.scope {
+            FsScope::AllowedPaths(allow) => panic!(
+                "ISS-006: the array scope form re-enables requireLiteralLeadingDot on unix, \
+                 so images under .github/ (or any hidden dir) stop loading. Use the object \
+                 form with requireLiteralLeadingDot: false. Got: {:?}",
+                allow
+            ),
+            FsScope::Scope {
+                require_literal_leading_dot,
+                ..
+            } => assert_eq!(
+                *require_literal_leading_dot,
+                Some(false),
+                "ISS-006: requireLiteralLeadingDot must stay explicitly false — omitting it \
+                 leaves None, which falls through to the unix default of true and silently \
+                 breaks images in dot-leading directories"
+            ),
+        }
+    }
+
     // F-19 / DR-33, DR-37, DR-39: read_dir_tree lists depth-0 files, one level of
     // subfolders with their direct files, and flattens depth-2 files into `deep`
     // with a "sub/deeper/" prefix; non-md/markdown/txt files are excluded.
