@@ -55,6 +55,24 @@
     return null;
   }
 
+  // Resolve '.' and '..' segments in an absolute fs path, textually.
+  // Deliberately NOT new URL(...).pathname: that percent-encodes the result
+  // (a path with a space comes back with %20), and convertFileSrc encodes
+  // again — so the asset URL would point at a file that does not exist.
+  // The leading '' segment from the absolute path is never popped, so '..'
+  // can climb to '/' but not past it.
+  function normalizeAbsPath(p) {
+    var parts = p.split('/');
+    var out = [];
+    for (var i = 0; i < parts.length; i++) {
+      var seg = parts[i];
+      if (seg === '.' || (seg === '' && i > 0)) continue;
+      if (seg === '..') { if (out.length > 1) out.pop(); continue; }
+      out.push(seg);
+    }
+    return out.join('/') || '/';
+  }
+
   // Extract parent directory from an absolute fs path, with trailing slash.
   function nativeParentDir(nativePath) {
     if (!nativePath) return null;
@@ -131,6 +149,22 @@
     }
   }
 
+  // Wire the broken-image handler onto an img whose src the RENDERER set
+  // (absolute http/https/data/blob srcs). These used to be skipped entirely,
+  // so their only handler was the inline onerror="" attribute in
+  // tv-markdown.js — which the Tauri CSP (script-src 'self', no
+  // unsafe-inline) refuses to run. A broken https:// image therefore showed
+  // WebKit's own broken-image chrome while .tv-img-placeholder stayed
+  // display:none, i.e. the designed placeholder never appeared in the app.
+  //
+  // The load may already have failed by the time this runs, and onerror does
+  // not re-fire for a settled image — hence the catch-up check. A still-
+  // loading image has complete === false, so it cannot false-positive.
+  function ensureErrorHandling(img) {
+    wireOnerror(img);
+    if (img.complete && !img.naturalWidth && img.onerror) img.onerror();
+  }
+
   /* ── main resolver ───────────────────────────────────────── */
 
   // rootEl   — the element to search for images (typically .tv-content)
@@ -159,8 +193,9 @@
       var nativeDir = nativeParentDir(docPath || '');
 
       Array.prototype.forEach.call(imgs, function (img) {
-        // Skip if src already resolved (absolute src set by renderer or prior call)
-        if (img.getAttribute('src')) return;
+        // src already resolved (absolute src set by renderer, or a prior call).
+        // Still needs an error handler — see ensureErrorHandling().
+        if (img.getAttribute('src')) { ensureErrorHandling(img); return; }
 
         var rawSrc = img.getAttribute('data-img-raw-src') || '';
         if (!rawSrc || hasScheme(rawSrc)) {
@@ -174,19 +209,13 @@
 
         if (!nativeDir) return; // no path context, can't resolve
 
-        // Build the absolute fs path
-        var absPath;
-        if (rawSrc.slice(0, 2) === './') {
-          absPath = nativeDir + rawSrc.slice(2);
-        } else if (rawSrc.slice(0, 3) === '../') {
-          try {
-            absPath = new URL('file://' + nativeDir + rawSrc).pathname;
-          } catch (e) {
-            absPath = nativeDir + rawSrc;
-          }
-        } else {
-          absPath = nativeDir + rawSrc;
-        }
+        // Build the absolute fs path. Every relative src is normalized, not
+        // just one that happens to START with '../' — 'a/../../secret.png'
+        // used to reach the guard below with its '..' segments intact, where
+        // the string prefix check trivially passed. Normalizing first also
+        // makes a legitimate in-tree 'assets/../shared/logo.png' resolve
+        // instead of 403ing on a '..' Tauri's SafePathBuf rejects.
+        var absPath = normalizeAbsPath(nativeDir + rawSrc);
 
         // R8-FIX: path traversal guard. After resolving the absolute path, refuse to
         // serve it if it escapes the document's directory (e.g. ../../etc/passwd).
@@ -225,8 +254,9 @@
     }
 
     Array.prototype.forEach.call(imgs, function (img) {
-      // Skip already-resolved (absolute srcs set by renderer)
-      if (img.getAttribute('src')) return;
+      // Already-resolved (absolute srcs set by renderer) — no src to compute,
+      // but it still needs an error handler. See ensureErrorHandling().
+      if (img.getAttribute('src')) { ensureErrorHandling(img); return; }
 
       var rawSrc = img.getAttribute('data-img-raw-src') || '';
       if (!rawSrc) return;
