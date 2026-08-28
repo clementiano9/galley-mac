@@ -29,7 +29,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": "app",
+    "targets": ["app", "dmg"],
     "category": "Productivity",
     "shortDescription": "A lightweight markdown viewer for AI power users",
     "icon": [
