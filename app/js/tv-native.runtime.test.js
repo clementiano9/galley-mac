@@ -564,6 +564,83 @@ function dirtyBoot(extra) {
   check('the retired "Toggle Dark Mode" event is not wired in the bridge',
     SRC.indexOf('menu:theme-toggle') === -1);
 
+  /* ═════════════════════════════════════════════════════════
+     F-23 · New File → Save-As
+     ═════════════════════════════════════════════════════════ */
+  console.log('\nF-23: saving a never-saved New File\n');
+  function newFileTab() {
+    return { id: 'n1', name: 'Untitled.md', source: 'hello', dirty: true, isNew: true,
+             suggestedDir: '/Users/x/proj', savedSource: '' };
+  }
+  var chosen = { name: 'plan.md', path: '/Users/x/proj/plan.md', content: 'hello', modified: 1 };
+
+  h = boot({ tabs: [newFileTab()], activeId: 'n1', responses: { save_md_file_as: chosen } });
+  var nf = h.tv.state.tabs[0];
+  var refreshed = [];
+  h.tv.refreshFolderFor = function (p) { refreshed.push(p); };
+  var outcome = await h.TVNative.saveTab(nf);
+  var sentArgs = h.lastArgs('save_md_file_as');
+  check('Save-As opens the panel through save_md_file_as', !!sentArgs, h.cmds());
+  check('the name key is camelCase (Tauri 2 rejects suggested_name)',
+    sentArgs && sentArgs.suggestedName === 'Untitled.md' && !('suggested_name' in sentArgs), sentArgs);
+  check('the panel is told where to open', sentArgs && sentArgs.directory === '/Users/x/proj', sentArgs);
+  check('the buffer is what gets written', sentArgs && sentArgs.content === 'hello', sentArgs);
+  check('a completed save resolves without the "cancelled" marker', outcome !== 'cancelled', outcome);
+  check('the tab becomes the file on disk (name, nativePath, directory)',
+    nf.name === 'plan.md' && nf.nativePath === '/Users/x/proj/plan.md' && nf.path === '/Users/x/proj', nf);
+  check('it is no longer new, has no suggested directory, and is clean',
+    nf.isNew === false && nf.suggestedDir === null && nf.dirty === false && nf.savedSource === 'hello', nf);
+  check('the folder tree that contains it is asked to refresh',
+    refreshed.join() === '/Users/x/proj/plan.md', refreshed);
+
+  // no known directory → the key is simply absent (Rust treats it as None)
+  var bare = newFileTab(); bare.suggestedDir = null;
+  var h2 = boot({ tabs: [bare], activeId: 'n1', responses: { save_md_file_as: chosen } });
+  await h2.TVNative.saveTab(h2.tv.state.tabs[0]);
+  check('no directory is sent when none is known',
+    h2.lastArgs('save_md_file_as') && !('directory' in h2.lastArgs('save_md_file_as')), h2.lastArgs('save_md_file_as'));
+
+  // cancelling the panel: a distinct, non-error outcome that changes nothing
+  h = boot({ tabs: [newFileTab()], activeId: 'n1', responses: { save_md_file_as: null } });
+  var cancelTab = h.tv.state.tabs[0];
+  var cancelOutcome = await h.TVNative.saveTab(cancelTab);
+  check('cancelling resolves with the "cancelled" marker', cancelOutcome === 'cancelled', cancelOutcome);
+  check('cancelling leaves the tab dirty, new and path-less',
+    cancelTab.dirty === true && cancelTab.isNew === true && !cancelTab.nativePath && cancelTab.name === 'Untitled.md', cancelTab);
+  check('cancelling shows no error toast', h.toasts().length === 0,
+    h.toasts().map(function (t) { return t.textContent; }));
+
+  // a failed write rejects and says so
+  h = boot({ tabs: [newFileTab()], activeId: 'n1', responses: { save_md_file_as: { __reject: 'disk full' } } });
+  var failTab = h.tv.state.tabs[0];
+  var rejected = false;
+  try { await h.TVNative.saveTab(failTab); } catch (e) { rejected = true; }
+  check('a failed write rejects so the shell keeps the user in edit mode', rejected);
+  check('a failed write leaves the tab new and dirty', failTab.isNew === true && failTab.dirty === true, failTab);
+  check('a failed write shows an error toast',
+    h.toasts().some(function (t) { return /Save failed/.test(t.textContent); }),
+    h.toasts().map(function (t) { return t.textContent; }));
+
+  // The bug this feature had to fix: JS keys must match Rust's parameter names,
+  // camelCased. Read the real signature so a rename on either side fails here.
+  var LIB = fs.readFileSync(path.join(__dirname, '..', '..', 'tauri-app', 'src-tauri', 'src', 'lib.rs'), 'utf8');
+  var sig = LIB.match(/async fn save_md_file_as\(([\s\S]*?)\)\s*->/);
+  var params = sig ? sig[1].split(/,\s*(?=\w+\s*:)/).map(function (p) {
+    var m = p.trim().match(/^(\w+)\s*:\s*([\s\S]+?),?$/);
+    return m ? { name: m[1], type: m[2].trim() } : null;
+  }).filter(Boolean) : [];
+  var injected = /^(tauri::)?(AppHandle|State|WebviewWindow|Window)/;
+  var userParams = params.filter(function (p) { return !injected.test(p.type); });
+  var camel = function (s) { return s.replace(/_([a-z])/g, function (_, c) { return c.toUpperCase(); }); };
+  var jsKeys = Object.keys(sentArgs || {}).sort().join();
+  check('the keys JS sends are exactly the Rust parameters, camelCased',
+    userParams.length > 0 && jsKeys === userParams.map(function (p) { return camel(p.name); }).sort().join(),
+    { js: jsKeys, rust: userParams.map(function (p) { return camel(p.name); }) });
+  var required = userParams.filter(function (p) { return !/^Option</.test(p.type); }).map(function (p) { return camel(p.name); }).sort().join();
+  check('the keys JS sends without a directory are exactly the required Rust parameters',
+    Object.keys(h2.lastArgs('save_md_file_as') || {}).sort().join() === required,
+    { js: Object.keys(h2.lastArgs('save_md_file_as') || {}), required: required });
+
   console.log('\n' + (failed === 0
     ? 'ALL PASSED (' + passed + ' passed, 0 failed)'
     : 'FAILURES: ' + failed + ' (' + passed + ' passed)'));

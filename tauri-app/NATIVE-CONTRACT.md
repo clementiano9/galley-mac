@@ -19,7 +19,7 @@ capabilities come from Rust commands + events.
 | `pick_md_files` | — | `Vec<FileDoc>` | Native NSOpenPanel (dialog plugin), multiple, `.md/.markdown/.txt` filter; reads each chosen file |
 | `read_md_file` | `path: String` | `FileDoc` | Read one file (drag-drop paths, live re-read) |
 | `save_md_file` | `path: String, content: String` | `()` | Overwrite an existing file (Save). ONLY writes the file the user saves (DR-06) |
-| `save_md_file_as` | `content: String, suggested_name: String` | `Option<FileDoc>` | Native save dialog; returns new path (null if cancelled) |
+| `save_md_file_as` | `content: String, suggested_name: String, directory: Option<String>` | `Option<FileDoc>` | Native save dialog; returns new path (null if cancelled). `directory` (F-23) is where the panel opens; a missing or non-existent folder is ignored |
 | `watch_file` | `path: String` | `()` | Start an FSEvents watch (notify crate). On change, re-read and emit `file-changed` |
 | `unwatch_file` | `path: String` | `()` | Stop watching that path |
 | `read_dir_tree` | `path: String, uncapped: Option<bool>` | `DirTree` | Scan a folder for the sidebar tree. `uncapped: true` re-scans with a far higher (still bounded) budget — see C-29 below |
@@ -28,13 +28,20 @@ capabilities come from Rust commands + events.
 | `set_appearance_check` | `choice: String` | `()` | C-36: check the matching View ▸ Appearance row. `"light" \| "dark" \| "system"` — the USER'S choice, not the resolved colour |
 | `set_recent_files` | `paths: Vec<String>` | `()` | C-36: rebuild File ▸ Open Recent from the frontend MRU (first 10) |
 
+**Argument keys are camelCase on the wire.** Tauri 2 camelCases command parameters, so
+the `suggested_name` above is `suggestedName` from JS (`invoke('save_md_file_as',
+{ content, suggestedName, directory })`). The snake_case spelling is rejected with a
+"missing required key" error — which silently broke saving any tab without a path until
+F-23. `tv-native.runtime.test.js` reads this signature from `lib.rs` and fails if the
+keys JS sends drift from it.
+
 ### Events (Rust → JS via `app.emit` / `Emitter`)
 - `file-changed` — payload `{ path: String, content: String }` (fired by the watcher).
 - `file-removed` — payload `{ path: String }` when a watched file is deleted.
 - `open-files` — payload `string[]`; Finder "Open With" / double-click, and File ▸ Open Recent.
 - `tv-close-requested` — payload `()`. **C-02**: emitted for EVERY quit route (red
   close button, ⌘Q, ⇧⌘W). See the quit contract below.
-- `menu:*` — one event per custom menu item id (`menu:print`, `menu:find-next`,
+- `menu:*` — one event per custom menu item id (`menu:new-file` (⌘N, F-23), `menu:print`, `menu:find-next`,
   `menu:find-prev`, `menu:reveal-in-finder`, `menu:appearance-*`, …).
 - Native drag-drop uses Tauri's built-in `tauri://drag-drop` window event
   (payload `{ paths: string[], position }`) — the bridge listens for it.

@@ -355,6 +355,10 @@
       liveActive: false,
       // Browser-style new-tab page (⌘T) — no document, renders the NTP.
       untitled: !!opts.untitled,
+      // F-23: created by New File and never saved, so Save means "choose where"
+      // even while empty. suggestedDir is where that Save panel opens.
+      isNew: !!opts.isNew,
+      suggestedDir: opts.suggestedDir || null,
       // SBH-03: transient = the single "preview" tab. A single click on a
       // sidebar tree file opens here and the next single click REPLACES it, so
       // browsing a folder never grows the strip past one tab. Double-clicking
@@ -1630,6 +1634,7 @@
     { keys: ['⌘K'], action: 'Command palette' },
     { keys: ['⌘O'], action: 'Open file' },
     { keys: ['⌘⇧O'], action: 'Open folder' },
+    { keys: ['⌘N'], action: 'New file' },
     { keys: ['⌘T'], action: 'New tab' },
     { keys: ['⌘W'], action: 'Close tab' },
     { keys: ['⌘1–9'], action: 'Jump to tab' },
@@ -2509,7 +2514,8 @@
                 '<span class="dz-ic">' + ((window.TV_ICONS || {}).tray || '') + '</span>' +
                 '<span class="dz-title">Drop .md files here</span>' +
                 '<span class="dz-or">or</span>' +
-                '<span class="dz-cmd"><span class="kbd">⌘O</span> to open files</span>' +
+                '<span class="dz-cmd"><span class="kbd">⌘O</span> to open files' +
+                  ' <span class="dz-sep">·</span> <span class="kbd">⌘N</span> for a new file</span>' +
                 // The quiet second line: the sidebar's whole reason to exist
                 // (⌘⇧O) was never mentioned anywhere on this screen.
                 '<span class="dz-more">' +
@@ -2729,6 +2735,7 @@
     var clockIc = icons.clock || '';
     var docIc = icons.doc || '';
     var folderIc = icons.folder || '';
+    var plusIc = icons.plus || '';
 
     // ── OPEN section: fixed actions (always visible, never filtered) ──
     var openRows = (
@@ -2743,6 +2750,12 @@
         '<span class="ic tv-ntp-ic">' + folderIc + '</span>' +
         '<span class="tv-ntp-name">Open Folder…</span>' +
         '<span class="tv-ntp-meta"><span class="kbd">⌘⇧O</span></span>' +
+      '</div>' +
+      '<div class="tv-ntp-row" role="option" aria-selected="false"' +
+        ' data-ntp-act="new-file" title="Start a new markdown file (⌘N)">' +
+        '<span class="ic tv-ntp-ic">' + plusIc + '</span>' +
+        '<span class="tv-ntp-name">New File</span>' +
+        '<span class="tv-ntp-meta"><span class="kbd">⌘N</span></span>' +
       '</div>'
     );
 
@@ -4004,6 +4017,10 @@
         openFolder();
         return;
       }
+      if (act === 'new-file') {
+        newFile();
+        return;
+      }
       var openId = row.getAttribute('data-ntp-open-id');
       if (openId) {
         // Already-open file → activate that tab, then close the untitled one.
@@ -4541,6 +4558,10 @@
         }
         if (ntpAct === 'open-folder') {
           openFolder();
+          return;
+        }
+        if (ntpAct === 'new-file') {
+          newFile();
           return;
         }
         var ntpOpenId = ntpRow.getAttribute('data-ntp-open-id');
@@ -5106,6 +5127,88 @@
     return tab.id;
   }
 
+  /* ── F-23: New File (⌘N) ──────────────────────────────────── */
+  // An in-memory document, opened in edit mode. Nothing is written until an
+  // explicit Save (DR-06). Clean until the first keystroke, so closing an
+  // untouched one never prompts.
+
+  // "Untitled.md", then "Untitled 2.md", … — unique among the open tabs.
+  function nextNewFileName() {
+    var taken = {};
+    for (var i = 0; i < state.tabs.length; i++) {
+      if (!state.tabs[i].untitled) taken[String(state.tabs[i].name).toLowerCase()] = true;
+    }
+    if (!taken['untitled.md']) return 'Untitled.md';
+    for (var n = 2; ; n++) {
+      var candidate = 'Untitled ' + n + '.md';
+      if (!taken[candidate.toLowerCase()]) return candidate;
+    }
+  }
+
+  // Where the Save panel opens: beside the file being read, else in the most
+  // recently opened folder, else nowhere in particular (macOS remembers).
+  function newFileDir() {
+    var t = getActiveTab();
+    if (t && !t.untitled) {
+      if (t.nativePath) return t.nativePath.replace(/\/[^/]+$/, '') || '/';
+      if (t.isNew && t.suggestedDir) return t.suggestedDir;
+    }
+    var folders = state.openFolders;
+    return folders.length ? folders[folders.length - 1].path : null;
+  }
+
+  function newFile() {
+    var name = nextNewFileName();
+    var dir = newFileDir();
+    var host = getActiveTab();
+    var tab;
+    if (host && host.untitled) {
+      // From the ⌘T launcher: become the document in place, as opening a file does.
+      tab = host;
+      tab.untitled = false;
+      tab.name = name;
+      tab.source = '';
+      tab.savedSource = '';
+      tab.dirty = false;
+      tab.isNew = true;
+      tab.suggestedDir = dir;
+    } else {
+      tab = makeTab({ name: name, isNew: true, suggestedDir: dir });
+      state.tabs.push(tab);
+    }
+    sbKbd.active = false;
+    renderSidebarCursor();
+    // Straight to _doActivateTab: activateTab's "Leave edit mode?" confirm asks
+    // about leaving edit mode, and New File keeps you in it (the outgoing
+    // textarea is still committed to its tab).
+    batchRender(function () {
+      _doActivateTab(tab.id, state.activeId, host, tab.id !== state.activeId, true);
+    });
+    return tab.id;
+  }
+
+  // Re-scan the open folder that now contains `filePath`, so a file just created
+  // there shows in the tree without reopening the folder.
+  function refreshFolderFor(filePath) {
+    if (!filePath || !(window.TVNative && typeof TVNative.readDirTree === 'function')) return;
+    var root = null;
+    for (var i = 0; i < state.openFolders.length; i++) {
+      var p = state.openFolders[i].path;
+      if (filePath.indexOf(p.replace(/\/+$/, '') + '/') === 0) { root = p; break; }
+    }
+    if (!root) return;
+    TVNative.readDirTree(root).then(function (tree) {
+      if (!tree || !tree.path) return;
+      for (var j = 0; j < state.openFolders.length; j++) {
+        if (state.openFolders[j].path === tree.path) {
+          state.openFolders[j] = tree;
+          render();
+          return;
+        }
+      }
+    }).catch(function () { /* the tree just stays as it was */ });
+  }
+
   // ISS-FOLDER: reopen a folder recorded in Recent. Mirrors a REAL folder open
   // (top-level docs as tabs AND the registered tree — tree-only reopen is lossy)
   // WITHOUT the native picker, since the path is already known. On success the
@@ -5267,7 +5370,8 @@
   }
 
   // Internal: performs the actual tab switch after any edit-mode confirmation.
-  function _doActivateTab(id, prevId, outgoing, isCrossTabSwitch) {
+  // `startInEdit` (F-23, New File only): land in edit mode instead of reading.
+  function _doActivateTab(id, prevId, outgoing, isCrossTabSwitch, startInEdit) {
     // Default isCrossTabSwitch when called from the non-edit path
     if (isCrossTabSwitch === undefined) isCrossTabSwitch = (id !== prevId);
 
@@ -5306,7 +5410,7 @@
     }
 
     state.activeId = id;
-    state.mode = 'reading';
+    state.mode = startInEdit ? 'edit' : 'reading';
 
     // Bug B: scroll the newly-active tab pill into view so it is never hidden
     // behind the strip's overflow. JANK-02: latched rather than done inline
@@ -5321,6 +5425,7 @@
 
     // E-06: include prevId so tv-live.js can remove the outgoing tab's live UI
     tvEmit('tabchange', { id: id, prevId: prevId || null, tab: getActiveTab() });
+    if (startInEdit) tvEmit('modechange', { mode: 'edit' });
 
     // DR-47: persist session after every tab switch (covers ⌘Q paths on WKWebView)
     saveSession();
@@ -5815,8 +5920,13 @@
     // Untitled new-tab pages have nothing to save (⌘S / menu:save no-op)
     if (tab.untitled) return;
 
+    // F-23: a never-saved New File has no copy on disk, so Save always means
+    // "choose where" — even while empty. Creating an empty file is legitimate
+    // (e.g. a target for an agent to write into, which Galley then live-watches).
+    var creating = !!tab.isNew;
+
     // Not dirty: just exit edit mode without writing anything (DR-06)
-    if (!tab.dirty) {
+    if (!tab.dirty && !creating) {
       setMode('reading');
       return;
     }
@@ -5826,13 +5936,13 @@
     // tab.nativePath is set by tv-native.js after openDoc(); fileHandle
     // is NOT set for native tabs (E-13 invariant: these paths are exclusive).
     if (window.TVNative && TVNative.available) {
-      TVNative.saveTab(tab).then(function () {
-        // P0-2: save_md_file_as resolves (does not reject) when the user
-        // cancels the native panel — saveTab leaves tab.dirty untouched in
-        // that case (see TVNative.saveTab's C-02 comment). Mirror the browser
-        // branch below: only claim "saved" when the dirty flag was actually
-        // cleared, otherwise treat it as a cancel and stay in edit mode.
-        if (!tab.dirty) { _markSaved(tab); setMode('reading'); return; }
+      TVNative.saveTab(tab).then(function (outcome) {
+        // Cancelling the Save panel resolves (does not reject) with 'cancelled'
+        // and leaves the tab exactly as it was: still dirty / still new.
+        if (outcome === 'cancelled') { _saveDidNotLand(tab, 'AbortError'); return; }
+        // P0-2: only claim "saved" when the write really landed. An existing
+        // file proves it by dirty being cleared; a new file by having a path.
+        if (creating ? !!tab.nativePath : !tab.dirty) { _saveLanded(tab, creating); return; }
         _saveDidNotLand(tab, null);
       }).catch(function (err) {
         // N-06: surface save failure as toast, keep user in edit mode
@@ -5853,8 +5963,10 @@
         // C-03: leaving edit mode is this app's "saved" signal, so it must be
         // earned. A resolved promise is NOT proof: writeFile currently swallows
         // its own errors and resolves anyway. tab.dirty is the honest witness —
-        // markDirty(id, false) fires only on a real write (or a download).
-        if (!tab.dirty) { _markSaved(tab); setMode('reading'); return; }
+        // markDirty(id, false) fires only on a real write (or a download). A new
+        // (clean) file has no dirty flag to witness, but a cancelled picker
+        // rejects (AbortError), so resolving is the proof there.
+        if (creating || !tab.dirty) { _saveLanded(tab, creating); return; }
         _saveDidNotLand(tab, null);
       }).catch(function (err) {
         _saveDidNotLand(tab, err);
@@ -5868,6 +5980,22 @@
     setMode('reading');
   }
 
+  // ⌘S / File ▸ Save act while editing, or when the active document has something
+  // to save (unsaved edits, or a New File that does not exist on disk yet).
+  function _hasSaveable() {
+    var t = getActiveTab();
+    return state.mode === 'edit' || !!(t && !t.untitled && (t.dirty || t.isNew));
+  }
+
+  // A save really wrote: settle the tab, return to reading (the "saved" signal).
+  // F-23: a file that did not exist a moment ago must join the persisted session
+  // now — no tab event follows a save, and ⌘Q may skip beforeunload (DR-47).
+  function _saveLanded(tab, wasNew) {
+    _markSaved(tab);
+    setMode('reading');
+    if (wasNew) saveSession();
+  }
+
   // C-33: the buffer just became the on-disk content. The one-shot discard undo
   // is dropped here — once the edits are on disk, "restore discarded edits"
   // would put back a state that predates what the user chose to keep.
@@ -5875,6 +6003,7 @@
     if (!tab) return;
     tab.savedSource = tab.source;
     tab.discarded = null;
+    tab.isNew = false; // F-23: it exists on disk now
   }
 
   /* ── F-03: Open Folder ────────────────────────────────────── */
@@ -6246,6 +6375,14 @@
       return;
     }
 
+    // F-23: ⌘N — new file. In the desktop app the File-menu accelerator takes
+    // ⌘N first; this route serves the browser build.
+    if ((k === 'n' || k === 'N') && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      newFile();
+      return;
+    }
+
     // ⌘⇧F — cross-tab search toggle
     if ((k === 'f' || k === 'F') && e.shiftKey) {
       e.preventDefault();
@@ -6349,13 +6486,12 @@
       return;
     }
 
-    // ⌘S — save (only meaningful in edit mode)
+    // ⌘S — save (edit mode, or a document with something to save: F-23 — a new
+    // file the user is previewing with ⌘E must still be savable)
     // UI-07: always preventDefault to prevent browser Save As dialog in non-Tauri
     if (k === 's' || k === 'S') {
       e.preventDefault();
-      if (state.mode === 'edit') {
-        handleSave();
-      }
+      if (_hasSaveable()) handleSave();
       return;
     }
 
@@ -6515,6 +6651,10 @@
     // method receiver and the listeners silently never fire (broke the menu bar).
     var listen = window.__TAURI__.event.listen.bind(window.__TAURI__.event);
 
+    listen('menu:new-file', function () {
+      newFile();
+    }).catch(function () {});
+
     listen('menu:open-file', function () {
       if (window.TVFiles && typeof TVFiles.openPicker === 'function') TVFiles.openPicker();
     }).catch(function () {});
@@ -6524,7 +6664,7 @@
     }).catch(function () {});
 
     listen('menu:save', function () {
-      if (state.mode === 'edit') handleSave();
+      if (_hasSaveable()) handleSave();
     }).catch(function () {});
 
     listen('menu:close-tab', function () {
@@ -6925,6 +7065,8 @@
     openDoc: openDoc,
     openErrorTab: openErrorTab,
     openUntitledTab: openUntitledTab,
+    newFile: newFile,
+    refreshFolderFor: refreshFolderFor,
     activateTab: activateTab,
     closeTab: closeTab,
     getActiveTab: getActiveTab,

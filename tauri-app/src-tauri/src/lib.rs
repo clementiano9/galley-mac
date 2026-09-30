@@ -495,21 +495,31 @@ fn set_recent_files(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), Str
 /// Native save-as dialog; writes content; returns Some(FileDoc) or None if cancelled.
 /// Uses the non-blocking callback API with a oneshot channel to avoid deadlocking
 /// the main thread (E-01 fix).
+///
+/// JS passes `suggestedName` (Tauri 2 camelCases command arguments) and an optional
+/// `directory` (F-23: where the panel opens for a New File). A directory that is
+/// missing or no longer exists is ignored, so the panel falls back to macOS's own
+/// last-used location rather than failing.
 #[tauri::command]
 async fn save_md_file_as(
     app: tauri::AppHandle,
     content: String,
     suggested_name: String,
+    directory: Option<String>,
 ) -> Result<Option<FileDoc>, String> {
     let (tx, rx) = tokio::sync::oneshot::channel::<Option<tauri_plugin_dialog::FilePath>>();
 
-    app.dialog()
+    let mut dialog = app
+        .dialog()
         .file()
         .set_file_name(&suggested_name)
-        .add_filter("Markdown", &["md", "markdown", "txt"])
-        .save_file(move |path| {
-            let _ = tx.send(path);
-        });
+        .add_filter("Markdown", &["md", "markdown", "txt"]);
+    if let Some(dir) = directory.filter(|d| std::path::Path::new(d).is_dir()) {
+        dialog = dialog.set_directory(dir);
+    }
+    dialog.save_file(move |path| {
+        let _ = tx.send(path);
+    });
 
     let maybe_path = rx.await.map_err(|e| format!("dialog channel error: {}", e))?;
 
@@ -1052,6 +1062,15 @@ fn build_menu(
 
     // ── File menu ────────────────────────────────────────────────────────
     let file_menu = Submenu::with_id(app, "file", "File", true)?;
+    // F-23: an accelerator here means macOS consumes ⌘N before the WebView, so the
+    // JS ⌘N handler (kept for the browser build) cannot double-fire.
+    file_menu.append(&MenuItem::with_id(
+        app,
+        "menu:new-file",
+        "New File",
+        true,
+        Some("CmdOrCtrl+N"),
+    )?)?;
     file_menu.append(&MenuItem::with_id(
         app,
         "menu:open-file",
@@ -1396,7 +1415,8 @@ pub fn run() {
             let id = event.id().as_ref();
             match id {
                 // File menu
-                "menu:open-file"
+                "menu:new-file"
+                | "menu:open-file"
                 | "menu:open-folder"
                 | "menu:save"
                 | "menu:close-tab"

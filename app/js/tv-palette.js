@@ -274,6 +274,8 @@
       // F-04: file/folder open commands
       { ic: 'doc',    main: 'Open File…',            action: 'openFile',       value: '', kbd: '⌘O' },
       { ic: 'folder', main: 'Open Folder…',          action: 'openFolder',     value: '', kbd: '⌘⇧O' },
+      // F-23: create a markdown file (in memory until Save)
+      { ic: 'plus',   main: 'New File',              action: 'newFile',        value: '', kbd: '⌘N' },
       // C-09: window/tab commands — ⌘K is the app's command surface, so the
       // accelerators live here too (a palette is where users learn them).
       { ic: 'sidebar', main: 'Toggle Sidebar',       action: 'toggleSidebar',  value: '', kbd: '⌘B' },
@@ -711,6 +713,11 @@
     if (action === 'toggleSidebar') {
       TVPalette.close();
       if (typeof window.TV.toggleSidebar === 'function') window.TV.toggleSidebar();
+      return;
+    }
+    if (action === 'newFile') {
+      TVPalette.close();
+      if (typeof window.TV.newFile === 'function') window.TV.newFile();
       return;
     }
     if (action === 'newTab') {

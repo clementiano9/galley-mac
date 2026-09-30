@@ -1527,6 +1527,13 @@ html, body, #tv-root {
   background: transparent !important;
 }
 
+/* F-23: the blank-file hint. It is drawn in the textarea's own box, so it lines
+   up with the first line the user is about to type. */
+.tv-edit-area--hl::placeholder {
+  color: var(--tv-text-muted) !important;
+  opacity: 1;
+}
+
 /* ── Highlight token classes ─────────────────────────────── */
 
 /* ── edit-mode source highlighting — design "srchl" inkcolor variant ──

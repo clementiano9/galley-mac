@@ -210,6 +210,10 @@
           ' autocorrect="off"' +
           ' autocapitalize="off"' +
           ' aria-label="Edit document source"' +
+          // F-23: a never-saved file says so, once, while it is still blank.
+          (tab && tab.isNew && !src
+            ? ' placeholder="Start writing. Nothing is saved until you press ⌘S."'
+            : '') +
         '>' +
         '</textarea>' +
       '</div>';

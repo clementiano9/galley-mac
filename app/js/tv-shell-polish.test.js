@@ -236,7 +236,9 @@ console.log('\n#6 C-03: save failure keeps you in edit mode\n');
 
 (function () {
   assert('the browser branch no longer calls setMode(reading) unconditionally',
-    /TVFiles\.writeFile\(tab\)\.then\(function \(\) \{[\s\S]{0,600}?if \(!tab\.dirty\)/.test(APP));
+    // F-23: a never-saved file has no dirty flag to witness, so it earns "saved"
+    // by the write promise resolving (a cancelled picker rejects instead).
+    /TVFiles\.writeFile\(tab\)\.then\(function \(\) \{[\s\S]{0,900}?if \(creating \|\| !tab\.dirty\)/.test(APP));
   assert('a resolved-but-still-dirty save is reported as a failure',
     APP.indexOf('_saveDidNotLand(tab, null)') !== -1);
   assert('a rejected save is reported too',
@@ -267,10 +269,12 @@ console.log('\n#7 C-18: overlay lists ⌘P and ⌘G, ignores bare modifiers\n');
     block.indexOf("action: 'Print / Export PDF'") !== -1);
   assert('the overlay lists ⌘G / ⇧⌘G Find next / previous',
     block.indexOf("action: 'Find next / previous'") !== -1);
-  assert('19 rows, inside the amended DR-17 cap of 20',
-    rows === 19 && rows <= 20, String(rows));
-  assert('the two columns stay balanced (10 / 9)',
-    Math.ceil(rows / 2) === 10 && rows - Math.ceil(rows / 2) === 9);
+  // F-23 added ⌘N New file, taking the list from 19 to the DR-17 cap of 20. Any
+  // further row needs another DR-17 amendment first.
+  assert('20 rows, exactly at the amended DR-17 cap of 20',
+    rows === 20 && rows <= 20, String(rows));
+  assert('the two columns stay balanced (10 / 10)',
+    Math.ceil(rows / 2) === 10 && rows - Math.ceil(rows / 2) === 10);
   assert('a bare modifier no longer dismisses the sheet',
     /_SC_BARE_MODIFIERS\[e\.key\]\) return;/.test(APP) &&
     /Shift: 1, Meta: 1, Alt: 1, Control: 1/.test(APP));

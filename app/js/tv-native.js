@@ -567,11 +567,16 @@
           return Promise.reject(err);
         });
     } else {
-      // Save-as dialog
-      return invoke('save_md_file_as', {
+      // Save-as dialog. Tauri 2 camelCases command arguments, so the key MUST be
+      // `suggestedName` — the snake_case spelling this used to send was rejected
+      // by the command, which silently broke saving any tab with no path.
+      var saveArgs = {
         content: tab.source || '',
-        suggested_name: tab.name || 'document.md',
-      })
+        suggestedName: tab.name || 'document.md',
+      };
+      // F-23: open the panel where the New File was started, when known.
+      if (tab.suggestedDir) saveArgs.directory = tab.suggestedDir;
+      return invoke('save_md_file_as', saveArgs)
         .then(function (d) {
           // d is Option<FileDoc> — null when user cancelled.
           // C-02 fix: markDirty(false) used to run UNCONDITIONALLY here, so
@@ -584,6 +589,12 @@
           if (d) {
             tab.nativePath = d.path;
             tab.name = d.name;
+            // F-23: the document now exists on disk — group it by its real
+            // directory (sidebar) and stop treating it as a never-saved file.
+            tab.path = parentDir(d.path);
+            tab.isNew = false;
+            tab.suggestedDir = null;
+            tab.savedSource = tab.source;
             // Persist the new path in recents
             if (d.path && typeof tv.saveRecentPath === 'function') {
               tv.saveRecentPath(d.path);
@@ -599,7 +610,13 @@
             // Re-render to update tab name + live indicator
             if (tv && typeof tv.render === 'function') tv.render();
             if (tv) tv.markDirty(tab.id, false);
+            // F-23: a file created inside an open folder is not in that folder's
+            // scanned tree yet.
+            if (tv && typeof tv.refreshFolderFor === 'function') tv.refreshFolderFor(d.path);
+            return;
           }
+          // Cancelling is not a failure: tell the caller so it can stay quiet.
+          return 'cancelled';
         })
         .catch(function (err) {
           if (err) {

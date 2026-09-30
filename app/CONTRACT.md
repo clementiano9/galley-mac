@@ -50,6 +50,8 @@ window.TV.state = {
 //   dirty: boolean,        // unsaved edits → tab shows ● dot
 //   live: boolean,         // ⚡ live-watch indicator + status bar
 //   fileHandle: object|null, // FileSystemFileHandle when opened from disk
+//   isNew: boolean,        // F-23: created by New File, never saved (no copy on disk)
+//   suggestedDir: string|null, // F-23: where the Save panel opens for an isNew tab
 // }
 ```
 
@@ -71,6 +73,10 @@ TV.batch(fn) -> fn's return      // JANK-02: coalesce renders. Any number of ren
 TV.openDoc({name, source, path?, fileHandle?, live?}) -> id   // add tab (dedupe by path/name) & activate
 TV.activateTab(id)               // switch active tab (saves outgoing scrollTop, restores incoming)
 TV.closeTab(id)
+TV.newFile() -> id               // F-23: in-memory blank "Untitled.md", opened in edit mode.
+                                 // Writes NOTHING (DR-06): Save (⌘S) then opens the native
+                                 // Save panel, even while empty. Bound to ⌘N / File ▸ New File.
+TV.refreshFolderFor(filePath)    // F-23: re-scan the open folder containing filePath
 TV.getActiveTab() -> Tab|null
 TV.setMode('reading'|'edit')     // edit toggle
 TV.setTheme(t) / TV.setAccent(a) // re-skin (class swap on .tv root, persist)
@@ -119,5 +125,5 @@ to swap Mermaid placeholders for drawn flows.
 - `!important` on colour/background declarations is intentional (kept from design) — keep it.
 - Respect `prefers-reduced-motion` for ⚡ pulse / blip / shimmer / caret (style owner).
 - Never write to disk except via an explicit user Save action (DR-06).
-- Keyboard: ⌘K palette · ⌘⇧F search · ⌘B sidebar · ⌘O open · ⌘E/dbl-click edit ·
-  ⌘S save · ⌘W close tab · ⌘1–9 nth tab · Esc closes overlay/exits edit.
+- Keyboard: ⌘K palette · ⌘⇧F search · ⌘B sidebar · ⌘O open · ⌘N new file ·
+  ⌘E/dbl-click edit · ⌘S save · ⌘W close tab · ⌘1–9 nth tab · Esc closes overlay/exits edit.
