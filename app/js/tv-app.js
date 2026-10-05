@@ -5133,14 +5133,24 @@
   // untouched one never prompts.
 
   // "Untitled.md", then "Untitled 2.md", … — unique among the open tabs.
-  function nextNewFileName() {
+  // `wanted` (the palette's Create row) is a name the user typed: slashes become
+  // dashes, `.md` is added when missing, and a clash gets " 2", " 3", …
+  function nextNewFileName(wanted) {
     var taken = {};
     for (var i = 0; i < state.tabs.length; i++) {
       if (!state.tabs[i].untitled) taken[String(state.tabs[i].name).toLowerCase()] = true;
     }
-    if (!taken['untitled.md']) return 'Untitled.md';
+    var stem = 'Untitled', ext = '.md';
+    if (wanted && String(wanted).trim()) {
+      var w = String(wanted).trim().replace(/[\/\\:]+/g, '-');
+      var m = w.match(/\.(md|markdown|txt)$/i);
+      ext = m ? m[0] : '.md';
+      stem = m ? w.slice(0, w.length - ext.length) : w;
+      if (!stem) stem = 'Untitled';
+    }
+    if (!taken[(stem + ext).toLowerCase()]) return stem + ext;
     for (var n = 2; ; n++) {
-      var candidate = 'Untitled ' + n + '.md';
+      var candidate = stem + ' ' + n + ext;
       if (!taken[candidate.toLowerCase()]) return candidate;
     }
   }
@@ -5157,8 +5167,8 @@
     return folders.length ? folders[folders.length - 1].path : null;
   }
 
-  function newFile() {
-    var name = nextNewFileName();
+  function newFile(wanted) {
+    var name = nextNewFileName(typeof wanted === 'string' ? wanted : '');
     var dir = newFileDir();
     var host = getActiveTab();
     var tab;
@@ -5613,6 +5623,42 @@
     if (window.TVNative && typeof TVNative.notifyTheme === 'function') {
       TVNative.notifyTheme(t, state.theme);
     }
+  }
+
+  /* ── Palette "Appearance" pages: preview before commit ────────
+     previewAppearance paints a theme / accent / text size onto the live root
+     with NO persistence, NO native notification and NO render() (render would
+     close the palette that is previewing). endAppearancePreview restores what
+     state says is real. Committing goes through setTheme/setAccent/setFontSize. */
+  function themeChoice() {
+    try { return localStorage.getItem('tv-theme') || 'system'; } catch (e) { return 'system'; }
+  }
+  function appearanceState() {
+    return { themeChoice: themeChoice(), theme: state.theme, accent: state.accent, fontSize: state.fontSize };
+  }
+  function previewAppearance(p) {
+    var root = document.querySelector('.tv');
+    if (!root || !p) return;
+    if (p.theme) {
+      var resolved = p.theme;
+      if (p.theme === 'system') {
+        resolved = (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
+      }
+      root.classList.remove('tv--light', 'tv--dark');
+      root.classList.add('tv--' + resolved);
+    }
+    if (p.accent) {
+      root.classList.remove('tv--accent-blue', 'tv--accent-graphite', 'tv--accent-warm');
+      root.classList.add('tv--accent-' + p.accent);
+    }
+    if (p.fontSize) {
+      var px = Math.max(13, Math.min(22, p.fontSize));
+      root.style.setProperty('--tv-md-font', px + 'px');
+      root.style.setProperty('--tv-edit-font', editFontFor(px) + 'px');
+    }
+  }
+  function endAppearancePreview() {
+    previewAppearance({ theme: themeChoice(), accent: state.accent, fontSize: state.fontSize });
   }
 
   function setAccent(a) {
@@ -7066,6 +7112,11 @@
     openErrorTab: openErrorTab,
     openUntitledTab: openUntitledTab,
     newFile: newFile,
+    openPath: function (p) { _openTreeFilePath(p, false); },   // palette: open a known file by absolute path
+    loadRecentEntries: loadRecentEntries,                      // palette: recent files AND folders
+    appearanceState: appearanceState,
+    previewAppearance: previewAppearance,
+    endAppearancePreview: endAppearancePreview,
     refreshFolderFor: refreshFolderFor,
     activateTab: activateTab,
     closeTab: closeTab,

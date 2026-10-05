@@ -1150,7 +1150,12 @@ html, body, #tv-root {
 .tv-srctext .s-pipe { color: var(--tv-text-muted) !important; }
 .tv-srccaret { display: inline-block; width: 2px; height: 1.1em; background: var(--tv-accent) !important; vertical-align: text-bottom; animation: tv-blink 1.05s steps(1) infinite; }
 
-/* ── command palette ───────────────────────────────────────── */
+/* ── command palette (F-24) ─────────────────────────────────
+   Four levels: L1 the input and the armed row, L2 row labels, L3 secondary text
+   (path, value, reason), L4 group headers, chips and the footer. One row grid:
+   icon column (always present) | label + secondary | trailing slot.
+   The armed row is the stronger accent fill, a semibold label and the Enter verb
+   with a solid keycap: no bar, no border, no ring (see commit 6a209e3). */
 .tv-palette-scrim {
   position: absolute; inset: 0; z-index: 30;
   background: rgba(10,10,12,.34) !important;
@@ -1161,48 +1166,87 @@ html, body, #tv-root {
 .tv--dark .tv-palette-scrim { background: rgba(0,0,0,.5) !important; }
 .tv-palette {
   width: 560px; max-width: calc(100% - 80px);
+  max-height: calc(100vh - 96px - 20px);
   background: var(--tv-bg-elev) !important;
   border: 1px solid var(--tv-border);
   border-radius: 13px; box-shadow: var(--tv-shadow-pop);
   overflow: hidden;
+  display: flex; flex-direction: column;
 }
 .tv-pal-input {
-  display: flex; align-items: center; gap: 11px;
-  padding: 15px var(--tv-s4);
+  display: flex; align-items: center; gap: 12px;
+  padding: 0 18px; height: 56px; flex: none;
   border-bottom: 1px solid var(--tv-border);
-  font-size: 17px; color: var(--tv-text-primary) !important;
+  font-size: var(--tv-pal-input); color: var(--tv-text-primary) !important;
 }
-.tv-pal-input .ic { color: var(--tv-text-muted) !important; flex: 0 0 auto; }
+.tv-pal-input .ic { color: var(--tv-text-secondary) !important; flex: 0 0 auto; display: inline-flex; }
 .tv-pal-input .typed { color: var(--tv-text-primary) !important; }
 .tv-pal-input .pal-caret { display:inline-block; width:1.5px; height:19px; background: var(--tv-accent) !important; animation: tv-blink 1.05s steps(1) infinite; }
 /* D-04: palette results list must scroll so rows beyond max-height are reachable
    and scrollIntoView works for keyboard arrow-down navigation. */
-.tv-pal-list { padding: 6px; max-height: 360px; overflow-y: auto; overflow-x: hidden; }
-.tv-pal-group { font-size: 10.5px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase;
-  color: var(--tv-text-muted) !important; padding: 9px 12px 5px; }
+.tv-pal-list { padding: 6px; max-height: 420px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; scroll-padding-block: 6px 34px; }
+@media (max-height: 640px) { .tv-palette-scrim { padding-top: 48px; } .tv-palette { max-height: calc(100vh - 48px - 20px); } }
+/* L4 group header: quiet, more space above than between rows, no rules. */
+.tv-pal-group {
+  display: flex; align-items: baseline; gap: 6px;
+  font-size: var(--tv-pal-l4); font-weight: 600; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--tv-text-muted) !important; padding: 16px 12px 4px;
+}
+.tv-pal-sec:first-child .tv-pal-group { padding-top: 6px; }
+.tv-pal-lead { padding: 8px 12px 0; color: var(--tv-text-secondary) !important; font-size: 13px; }
 .tv-pal-row {
-  display: flex; align-items: center; gap: 11px;
-  padding: 9px 12px; border-radius: 8px; cursor: default;
-  color: var(--tv-text-primary) !important; font-size: 14px;
+  display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; column-gap: 10px;
+  padding: 0 12px; min-height: 36px; border-radius: 8px; cursor: default;
+  color: var(--tv-text-primary) !important; font-size: var(--tv-pal-l2); font-weight: 400;
 }
-.tv-pal-row .ic { color: var(--tv-text-muted) !important; flex: 0 0 auto; display: inline-flex; }
-.tv-pal-row .sub { color: var(--tv-text-muted) !important; font-size: 12.5px; margin-left: auto; }
-.tv-pal-row .hl { color: var(--tv-accent-text) !important; font-weight: 600; }
-.tv-pal-row.sel { background: var(--tv-accent-weak) !important; color: var(--tv-accent-text) !important; font-weight: 600; }
-.tv-pal-row.sel .ic { color: var(--tv-accent-text) !important; }
-.tv-pal-row.sel .sub { color: var(--tv-accent-text) !important; opacity: .8; }
-.tv-pal-divider { height: 1px; background: var(--tv-border) !important; margin: 6px 8px; }
+.tv-pal-row .ic { display: inline-flex; justify-content: center; color: var(--tv-text-secondary) !important; }
+.tv-pal-row .sw { width: 14px; height: 14px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,.14); }
+.tv-pal-row .sw-blue { background: #2d68d8; } .tv-pal-row .sw-graphite { background: #586071; } .tv-pal-row .sw-warm { background: #c26a3a; }
+.tv--dark .tv-pal-row .sw-blue { background: #5a9cff; } .tv--dark .tv-pal-row .sw-graphite { background: #9aa3b4; } .tv--dark .tv-pal-row .sw-warm { background: #e0905c; }
+.tv-pal-row .lbl { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.tv-pal-row .main { flex: 0 1 auto; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tv-pal-row .sub {
+  flex: 0 1 auto; min-width: 0; font-size: var(--tv-pal-l3); font-weight: 400;
+  color: var(--tv-text-secondary) !important; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.tv-pal-row .trail { display: flex; align-items: center; justify-content: flex-end; gap: 8px; white-space: nowrap; }
+.tv-pal-row .kbd, .tv-pal-row .tag {
+  flex: none; padding: 2px 5px; border-radius: 5px;
+  background: var(--tv-code-bg); border: 1px solid var(--tv-code-border);
+  color: var(--tv-text-muted); font: 500 var(--tv-pal-l4)/1.2 var(--tv-font-ui);
+}
+.tv-pal-row .tag { border-radius: 4px; padding: 0 4px; background: transparent; border-color: var(--tv-border); }
+.tv-pal-row .ck { color: var(--tv-text-primary) !important; display: inline-flex; }
+.tv-pal-row .cv { color: var(--tv-text-secondary) !important; display: inline-flex; }
+.tv-pal-row .verb { font-size: var(--tv-pal-l3); font-weight: 600; color: var(--tv-text-primary) !important; }
+/* the Enter keycap: the one solid mark on the armed row */
+.tv-pal-row .enter {
+  display: inline-grid; place-items: center; min-width: 22px; height: 20px; padding: 0 4px; border-radius: 5px;
+  background: var(--tv-text-primary); color: var(--tv-bg-elev); font: 600 12px/1 var(--tv-font-ui);
+}
+/* hover is a light wash and never moves the armed row */
+.tv-pal-row:hover:not(.sel):not(.dim) { background: var(--tv-bg-hover) !important; }
+.tv-pal-row .hl { font-weight: 650; color: var(--tv-accent-text) !important; }
+.tv-pal-row.sel { background: var(--tv-sel-strong) !important; font-weight: 600; }
+.tv-pal-row.sel .ic, .tv-pal-row.sel .sub, .tv-pal-row.sel .cv { color: var(--tv-text-primary) !important; }
+.tv-pal-row.sel .hl {
+  font-weight: 700; color: var(--tv-text-primary) !important;
+  background: var(--tv-sel-hl); border-radius: 3px; padding: 0 1px; margin: 0 -1px;
+}
+.tv-pal-row.dim .main, .tv-pal-row.dim .ic, .tv-pal-row.dim .hl { color: var(--tv-text-muted) !important; background: none; font-weight: 400; }
+.tv-pal-row.dim .sub { font-style: italic; color: var(--tv-text-muted) !important; }
+.tv-pal-row.lv2 { padding-left: 24px; } .tv-pal-row.lv3 { padding-left: 36px; }
+.tv-pal-row.lv4 { padding-left: 48px; } .tv-pal-row.lv5 { padding-left: 60px; } .tv-pal-row.lv6 { padding-left: 72px; }
 .tv-pal-foot {
-  display: flex; align-items: center; gap: 16px;
-  padding: 9px 14px; border-top: 1px solid var(--tv-border);
-  font-size: 11.5px; color: var(--tv-text-muted) !important;
+  display: flex; align-items: center; gap: 16px; flex: none;
+  padding: 0 14px; height: 36px; border-top: 1px solid var(--tv-border);
+  font-size: 11.5px; color: var(--tv-text-muted) !important; white-space: nowrap; overflow: hidden;
 }
-.tv-pal-foot .k { display: inline-flex; align-items: center; gap: 5px; }
-/* No-results empty state inside the palette list (Issue 3 / CSP fix) */
+.tv-pal-foot .k { display: inline-flex; align-items: center; gap: 6px; }
+.tv-pal-foot .kbd { padding: 1px 5px; border-radius: 4px; background: var(--tv-code-bg); border: 1px solid var(--tv-code-border); color: var(--tv-text-muted); font: 500 var(--tv-pal-l4)/1.2 var(--tv-font-ui); }
+/* No-results / hint state inside the palette list */
 .tv-pal-empty {
-  padding: 18px 12px;
-  text-align: center;
-  color: var(--tv-text-muted) !important;
+  padding: 14px 12px; color: var(--tv-text-secondary) !important; font-size: 13px; line-height: 1.45;
 }
 
 /* ── cross-tab search results ──────────────────────────────── */
@@ -1247,6 +1291,11 @@ html, body, #tv-root {
 /* UX-26: forced-colors fallback — selection maps to system Highlight in high-contrast mode. */
 @media (forced-colors: active) {
   .tv-tree-row.active, .tv-pal-row.sel, .tv-sr-row.sel, .tv-ntp-row.cursor { background: Highlight !important; color: HighlightText !important; font-weight: 700; }
+  .tv-pal-row.sel { forced-color-adjust: none; }
+  .tv-pal-row.sel .main, .tv-pal-row.sel .ic, .tv-pal-row.sel .sub, .tv-pal-row.sel .hl, .tv-pal-row.sel .verb, .tv-pal-row.sel .cv, .tv-pal-row.sel .ck { color: HighlightText !important; background: transparent !important; }
+  .tv-pal-row.sel .enter { background: HighlightText !important; color: Highlight !important; }
+  .tv-pal-row.sel .kbd, .tv-pal-row.sel .tag { color: HighlightText !important; border-color: HighlightText !important; background: transparent !important; }
+  .tv-pal-row .sw { forced-color-adjust: none; }
 }
 .tv-sr-row .ln { flex: 0 0 44px; color: var(--tv-text-muted) !important; font-variant-numeric: tabular-nums; font-family: var(--tv-font-mono); font-size: 12px; }
 .tv-sr-row .snip { flex: 1; }
@@ -1408,7 +1457,6 @@ html, body, #tv-root {
 .md li::marker { color: var(--tv-text-muted) !important; }
 .tv-tab .name { color: inherit !important; }
 .tv-tree-row > span:not([class]) { color: inherit !important; }
-.tv-pal-row > span:not([class]) { color: var(--tv-text-primary) !important; }
 .tv-sr-row .snip { color: var(--tv-text-secondary) !important; }
 .tv-status [data-elapsed], .tv-status .sep { color: var(--tv-text-secondary) !important; }
 .dg-node { color: var(--tv-text-primary) !important; }
@@ -1605,13 +1653,14 @@ html, body, #tv-root {
   border: 0;
   outline: 0;
   font-family: var(--tv-font-ui);
-  font-size: 17px;
+  font-size: var(--tv-pal-input);
+  font-weight: 500;
   color: var(--tv-text-primary) !important;
   width: 100%;
   min-width: 0;
   caret-color: var(--tv-accent);
 }
-.tv-pal-input-field::placeholder { color: var(--tv-text-muted) !important; }
+.tv-pal-input-field::placeholder { color: var(--tv-text-secondary) !important; font-weight: 400; opacity: 1; }
 /* C-10: the global input:focus-visible rule (tv-app.css, ACCESSIBILITY
    section) out-specifies these borderless fields' own outline:0, so focus
    drew a hard 2px rectangle floating outside the field instead of hugging
@@ -2599,15 +2648,17 @@ input:focus-visible,
   min-width: 0;
   vertical-align: top;
 }
+/* white-space: pre, not nowrap: the split can fall on a space, and a flex item
+   collapses a leading/trailing space ("native qa note.md" showed "native qanote.md"). */
 .tv-lbl-head {
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+  white-space: pre;
   min-width: 0;
 }
 .tv-lbl-tail {
   flex: 0 0 auto;
-  white-space: nowrap;
+  white-space: pre;
 }
 
 /* C-06: the ⌄ all-open-tabs control. Quiet at rest (DR-07), and JS keeps the

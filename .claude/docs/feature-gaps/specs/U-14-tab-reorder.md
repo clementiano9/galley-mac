@@ -81,7 +81,7 @@ URD-08 demands that chrome earns its presence. A drag affordance that *is always
 
 **AC-1 (basic reorder):** With 4 tabs open, drag tab 1 to position 4 — `state.tabs` order updates, the drag source tab appears at index 3, render completes within one frame, no console errors.
 
-**AC-2 (active-tab tracking):** Drag the currently-active tab to a new position — `state.activeId` is unchanged, the tab remains visually active at its new position, and the active-tab accent bar (`::after` pseudo) renders on the correct tab.
+**AC-2 (active-tab tracking):** Drag the currently-active tab to a new position — `state.activeId` is unchanged, and the tab remains visually active at its new position (connected-tab styling, no accent bar).
 
 **AC-3 (session persist):** Reorder 3 tabs, quit the app, relaunch — tabs restore in the reordered sequence (DR-47 `tv-session` array reflects the post-drag order). Session restore is verified by reading `localStorage.getItem('tv-session')` immediately after drop: the `order` of `nativePath` entries must match `state.tabs` order post-splice.
 

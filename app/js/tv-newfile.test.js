@@ -93,6 +93,23 @@ console.log('\nNaming: Untitled.md, Untitled 2.md, …\n');
 })();
 
 /* ═══════════════════════════════════════════════════════════
+   naming from the palette's Create row (F-24)
+   ═══════════════════════════════════════════════════════════ */
+console.log('\nNaming a file from what was typed\n');
+(function () {
+  var h = helpers({ tabs: [], activeId: null, openFolders: [] });
+  assert('"notes" becomes notes.md', h.nextNewFileName('notes') === 'notes.md', h.nextNewFileName('notes'));
+  assert('an extension the user typed is kept', h.nextNewFileName('plan.md') === 'plan.md' && h.nextNewFileName('todo.txt') === 'todo.txt');
+  assert('slashes and colons cannot make a path', h.nextNewFileName('a/b:c') === 'a-b-c.md', h.nextNewFileName('a/b:c'));
+  assert('blank input falls back to Untitled.md', h.nextNewFileName('   ') === 'Untitled.md');
+  h = helpers({ tabs: [tab('a', 'notes.md')], activeId: 'a', openFolders: [] });
+  assert('a clash gets " 2" before the extension', h.nextNewFileName('notes') === 'notes 2.md', h.nextNewFileName('notes'));
+  assert('no argument still gives Untitled.md', h.nextNewFileName() === 'Untitled.md');
+  assert('newFile(wanted) passes the typed name through',
+    /function newFile\(wanted\) \{\s*\n\s*var name = nextNewFileName\(typeof wanted === 'string' \? wanted : ''\);/.test(APP));
+})();
+
+/* ═══════════════════════════════════════════════════════════
    where the Save panel opens
    ═══════════════════════════════════════════════════════════ */
 console.log('\nDefault directory for the Save panel\n');
@@ -197,8 +214,8 @@ console.log('\nEntry points\n');
     /"menu:new-file"\s*\n\s*\| "menu:open-file"/.test(RUST));
 
   assert('the palette lists New File ⌘N and routes it to TV.newFile',
-    /main: 'New File',\s+action: 'newFile',\s+value: '', kbd: '⌘N'/.test(PALETTE) &&
-    /action === 'newFile'\) \{\s*\n\s*TVPalette\.close\(\);\s*\n\s*if \(typeof window\.TV\.newFile === 'function'\) window\.TV\.newFile\(\)/.test(PALETTE));
+    /id: 'new-file',\s+label: 'New File',\s+ic: 'plus',\s+kbd: '⌘N',\s+action: 'newFile'/.test(PALETTE) &&
+    /case 'newFile':\s*\n\s*if \(typeof TV\.newFile === 'function'\) TV\.newFile\(\);/.test(PALETTE));
 
   assert('the ⌘T launcher has a New File row',
     /data-ntp-act="new-file"/.test(APP) && /New File<\/span>/.test(APP));

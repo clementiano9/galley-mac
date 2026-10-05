@@ -26,8 +26,8 @@ files.
 
 **`frontendDist` has a sharp edge:** every file under `app/` is embedded into the
 shipped binary. Only things the running app needs belong there. Process artifacts —
-UX-pipeline steps, QA reports, feature-gap specs, the design bundle, screenshots —
-live in **`.claude/docs/`** instead; see `.claude/docs/README.md` for the map. The
+UX-pipeline steps, QA reports, feature-gap specs, screenshots — live in
+**`.claude/docs/`** instead; see `.claude/docs/README.md` for the map. The
 root is otherwise just `README.md` (product overview, build/install, dev + test
 commands) and `CLAUDE.md`. README images go in `.github/media/`, never in `app/`.
 
@@ -136,8 +136,7 @@ author's own checks and do not count as verification.
   requirements), `U-##`/`F-##` (feature gaps), `ISS-###` (filed issues). Trace changes
   to an ID and cite it in commits — the contracts and tests are keyed to them.
 - **DR-06 is sacred:** never write to disk except on an explicit user Save action.
-- **`!important` on color/background is intentional** — kept from the design bundle to
-  win the cascade. Don't strip it.
+- **`!important` on color/background is intentional** — it wins the cascade. Don't strip it.
 - **`index.html` has an inline `<style>` block that loads AFTER `css/tv-app.css`** and
   silently wins specificity ties. If a `tv-app.css` change has no visible effect, grep
   `index.html` for an overriding inline rule (this caused ISS-002).
@@ -151,6 +150,8 @@ author's own checks and do not count as verification.
   Save As for a path-less tab until F-23. `tv-native.runtime.test.js` reads the
   `save_md_file_as` signature from `lib.rs` and fails on drift; do the same for new
   multi-word parameters.
+- **The shell's key router treats Ctrl as ⌘** (`e.metaKey || e.ctrlKey`). Any overlay that binds a Ctrl key (the palette's ⌃N/⌃P) must `stopPropagation`, or ⌃N creates a file and ⌃P prints.
+- **The palette is one smart list** (F-24, `.claude/docs/feature-gaps/specs/F-24-palette-smart-list.md`): builders in `tv-palette.js` take a context object and are tested through `TVPalette._internals`; Appearance previews use `TV.previewAppearance` and must never persist.
 - **A new file is an in-memory tab (`tab.isNew`), not a file** (F-23, `.claude/docs/feature-gaps/specs/F-23-new-file.md`).
   Only Save writes it, via the Save panel. `tab.untitled` is a different thing: the ⌘T launcher page.
 - **Local images load via the Tauri asset protocol** (`tauri.conf.json` →

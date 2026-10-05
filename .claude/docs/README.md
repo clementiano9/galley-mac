@@ -12,7 +12,6 @@ should show what Galley *is* (`app/`, `tauri-app/`), not how it was made.
 | Path | What it holds |
 |---|---|
 | `ux/` | The 8-step UxPipeline run: `INDEX.md`, research streams, steps 2–6, plus the step-7 output `UX-DESIGN-SYSTEM.md` and the prompt that produced it |
-| `design-bundle/` | The pixel-perfect visual reference the UI is matched against — mockup HTML, the visual spec, and the originating design chat |
 | `feature-gaps/` | Gap analyses (`spec-gaps.md`, `ux-gaps.md`, `waad-grounded-requirements.md`) and the per-requirement specs in `specs/` (`DR-##`, `U-##`, `F-##`) |
 | `qa/` | `QA-REPORT.md` (rounds 1–2), the `round2/` and `round5/` sweeps, and `screenshots/` evidence |
 | `notes/` | Drafts and loose writing not tied to a requirement |

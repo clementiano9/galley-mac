@@ -38,6 +38,10 @@
   --tv-radius-sm: 6px;
   --tv-radius-md: 8px;
 
+  /* F-24: command palette type scale. L1 = input text and the armed row; L2 = row
+     labels; L3 = secondary text (path, value, reason); L4 = group headers, chips, footer. */
+  --tv-pal-input: 17px; --tv-pal-l2: 14px; --tv-pal-l3: 12.5px; --tv-pal-l4: 11px;
+
   /* C-32: one focus-ring definition every :focus-visible rule in tv-app.css
      draws from, so the ring is consistent everywhere instead of each
      component picking its own offset (1px in some places, 2px in others).
@@ -219,14 +223,14 @@
    Graphite:   #4a5160 on rgba(88,96,113,.14)  over #fbfbfa = 4.53:1 → passes (unchanged)
    Warm light: #b25e2f on rgba(194,106,58,.14) over #fbfbfa = 3.82:1 → darken to #8e4418 = 5.02:1
    Dark theme: all pass already — unchanged. */
-.tv--light { --tv-accent:#2d68d8; --tv-accent-weak:rgba(45,104,216,.13); --tv-accent-text:#1f55c0; }
-.tv--dark  { --tv-accent:#5a9cff; --tv-accent-weak:rgba(90,156,255,.18); --tv-accent-text:#7fb0ff; }
+.tv--light { --tv-accent:#2d68d8; --tv-accent-weak:rgba(45,104,216,.13); --tv-accent-text:#1f55c0; --tv-sel-strong:rgba(45,104,216,.24); --tv-sel-hl:rgba(0,0,0,.09); }
+.tv--dark  { --tv-accent:#5a9cff; --tv-accent-weak:rgba(90,156,255,.18); --tv-accent-text:#7fb0ff; --tv-sel-strong:rgba(90,156,255,.28); --tv-sel-hl:rgba(255,255,255,.14); }
 
-.tv--light.tv--accent-blue     { --tv-accent:#2d68d8; --tv-accent-weak:rgba(45,104,216,.13); --tv-accent-text:#1f55c0; }
-.tv--dark.tv--accent-blue      { --tv-accent:#5a9cff; --tv-accent-weak:rgba(90,156,255,.18); --tv-accent-text:#7fb0ff; }
+.tv--light.tv--accent-blue     { --tv-accent:#2d68d8; --tv-accent-weak:rgba(45,104,216,.13); --tv-accent-text:#1f55c0; --tv-sel-strong:rgba(45,104,216,.24); }
+.tv--dark.tv--accent-blue      { --tv-accent:#5a9cff; --tv-accent-weak:rgba(90,156,255,.18); --tv-accent-text:#7fb0ff; --tv-sel-strong:rgba(90,156,255,.28); }
 
-.tv--light.tv--accent-graphite { --tv-accent:#586071; --tv-accent-weak:rgba(88,96,113,.14); --tv-accent-text:#4a5160; }
-.tv--dark.tv--accent-graphite  { --tv-accent:#9aa3b4; --tv-accent-weak:rgba(154,163,180,.16);--tv-accent-text:#c8d0de; }
+.tv--light.tv--accent-graphite { --tv-accent:#586071; --tv-accent-weak:rgba(88,96,113,.14); --tv-accent-text:#4a5160; --tv-sel-strong:rgba(88,96,113,.24); }
+.tv--dark.tv--accent-graphite  { --tv-accent:#9aa3b4; --tv-accent-weak:rgba(154,163,180,.16);--tv-accent-text:#c8d0de; --tv-sel-strong:rgba(154,163,180,.28); }
 
-.tv--light.tv--accent-warm     { --tv-accent:#c26a3a; --tv-accent-weak:rgba(194,106,58,.14); --tv-accent-text:#8e4418; }
-.tv--dark.tv--accent-warm      { --tv-accent:#e0905c; --tv-accent-weak:rgba(224,144,92,.18); --tv-accent-text:#f0b898; }
+.tv--light.tv--accent-warm     { --tv-accent:#c26a3a; --tv-accent-weak:rgba(194,106,58,.14); --tv-accent-text:#8e4418; --tv-sel-strong:rgba(194,106,58,.24); }
+.tv--dark.tv--accent-warm      { --tv-accent:#e0905c; --tv-accent-weak:rgba(224,144,92,.18); --tv-accent-text:#f0b898; --tv-sel-strong:rgba(224,144,92,.28); }

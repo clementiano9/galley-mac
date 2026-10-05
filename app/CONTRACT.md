@@ -1,7 +1,7 @@
 # Galley — Implementation Contract (read before coding)
 
 We are building a **real, working single-window** markdown viewer web app that
-recreates the `Galley Mockups.html` design **pixel-perfectly** and makes it
+recreates the original Galley design **pixel-perfectly** and makes it
 genuinely functional. Pure vanilla HTML/CSS/JS — **no build step, no framework**.
 Opening `app/index.html` in a browser must "just work".
 
@@ -77,6 +77,8 @@ TV.newFile() -> id               // F-23: in-memory blank "Untitled.md", opened 
                                  // Writes NOTHING (DR-06): Save (⌘S) then opens the native
                                  // Save panel, even while empty. Bound to ⌘N / File ▸ New File.
 TV.refreshFolderFor(filePath)    // F-23: re-scan the open folder containing filePath
+TV.previewAppearance({theme?,accent?,fontSize?}) / TV.endAppearancePreview()   // F-24: paint a look WITHOUT persisting, notifying native or rendering; end = back to state
+TV.appearanceState() / TV.openPath(absPath) / TV.loadRecentEntries()   // F-24: palette readers/openers
 TV.getActiveTab() -> Tab|null
 TV.setMode('reading'|'edit')     // edit toggle
 TV.setTheme(t) / TV.setAccent(a) // re-skin (class swap on .tv root, persist)
@@ -89,7 +91,7 @@ TV.el()                          // -> the live .tv root element (current theme/
 ```
 Overlays/panels register themselves and are invoked by shell's keyboard router:
 ```js
-window.TVPalette = { open(), close(), isOpen() }   // builds its own overlay into TV.el()
+window.TVPalette = { open({query?}), close(), isOpen(), openOutline() }   // builds its own overlay into TV.el(); ⌘⌥O = open({query:'#'})   (F-24)
 window.TVSearch  = { open(), close(), isOpen() }
 window.TVFiles   = { init(), openPicker() }        // init() wires drag-drop + exposes ⌘O
 window.TVEdit    = { renderSource(tab) -> htmlString, wire(rootEl, tab), wordCount(src) -> n }

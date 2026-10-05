@@ -10,7 +10,7 @@ For what Galley is, how to build and install it, and the test commands, see the
 > **Everything in this folder ships.** `tauri.conf.json` sets
 > `frontendDist: "../../app"`, so Tauri embeds this directory into the release binary.
 > Only files the running app needs belong here — process artifacts (QA reports,
-> UX-pipeline steps, feature-gap specs, the design bundle) live in
+> UX-pipeline steps, feature-gap specs) live in
 > [`../.claude/docs/`](../.claude/docs/).
 
 ## Run it in a browser
@@ -71,10 +71,6 @@ MERMAID-SPEC.md         diagram subset the renderer supports
 - **`index.html` has an inline `<style>` block that loads after `css/tv-app.css`** and
   silently wins specificity ties. If a `tv-app.css` change has no visible effect, grep
   `index.html` for an overriding rule — this caused ISS-002.
-- **`!important` on color/background is intentional**, carried over from the design
-  bundle to win the cascade. Don't strip it.
+- **`!important` on color/background is intentional**, to win the cascade. Don't strip it.
 - **Under the Tauri CSP, inline `style="left/top"` HTML attributes are dropped.** Set
   positions via CSSOM (`el.style.left = ...`), not the attribute.
-
-Design fidelity is pixel-matched to the bundle in
-[`../.claude/docs/design-bundle/`](../.claude/docs/design-bundle/).
