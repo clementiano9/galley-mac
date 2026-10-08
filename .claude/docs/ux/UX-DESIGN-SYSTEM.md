@@ -1,4 +1,10 @@
 # tiny-viewer — UX Design System
+
+> **Status (2026-10-08):** kept as the one-page summary of the UX run. Unique here: the Product Brief, the
+> 74-WAN index, the WAAD cluster labels and the Technology Recommendation (Tauri was chosen; the Swift
+> alternative was not pursued). The product is now named **Galley**; for current IA, sidebar and wireframes
+> the shipped code and the UXF specs in `../feature-gaps/specs/` win over the Step 5–6 sections below.
+
 *Research-Driven Product Design, 8-Step Framework*
 *Generated: 2026-03-15 | 74 WANs from 5 research streams*
 

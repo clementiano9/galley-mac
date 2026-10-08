@@ -2,7 +2,9 @@
 
 *Check run before the UXF-01…06 design, as the owner asked ("ensure you are not following obsolete designs"). Compared `.claude/docs/**`, the two contracts and the external mockups against the shipped code on `feat/ux-feedback-2026-10` and `git log` (rename to Galley `1f3ffdd`; Edge sidebar `602c698`; SBH `49a47a2`; JANK `ca6f72b`; polish `cd25988`; F-23 `66a85e6`; F-24 `deb660f`).*
 
-**Nothing was deleted or edited** (apart from the new step-8 row in `INDEX.md`). Actions are proposals: **delete**, **mark superseded** (add a banner, keep the text), **update**.
+**Applied 2026-10-08 (owner-approved):** deleted `gemini-step7-prompt.md`, `spec-gaps.md`, `ux-gaps.md`, `qa/QA-REPORT.md`, `qa/round2/`, `qa/round5/` and the local Foreman queue files; `step-5-ia.md` / `step-6-wireframes.md` kept. **Correction:** `UX-DESIGN-SYSTEM.md` was deleted then restored the same day — the row below calling it a "verbatim concatenation" was wrong; it holds the only Product Brief, the 74-WAN index and the Technology Recommendation. Re-check of the other deletions: every gap in `spec-gaps.md` / `ux-gaps.md` is built or superseded except **U-11 (middle-click closes a tab)**; the QA reports' open items (incl. the N-02 `javascript:` link bypass) are fixed.
+
+**At audit time nothing was deleted or edited** (apart from the new step-8 row in `INDEX.md`). Actions are proposals: **delete**, **mark superseded** (add a banner, keep the text), **update**.
 
 ## A. Files in the repo
 

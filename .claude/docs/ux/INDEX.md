@@ -7,7 +7,7 @@
 
 | Step | File | Content |
 |---|---|---|
-| Overview | `UX-DESIGN-SYSTEM.md` | Full synthesized design system (all steps combined) |
+| Overview | `UX-DESIGN-SYSTEM.md` | One-page summary: product brief, 74-WAN index, steps 2–6, tech recommendation |
 | **Step 1** — Web Research Sprint | `research/` folder | 74 raw WANs across 5 parallel research streams |
 | **Step 2** — WAAD + URD Synthesis | `step-2-waad-urd.md` | 8 WAAD clusters, 10 URDs, 3 work roles, flow models |
 | **Step 3** — Problem Definition | `step-3-problem-definition.md` | 6 problem statements, HMW, metrics, DRs, principles |
