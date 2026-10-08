@@ -522,6 +522,8 @@
 
       _containerEl.innerHTML = barHtml + resultsHtml;
       viewer.appendChild(_containerEl);
+      // UXF-08: same enter as the palette; closing stays instant.
+      if (window.TVMotion) window.TVMotion.enter(_containerEl, { y: 4, reducedFade: true });
 
       _open = true;
       _selIndex = 0;

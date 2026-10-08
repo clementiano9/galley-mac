@@ -26,6 +26,9 @@ ONLY through the documented `window.TV` controller API and the agreed DOM classe
 | `js/tv-search.js` | **features** | ⌘⇧F cross-tab search across open docs |
 | `js/tv-files.js` | **features** | Drag-drop + ⌘O file open (File System Access API) |
 | `js/tv-live.js` | **features** | Live-watch streaming + status bar |
+| `js/tv-tree.js` | **shell** | Pure folder-tree logic (order, counts, default expansion, reveal lookup) |
+| `js/tv-swipe.js` | **shell** | UXF-05/09: two-finger swipe state machine + one `wheel` listener (`TVSwipe.install`); `TVSwipe.touch(m)` takes the native `swipe-touch` finger phases |
+| `js/tv-motion.js` | **shell** | UXF-08: `TVMotion` — reads the motion tokens, `play()` / `enter()` (null under Reduce Motion), `cancelAll()` |
 | `css/tv-tokens.css`, `css/tv-app.css` | **style** | Tokens + chrome (copied — adapt to full-viewport single window, add new component styles, a11y) |
 
 Shared (already created, do not edit): `js/tv-icons.js` (`window.TV_ICONS`),
@@ -59,9 +62,10 @@ window.TV.state = {
 ```js
 TV.state                         // the object above
 TV.render()                      // full repaint of current state into #tv-root; preserves scroll
-                                 // for all THREE scrollers it destroys: the content pane
-                                 // (DR-03), the sidebar list + capped folder bodies (JANK-01),
-                                 // and the tab strip's horizontal offset (C-04). The strip may
+                                 // for the scrollers it destroys: the content pane (DR-03), the
+                                 // sidebar list (JANK-01; UXF-03 removed the capped folder
+                                 // bodies), the tab strip's horizontal offset (C-04) and each
+                                 // wide table's own box (UXF-01, DR-10). The strip may
                                  // move on exactly one occasion: activating a tab whose pill is
                                  // off screen. None of the three is persisted to disk (DR-06).
 TV.batch(fn) -> fn's return      // JANK-02: coalesce renders. Any number of render() calls
@@ -82,7 +86,17 @@ TV.appearanceState() / TV.openPath(absPath) / TV.loadRecentEntries()   // F-24: 
 TV.getActiveTab() -> Tab|null
 TV.setMode('reading'|'edit')     // edit toggle
 TV.setTheme(t) / TV.setAccent(a) // re-skin (class swap on .tv root, persist)
-TV.toggleSidebar()
+TV.toggleSidebar({seedCursor?})  // UXF-05: pointer routes (button, swipe) pass seedCursor:false
+TV.revealInSidebar(tabId?) -> Promise<bool>  // UXF-06: open sidebar, expand ancestors, centre +
+                                 // ring the file row (⇧⌘J, palette, tab menu, View menu)
+TV.refreshFolder(rootPath, {silent?}) -> Promise<bool>  // UXF-02: re-scan in place, keeps expansions
+TV.collapseAllFolders()          // UXF-03: palette "Collapse All Folders"
+TV.isSwipeEnabled() / TV.toggleSwipe()  // UXF-05: escape hatch, localStorage tv-swipe-sidebar = "0"
+TV.tableSizingPasses() -> n      // UXF-01 diagnostic: table sizing passes run so far (observer settles)
+// UXF-07: state.agentFolders (localStorage tv-agent-folders, "Always Show" names) and
+// state.sessionVisibleFolders (folders Reveal showed) feed TVTree's folder display policy.
+// UXF-08: toggleSidebar(opts) slides (220ms) unless opts.animate === false; every motion
+// uses the tokens in tv-tokens.css and goes through TVMotion.
 TV.scrollToHeading(tabId, headingText)  // open tab + scroll its rendered heading into view
 TV.markDirty(id, isDirty)
 TV.on(event, fn)                 // tiny emitter; events: 'render', 'tabchange', 'modechange'
@@ -103,8 +117,18 @@ window.TVLive    = { start(tabId), stop(tabId), stopAll() }
 - Chrome: `.tv-titlebar`(.tv-traffic .tv-light c|m|x, .tv-wintitle) · `.tv-tabbar`
   (.tv-tab[.active] > .tv-bolt|.tv-dot, .name, .tv-close ; .tv-newtab) ·
   `.tv-body` > `.tv-sidebar[.collapsed]` + `.tv-viewer`.
-- Sidebar: `.tv-side-scroll`(.tv-tree-row.folder/.file[.active] .ic .mini-bolt),
-  `.tv-side-divider`, `.tv-side-label`, `.tv-search`>.tv-search-box.
+- Sidebar: `aside#tv-sidebar.tv-sidebar` > `.tv-side-scroll` (the ONLY sidebar scroller,
+  UXF-03) > `section.tv-folder-section[role=group]` per open root (sticky `.tv-folder-head`
+  + `.tv-folder-body`), `.tv-tree-row.folder/.subfolder/.file[.active] .ic .tname
+  .tv-tree-count .mini-bolt`, `.tv-tree-more` (per-folder "Show N more files" and
+  `[data-tree-toggle-empty]`), `.tv-tree-row.tv-reveal` (UXF-06 ring), `.tv-side-divider`,
+  `.tv-side-label`, `.tv-search`>.tv-search-box. The one show/hide button is
+  `.tv-tabbar > .tv-side-toggle[data-sidebar-toggle][aria-expanded]` (UXF-05).
+- Tables: `.md > .tbl-wrap > table` (top level). JS (`sizeTables`, UXF-01 policy v2) writes
+  `--tv-tbl-w` on the wrapper and adds `.tbl-wide` (needs more than the pane: own scroll box)
+  and `data-edge="start|mid|end"` (edge fade).
+- Tree: `.tv-tree-row.is-extra` = a folder shown only because "Show N more folders" is on (UXF-07).
+- Motion: `.tv-body.tv-animating` and `.tv-sidebar-ghost` exist only during the sidebar slide (UXF-08).
 - Content: `.tv-viewer` > `.tv-scroll` > `.tv-content` > `.md` (rendered) — the
   scroll container is `.tv-scroll` (read/write `scrollTop` here for DR-03).
 - Palette: `.tv-palette-scrim`>`.tv-palette`(.tv-pal-input, .tv-pal-list >
@@ -127,5 +151,5 @@ to swap Mermaid placeholders for drawn flows.
 - `!important` on colour/background declarations is intentional (kept from design) — keep it.
 - Respect `prefers-reduced-motion` for ⚡ pulse / blip / shimmer / caret (style owner).
 - Never write to disk except via an explicit user Save action (DR-06).
-- Keyboard: ⌘K palette · ⌘⇧F search · ⌘B sidebar · ⌘O open · ⌘N new file ·
+- Keyboard: ⌘K palette · ⌘⇧F search · ⌘B sidebar · ⇧⌘J reveal in sidebar · ⌘O open · ⌘N new file ·
   ⌘E/dbl-click edit · ⌘S save · ⌘W close tab · ⌘1–9 nth tab · Esc closes overlay/exits edit.

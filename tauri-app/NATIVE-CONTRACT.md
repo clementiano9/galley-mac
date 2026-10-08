@@ -22,7 +22,7 @@ capabilities come from Rust commands + events.
 | `save_md_file_as` | `content: String, suggested_name: String, directory: Option<String>` | `Option<FileDoc>` | Native save dialog; returns new path (null if cancelled). `directory` (F-23) is where the panel opens; a missing or non-existent folder is ignored |
 | `watch_file` | `path: String` | `()` | Start an FSEvents watch (notify crate). On change, re-read and emit `file-changed` |
 | `unwatch_file` | `path: String` | `()` | Stop watching that path |
-| `read_dir_tree` | `path: String, uncapped: Option<bool>` | `DirTree` | Scan a folder for the sidebar tree. `uncapped: true` re-scans with a far higher (still bounded) budget — see C-29 below |
+| `read_dir_tree` | `path: String, uncapped: Option<bool>` | `DirTree` | Scan a folder for the sidebar tree (async, off the main thread). `uncapped: true` uses the wide budget and file cap — see UXF-02 below |
 | `confirm_close` | — | `()` | C-02: the frontend has cleared the quit; releases the guard and exits |
 | `confirm_quit_dialog` | `count: u32` | `"save" \| "discard" \| "cancel"` | C-02: native unsaved-changes sheet (Save All / Discard / Cancel) |
 | `set_appearance_check` | `choice: String` | `()` | C-36: check the matching View ▸ Appearance row. `"light" \| "dark" \| "system"` — the USER'S choice, not the resolved colour |
@@ -38,11 +38,19 @@ keys JS sends drift from it.
 ### Events (Rust → JS via `app.emit` / `Emitter`)
 - `file-changed` — payload `{ path: String, content: String }` (fired by the watcher).
 - `file-removed` — payload `{ path: String }` when a watched file is deleted.
+- `swipe-touch` — UXF-09, macOS only. Trackpad finger phases from an `NSEvent` local scroll-wheel
+  monitor (`install_swipe_monitor`, which returns every event unchanged). Payload (camelCase)
+  `{ phase: "began"|"changed"|"ended"|"cancelled", t: f64 ms (NSEvent clock), dx, dy: scrollingDeltaX/Y,
+  precise: hasPreciseScrollingDeltas, inverted: isDirectionInvertedFromDevice, x, y: window points
+  from the top-left, mods: ⇧⌃⌥⌘ held }`. Never sent for momentum or phase-less mouse wheels;
+  `changed` is coalesced to one message per 16 ms and only for a touch's first 1,000 ms.
+  `tv-native.js` forwards it to `TVSwipe.touch()`.
 - `open-files` — payload `string[]`; Finder "Open With" / double-click, and File ▸ Open Recent.
 - `tv-close-requested` — payload `()`. **C-02**: emitted for EVERY quit route (red
   close button, ⌘Q, ⇧⌘W). See the quit contract below.
 - `menu:*` — one event per custom menu item id (`menu:new-file` (⌘N, F-23), `menu:print`, `menu:find-next`,
-  `menu:find-prev`, `menu:reveal-in-finder`, `menu:appearance-*`, …).
+  `menu:find-prev`, `menu:reveal-in-finder`, `menu:reveal-in-sidebar` (View ▸ Reveal in Sidebar ⇧⌘J,
+  UXF-06 → `TV.revealInSidebar()`), `menu:appearance-*`, …).
 - Native drag-drop uses Tauri's built-in `tauri://drag-drop` window event
   (payload `{ paths: string[], position }`) — the bridge listens for it.
 
@@ -82,17 +90,37 @@ fire `beforeunload` on ⌘Q or Dock-Quit. The guard closes that hole:
 `confirm_close` sets the guard flag and calls `app.exit(0)`: on a single-window
 document app the red button, ⇧⌘W and ⌘Q all mean the same thing.
 
-## C-29 · DirTree truncation
+## UXF-02 · DirTree (the folder scan)
 
 ```
-DirTree = { path, files[], subfolders[], deep[], truncated: bool, skipped: u32 }
+DirTree = { path, root: DirNode, truncated: bool, unreadable: u32 }
+DirNode = { name, path,
+            files: [{name, path}],   // direct .md/.markdown/.txt, natural-sorted, ≤ FILE_CAP
+            filesHidden: u32,        // direct markdown files beyond FILE_CAP
+            folders: [DirNode],      // direct subfolders, natural-sorted, incl. mdCount 0
+            mdCount: u32,            // markdown files in this subtree (filesHidden included)
+            scanned: bool }          // false = budget/depth ran out first: empty, mdCount 0
 ```
-`skipped` is how many MATCHING entries the caps dropped, counted where the scanner
-saw them. It is exact for the common case (one big flat folder) and a LOWER BOUND
-when the visit budget or the depth limit stopped the walk early — so `truncated`
-stays the authoritative "there is more" flag and the UI should only show a number
-when `skipped > 0`. `TVNative.readDirTree(path, { uncapped: true })` re-scans the
-same folder with 5000-entry caps (depth 12) to back a "Show N more files" row.
+Both structs are `#[serde(rename_all = "camelCase")]`; `tv-native.runtime.test.js` reads the
+field names from `lib.rs` and fails on drift. The walk is breadth-first so one subtree can never
+starve its siblings. Budget (entries read) 20,000 / 200,000 uncapped; FILE_CAP 500 / 5,000;
+depth 40. Never scanned (below the picked root): `.git`, `node_modules`, `.venv`, `venv`,
+`__pycache__`, `.next`, `.nuxt`, `Pods`, `.cache`, `.tox`, `.gradle`, `.terraform`; `target`
+beside a `Cargo.toml`; `dist`/`build` beside `package.json`/`pyproject.toml`; package bundles
+(`.app`, `.framework`, `.xcodeproj`, `.xcworkspace`, `.photoslibrary`). Symlinked folders are not
+followed, symlinked files are. Read-only: names and paths, never content (DR-06).
+
+**Viewable files (UXF-07):** extension `md`, `markdown`, `mdc` (Cursor rules), `txt`, or one
+of the extensionless agent rule files `.cursorrules .windsurfrules .clinerules .roorules
+.goosehints .rules` at any depth (`is_md_name`, `AGENT_FILE_NAMES` in `lib.rs`). The same test
+gates `pick_folder`, the Open/Save panel filters and Finder "Open With" (`fileAssociations`
+lists `mdc`). Nothing else is ever listed: `.env`, `settings.json`, `config.toml` never appear.
+Which dot-folders the sidebar SHOWS is a frontend policy (`TVTree.AGENT_FOLDERS`); Rust lists
+every folder it scans.
+
+`truncated` is true when any node is unscanned or has `filesHidden > 0`. The frontend loads an
+unscanned folder (or a capped one, with `uncapped: true`) by calling `read_dir_tree` with that
+folder's path and grafting the returned `root` in place (`TVTree.graftNode`).
 
 ## C-36 · Menu ⇄ frontend
 
@@ -114,7 +142,7 @@ TVNative.openPicker()         // invoke pick_md_files → TV.openDoc(...) each +
 TVNative.saveTab(tab)         // tab.nativePath ? save_md_file : save_md_file_as; updates tab name/path; clears dirty
 TVNative.startWatch(tab)      // invoke watch_file(tab.nativePath)
 TVNative.stopWatch(tab)       // invoke unwatch_file(tab.nativePath)
-TVNative.readDirTree(p, opts) // read_dir_tree; opts.uncapped -> wide rescan (C-29)
+TVNative.readDirTree(p, opts) // read_dir_tree; opts.uncapped -> wide budget + file cap (UXF-02)
 TVNative.showToast(msg, opts) // opts.kind 'error' -> dismissible, ~6s (C-01)
 TVNative.syncRecentMenu()     // push the MRU into File > Open Recent (C-36)
 TVNative.syncAppearanceMenu() // re-check the View > Appearance row (C-36)

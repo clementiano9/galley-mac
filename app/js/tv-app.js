@@ -240,23 +240,39 @@
     accent: localStorage.getItem('tv-accent') || 'blue',
     fontSize: parseInt(localStorage.getItem('tv-font-size'), 10) || 16,
     // BUG-4: sidebar drag-resize width (clamp 160–480px). Persisted to localStorage.
-    // dev2 reads --tv-sidebar-w on .tv-sidebar { width: var(--tv-sidebar-w, 224px) }.
+    // dev2 reads --tv-sidebar-w on .tv-sidebar { width: var(--tv-sidebar-w, 264px) }.
+    // UXF-03: default 224 → 264 so five tree levels still leave room for a name.
     sidebarWidth: (function () {
       var stored = parseInt(localStorage.getItem('tv-sidebar-w'), 10);
-      return (stored >= 160 && stored <= 480) ? stored : 224;
+      return (stored >= 160 && stored <= 480) ? stored : 264;
     }()),
     // DR-56: true while session restore is in progress; external file-open events
     // are buffered via enqueueExternalOpen() and drained once restore completes.
     sessionRestoring: false,
     // F-19 / DR-33: open folder tree objects, ordered most-recently-opened last.
-    // Each entry is the tree object returned by TVNative.readDirTree():
-    //   { path, files:[{name,path}], subfolders:[{name,files}], deep:[{name,path,from}] }
+    // Each entry is the tree object returned by TVNative.readDirTree() (UXF-02):
+    //   { path, root: DirNode, truncated, unreadable, _scannedAt }
     // keyed by `path` (unique per folder).
     openFolders: [],
     // F-19 / ISS-005: per-folder collapse state. Keys:
-    //   <folderPath>                    → true = folder head collapsed
+    //   root:<folderPath>               → true = folder head collapsed
     //   <folderPath>/<sub>[/<deeper>…]  → true = nested subfolder collapsed
+    // UXF-03: defaultCollapsed writes explicit true/false for every folder it
+    // decides, so a re-scan can tell old folders from new ones.
     folderCollapsed: {},
+    // UXF-02: "Show N folders without markdown" (global, persisted).
+    treeShowEmpty: (function () {
+      try { return localStorage.getItem('tv-tree-show-empty') === '1'; } catch (e) { return false; }
+    }()),
+    // UXF-07: dot-folder names the user chose to "Always Show" (lowercase, ≤ 64),
+    // in every project; and folders Reveal showed for this session (by path).
+    agentFolders: (function () {
+      try {
+        var a = JSON.parse(localStorage.getItem('tv-agent-folders') || '[]');
+        return Array.isArray(a) ? a.filter(function (n) { return typeof n === 'string'; }).slice(0, 64) : [];
+      } catch (e) { return []; }
+    }()),
+    sessionVisibleFolders: {},
     // F-22 / U-06: shortcut overlay open flag
     shortcutsOpen: false,
     // F-19 TASK 3: context menu state { x, y, path } or null
@@ -319,6 +335,20 @@
     // Re-render all open tabs by doing a full render (rebuilds .md and
     // re-invokes tvResolveDiagrams which will respect isMermaidEnabled())
     render();
+  }
+
+  // UXF-05: escape hatch for the two-finger swipe (DR-31: a palette toggle,
+  // same pattern as Mermaid). '0' = off.
+  function isSwipeEnabled() {
+    try { return localStorage.getItem('tv-swipe-sidebar') !== '0'; } catch (e) { return true; }
+  }
+  function toggleSwipe() {
+    var next = !isSwipeEnabled();
+    try {
+      if (next) localStorage.removeItem('tv-swipe-sidebar');
+      else localStorage.setItem('tv-swipe-sidebar', '0');
+    } catch (e) { /* private mode: the choice lasts this session only */ }
+    announce(next ? 'Swipe to toggle sidebar enabled' : 'Swipe to toggle sidebar disabled');
   }
 
   // UX-10: JS keyboard cursor for sidebar navigation.
@@ -744,21 +774,17 @@
       );
     }).join('');
 
-    // UX-SBR (edge-sidebar): the reveal toggle lives in the tab strip ONLY while
-    // the sidebar is collapsed — a neutral re-entry affordance so a hidden sidebar
-    // is never a dead-end. When the sidebar is OPEN the collapse control recedes
-    // into the sidebar FILES header (the « button), keeping the chrome minimal.
-    // Reuses the global [data-sidebar-toggle] handler (same path as ⌘B).
-    var sideToggle = '';
-    if (!state.sidebarOpen) {
-      var sideTitle = 'Show sidebar (⌘B)';
-      sideToggle =
-        '<button class="tv-side-toggle" data-sidebar-toggle' +
-          ' title="' + sideTitle + '" aria-label="' + sideTitle + '"' +
-          ' aria-pressed="false" type="button">' +
-          (icons.sidebar || '') +
-        '</button>';
-    }
+    // UXF-05: ONE sidebar button, always first in the tab bar and in the same
+    // place whether the sidebar is open or closed (supersedes UX-SBR's two
+    // controls). Neutral colour; the glyph's tinted pane carries the state.
+    var sideOpen = !!state.sidebarOpen;
+    var sideTitle = (sideOpen ? 'Hide' : 'Show') + ' sidebar (⌘B)';
+    var sideToggle =
+      '<button class="tv-side-toggle" data-sidebar-toggle type="button"' +
+        ' aria-controls="tv-sidebar" aria-expanded="' + sideOpen + '"' +
+        ' aria-label="Sidebar" title="' + sideTitle + '">' +
+        ((sideOpen ? icons.sidebarOn : icons.sidebar) || icons.sidebar || '') +
+      '</button>';
 
     // L-03: tabs live in a scrolling .tv-tab-strip; .tv-newtab is a SIBLING
     // (outside the strip) so the "+" stays opaque + clickable when tabs overflow.
@@ -947,33 +973,79 @@
   // `chain` comes from TVTree.chainKeysTo — keys identical to the ones
   // buildTreeNodes emits. The root head is separately namespaced
   // ('root:' + the tree's raw path); the bare path is cleared too, for safety.
+  // UXF-03: explicit false, not delete — an undefined key is a "new" folder
+  // that the next re-scan's default expansion would be free to collapse again.
   function expandAncestorsTo(rootTreePath, chain) {
     delete state.folderCollapsed['root:' + rootTreePath];
     delete state.folderCollapsed[rootTreePath];
-    (chain || []).forEach(function (key) { delete state.folderCollapsed[key]; });
+    (chain || []).forEach(function (key) { state.folderCollapsed[key] = false; });
   }
 
   // Render, then scroll the named sidebar row into view and flash it once so
   // the eye lands on the folder that was revealed rather than mounted. The
   // message is also spoken via a toast — the flash alone never carries the
   // information (URD-10 / DR-10). `itemKey` is a data-sidebar-item value.
-  function revealSidebarRow(itemKey, message) {
+  // UXF-06: opts.block (scrollIntoView block, default 'nearest'), opts.cls
+  // (cue class, default 'tv-flash'), opts.ms (how long the cue stays).
+  // Resolves with the row element (or null) once it has been scrolled to.
+  function revealSidebarRow(itemKey, message, opts) {
+    opts = opts || {};
     render();
     if (message && window.TVNative && typeof TVNative.showToast === 'function') {
       TVNative.showToast(message);
     }
-    var raf = window.requestAnimationFrame || function (fn) { return setTimeout(fn, 16); };
-    raf(function () {
-      var rows = document.querySelectorAll('.tv-sidebar [data-sidebar-item]');
-      var el = null;
-      for (var i = 0; i < rows.length; i++) {
-        if (rows[i].getAttribute('data-sidebar-item') === itemKey) { el = rows[i]; break; }
-      }
-      if (!el) return;
-      if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'nearest' });
-      el.classList.add('tv-flash');
-      setTimeout(function () { el.classList.remove('tv-flash'); }, 1500);
+    return new Promise(function (resolve) {
+      var raf = window.requestAnimationFrame || function (fn) { return setTimeout(fn, 16); };
+      raf(function () {
+        var rows = document.querySelectorAll('.tv-sidebar [data-sidebar-item]');
+        var el = null;
+        for (var i = 0; i < rows.length; i++) {
+          if (rows[i].getAttribute('data-sidebar-item') === itemKey) { el = rows[i]; break; }
+        }
+        if (!el) { resolve(null); return; }
+        if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: opts.block || 'nearest' });
+        var cls = opts.cls || 'tv-flash';
+        el.classList.add(cls);
+        setTimeout(function () { el.classList.remove(cls); }, opts.ms || 1500);
+        resolve(el);
+      });
     });
+  }
+
+  // The open root tree that holds `p` (the root itself or anything below it).
+  function rootTreeFor(p) {
+    if (!p) return null;
+    var norm = window.TVTree ? TVTree.normFolderPath : function (x) { return String(x).replace(/\/+$/, '') || '/'; };
+    for (var i = 0; i < state.openFolders.length; i++) {
+      var t = state.openFolders[i];
+      if (norm(t.path) === norm(p)) return t;
+      if (window.TVTree && TVTree.isDescendantPath(p, t.path)) return t;
+    }
+    return null;
+  }
+
+  // UXF-03: smart default expansion for every folder that has no collapse key
+  // yet (a fresh mount, or folders a re-scan or lazy load just added). Keys the
+  // user set are never touched; files open in tabs always get their ancestors.
+  // UXF-03: the row budget fits the default tree inside the sidebar scroller:
+  // min(30, max(8, floor((H − 24 padding − 30 head) / 30 per row))). H is the
+  // scroller's height, or innerHeight − 140 when the sidebar is closed. Taken
+  // once per tree at mount (tree._budget) so a resize never re-arranges it.
+  function treeRowBudget() {
+    var el = document.querySelector('.tv-side-scroll');
+    var h = (state.sidebarOpen && el && el.clientHeight) ? el.clientHeight : (window.innerHeight - 140);
+    return Math.min(30, Math.max(8, Math.floor((h - 24 - 30) / 30)));
+  }
+
+  function applyDefaultExpansion(tree) {
+    if (!tree || !window.TVTree || typeof TVTree.defaultCollapsed !== 'function') return;
+    if (typeof tree._budget !== 'number') tree._budget = treeRowBudget();
+    var openPaths = state.tabs.map(function (t) { return t.nativePath; }).filter(Boolean);
+    var opts = treeOpts();
+    opts.budget = tree._budget;
+    opts.openPaths = openPaths;
+    var decided = TVTree.defaultCollapsed(tree, state.folderCollapsed, opts);
+    Object.keys(decided).forEach(function (k) { state.folderCollapsed[k] = decided[k]; });
   }
 
   // Register (add or replace) a folder tree object in state.openFolders.
@@ -992,6 +1064,19 @@
   function registerFolder(tree) {
     if (!tree || !tree.path) return;
     var TVTree = window.TVTree;
+    tree._scannedAt = Date.now(); // UXF-02: drives the focus re-scan
+
+    // UXF-03 rule 9: every caller of registerFolder is an explicit open (picker,
+    // Recent, palette, empty-state button, reveal's parent mount), so the tree —
+    // the only visible result, since opening a folder opens no tabs — must be on
+    // screen. The silent paths (focus re-scan, lazy loads) never come here. The
+    // budget is measured first, while the sidebar's real state still shows.
+    if (TVTree && !state.sidebarOpen) {
+      tree._budget = treeRowBudget();
+      sidebarMotionStart(true); // UXF-08: open-folder slides the sidebar in
+    }
+    state.sidebarOpen = true;
+    state.sidebarUserToggled = true;
 
     // Without TVTree there is no containment logic to apply — fall back to the
     // plain de-dup-and-append so a missing module degrades rather than throws.
@@ -1006,14 +1091,19 @@
     var plan = TVTree.planFolderOpen(openPaths, tree.path);
     var name = pathBasename(TVTree.normFolderPath(tree.path));
 
-    // Already mounted as a root: refresh the tree object IN PLACE (disk
-    // contents may have changed) so it keeps its slot in the MRU order, then
+    // Already mounted as a root (re-picked in the Open Folder panel): refresh
+    // the tree object IN PLACE so it keeps its slot in the MRU order, then
     // reveal it rather than stacking a duplicate section.
     if (plan.action === 'refresh') {
       for (var i = 0; i < state.openFolders.length; i++) {
-        if (state.openFolders[i].path === plan.rootPath) { state.openFolders[i] = tree; break; }
+        if (state.openFolders[i].path === plan.rootPath) {
+          if (typeof state.openFolders[i]._budget === 'number') tree._budget = state.openFolders[i]._budget;
+          state.openFolders[i] = tree;
+          break;
+        }
       }
       delete state.folderCollapsed['root:' + plan.rootPath];
+      applyDefaultExpansion(tree);
       revealSidebarRow('folder:' + tree.path, name + ' is already open');
       return;
     }
@@ -1043,6 +1133,7 @@
 
     // Case 3 (and the tail of case 2) — mount as a root section.
     state.openFolders.push(tree);
+    applyDefaultExpansion(tree);
     render();
     if (absorbed.length && window.TVNative && typeof TVNative.showToast === 'function') {
       TVNative.showToast(
@@ -1053,6 +1144,295 @@
     }
   }
 
+  /* ── UXF-02: load one folder into its open tree ───────────────
+     Used for an unscanned folder ("…", the budget ran out before it) and, with
+     uncapped, for a folder's "Show N more files" row. The fresh scan of that
+     ONE folder is grafted in place: same root, same MRU slot, every collapse
+     key and the keyboard cursor untouched. Resolves true when grafted. */
+  var _folderLoadFailed = {};
+
+  function loadIntoTree(folderPath, opts) {
+    opts = opts || {};
+    state.folderMoreLoading = state.folderMoreLoading || {};
+    if (!folderPath || state.folderMoreLoading[folderPath]) return Promise.resolve(false);
+    if (!(window.TVNative && typeof TVNative.readDirTree === 'function') || !window.TVTree) {
+      return Promise.resolve(false);
+    }
+    state.folderMoreLoading[folderPath] = true;
+    if (opts.renderNow) render();
+
+    function done() { delete state.folderMoreLoading[folderPath]; }
+
+    return TVNative.readDirTree(folderPath, opts.uncapped ? { uncapped: true } : undefined)
+      .then(function (scan) {
+        done();
+        var tree = rootTreeFor(folderPath);
+        // The folder was closed while the scan was running — do not re-mount it.
+        if (!tree || !scan || !scan.root) { render(); return false; }
+        var ok = TVTree.graftNode(tree, folderPath, scan.root);
+        if (ok) applyDefaultExpansion(tree);
+        render();
+        return ok;
+      }, function (err) {
+        done();
+        console.warn('[Galley] UXF-02 folder load failed', folderPath, err);
+        _folderLoadFailed[folderPath] = true;
+        var tree = rootTreeFor(folderPath);
+        // A folder that cannot be read stays as an empty folder until the next
+        // refresh, rather than a "…" that retries forever.
+        if (tree) TVTree.graftNode(tree, folderPath, { files: [], filesHidden: 0, folders: [], scanned: true });
+        render();
+        if (!opts.quiet && window.TVNative && typeof TVNative.showToast === 'function') {
+          TVNative.showToast('Could not read ' + pathBasename(folderPath), { kind: 'error' });
+        }
+        return false;
+      });
+  }
+
+  // C-29 / UXF-02: "Show N more files" — re-read THIS folder uncapped. Not
+  // registerFolder(): its refresh branch would toast "already open" and yank
+  // the keyboard cursor.
+  function loadMoreFolder(folderPath) {
+    if (!folderPath) return;
+    loadIntoTree(folderPath, { uncapped: true, renderNow: true }).then(function (ok) {
+      // C-32: the row the user activated has just vanished; say what happened.
+      if (ok) announce(pathBasename(folderPath) + ' fully loaded');
+    });
+  }
+
+  // UXF-02: an expanded "…" folder renders a Loading row; buildFolderSection
+  // collects those and render() starts their loads (deduped, once per path).
+  var _pendingFolderLoads = [];
+  function kickPendingFolderLoads() {
+    if (!_pendingFolderLoads.length) return;
+    var paths = _pendingFolderLoads;
+    _pendingFolderLoads = [];
+    setTimeout(function () {
+      paths.forEach(function (p) {
+        if (!_folderLoadFailed[p]) loadIntoTree(p);
+      });
+    }, 0);
+  }
+
+  // Signature of what a tree shows, so a silent re-scan renders only on change.
+  function treeSignature(tree) {
+    if (!tree) return '';
+    return JSON.stringify([tree.root, !!tree.truncated, tree.unreadable || 0]);
+  }
+
+  /* ── UXF-02: re-scan an open root in place ─────────────────────
+     Folder ▸ Refresh, F-23's new file, and the focus re-scan. Keeps the tree's
+     slot and every collapse key; new folders get the UXF-03 defaults; folders
+     the user loaded by expanding a "…" keep their contents. Renders only when
+     something changed, never toasts "already open" and never moves the scroll
+     (JANK-01 restores .tv-side-scroll across the render). */
+  function refreshFolder(rootPath, opts) {
+    opts = opts || {};
+    if (!rootPath || !(window.TVNative && typeof TVNative.readDirTree === 'function')) {
+      return Promise.resolve(false);
+    }
+    return TVNative.readDirTree(rootPath).then(function (fresh) {
+      if (!fresh || !fresh.root) return false;
+      var slot = -1;
+      for (var i = 0; i < state.openFolders.length; i++) {
+        if (state.openFolders[i].path === rootPath) { slot = i; break; }
+      }
+      if (slot === -1) return false; // closed while scanning
+      var old = state.openFolders[slot];
+      fresh.path = old.path;
+      if (window.TVTree) {
+        // Carry over folders the user already loaded but the new scan left "…".
+        (function carry(n) {
+          (n.folders || []).forEach(function (f) {
+            if (f.scanned === false) {
+              var prev = TVTree.findFolderNode(old, f.path);
+              if (prev && prev.scanned !== false) TVTree.graftNode(fresh, f.path, prev);
+            } else {
+              carry(f);
+            }
+          });
+        }(fresh.root));
+      }
+      fresh._scannedAt = Date.now();
+      if (typeof old._budget === 'number') fresh._budget = old._budget; // UXF-03: once per mount
+      var changed = treeSignature(fresh) !== treeSignature(old);
+      state.openFolders[slot] = fresh;
+      _folderLoadFailed = {};
+      applyDefaultExpansion(fresh);
+      if (changed) render();
+      return changed;
+    }).catch(function (err) {
+      console.warn('[Galley] UXF-02 folder refresh failed', rootPath, err);
+      if (!opts.silent && window.TVNative && typeof TVNative.showToast === 'function') {
+        TVNative.showToast('Could not refresh ' + pathBasename(rootPath), { kind: 'error' });
+      }
+      return false;
+    });
+  }
+
+  // UXF-02: on window focus, re-scan (one at a time, silently) every open root
+  // last scanned more than 30 s ago.
+  var _rescanRunning = false;
+  function rescanStaleFolders() {
+    if (_rescanRunning || !state.openFolders.length) return;
+    var cutoff = Date.now() - 30000;
+    var stale = state.openFolders
+      .filter(function (t) { return !t._scannedAt || t._scannedAt < cutoff; })
+      .map(function (t) { return t.path; });
+    if (!stale.length) return;
+    _rescanRunning = true;
+    stale.reduce(function (p, rootPath) {
+      return p.then(function () { return refreshFolder(rootPath, { silent: true }); });
+    }, Promise.resolve()).then(function () { _rescanRunning = false; }, function () { _rescanRunning = false; });
+  }
+
+  /* ── UXF-03: expand / collapse a whole subtree ─────────────── */
+  function setSubtreeCollapsed(key, collapsed) {
+    if (!key || !window.TVTree) return;
+    var tree = null;
+    for (var i = 0; i < state.openFolders.length && !tree; i++) {
+      var t = state.openFolders[i];
+      if (key === 'root:' + t.path || key.indexOf(t.path + '/') === 0) tree = t;
+    }
+    if (!tree) return;
+    if (!!state.folderCollapsed[key] !== collapsed) _chevMotion = { key: key, opening: !collapsed };
+    TVTree.subtreeKeys(tree, key).forEach(function (k) { state.folderCollapsed[k] = collapsed; });
+    render();
+  }
+
+  // ⌥-click: the whole subtree goes to the opposite of the clicked folder's state.
+  function toggleSubtree(key) {
+    setSubtreeCollapsed(key, !state.folderCollapsed[key]);
+  }
+
+  // Palette "Collapse All Folders": every subfolder of every open root. Root
+  // heads stay open so the top level remains visible.
+  function collapseAllFolders() {
+    if (!window.TVTree) return;
+    state.openFolders.forEach(function (t) {
+      TVTree.subtreeKeys(t, 'root:' + t.path).forEach(function (k) {
+        if (k.indexOf('root:') !== 0) state.folderCollapsed[k] = true;
+      });
+    });
+    render();
+  }
+
+  // UXF-07: the display options every TVTree call takes.
+  function treeOpts() {
+    return {
+      showAll: state.treeShowEmpty,
+      agentNames: state.agentFolders,
+      openPaths: state.tabs.map(function (t) { return t.nativePath; }).filter(Boolean),
+      sessionVisible: state.sessionVisibleFolders
+    };
+  }
+
+  // UXF-07: "Always Show" / "Stop Always Showing" a dot-folder name.
+  function setAgentFolder(name, on) {
+    var n = String(name || '').toLowerCase();
+    if (!n || n.charAt(0) !== '.') return;
+    var list = state.agentFolders.filter(function (x) { return x !== n; });
+    if (on) list.unshift(n);
+    state.agentFolders = list.slice(0, 64);
+    try { localStorage.setItem('tv-agent-folders', JSON.stringify(state.agentFolders)); } catch (e) { /* private mode */ }
+    render();
+  }
+
+  function toggleShowEmptyFolders() {
+    state.treeShowEmpty = !state.treeShowEmpty;
+    try { localStorage.setItem('tv-tree-show-empty', state.treeShowEmpty ? '1' : '0'); } catch (e) { /* private mode */ }
+    render();
+  }
+
+  /* ── UXF-06: Reveal in Sidebar ─────────────────────────────────
+     One action behind four doors (⇧⌘J, palette, tab menu, View menu). Opens the
+     sidebar, finds (or mounts, or loads) the file's folder, expands its
+     ancestors, centres the row and rings it for 1.2 s. Resolves true/false. */
+  var REVEAL_MS = 1200;
+
+  function revealInSidebar(tabId) {
+    var tab = null;
+    var id = tabId || state.activeId;
+    for (var i = 0; i < state.tabs.length; i++) {
+      if (state.tabs[i].id === id) { tab = state.tabs[i]; break; }
+    }
+    var filePath = tab && !tab.untitled && !tab.error && !tab.isNew ? tab.nativePath : null;
+    function toast(msg, kind) {
+      if (window.TVNative && typeof TVNative.showToast === 'function') TVNative.showToast(msg, kind ? { kind: kind } : undefined);
+    }
+    if (!filePath || !window.TVTree) {
+      toast('Save the file first to reveal it');
+      return Promise.resolve(false);
+    }
+    var fileName = pathBasename(filePath);
+    var parentDir = filePath.replace(/\/[^/]+$/, '') || '/';
+
+    if (!state.sidebarOpen) {
+      sidebarMotionStart(true); // UXF-08
+      state.sidebarOpen = true;
+      state.sidebarUserToggled = true;
+    }
+
+    function mountParent() {
+      var tree = rootTreeFor(filePath);
+      if (tree) return Promise.resolve(tree);
+      if (!(window.TVNative && typeof TVNative.reopenFolder === 'function')) return Promise.resolve(null);
+      return TVNative.reopenFolder(parentDir).then(function () {
+        toast('Opened ' + pathBasename(parentDir) + ' in the sidebar');
+        return rootTreeFor(filePath);
+      }, function () { return null; });
+    }
+
+    // Each lookup miss has one remedy, tried once: load the "…" folder, load
+    // the capped folder uncapped, then re-scan the whole root.
+    function locate(tree, tried) {
+      var hit = TVTree.findFileNode(tree, filePath);
+      if (hit && hit.file) return Promise.resolve({ tree: tree, hit: hit });
+      if (hit && hit.unscanned && !tried[hit.unscanned.path]) {
+        tried[hit.unscanned.path] = true;
+        return loadIntoTree(hit.unscanned.path, { quiet: true })
+          .then(function () { return locate(rootTreeFor(filePath) || tree, tried); });
+      }
+      if (hit && hit.hiddenIn && !tried['more:' + hit.hiddenIn.path]) {
+        tried['more:' + hit.hiddenIn.path] = true;
+        return loadIntoTree(hit.hiddenIn.path, { uncapped: true, quiet: true })
+          .then(function () { return locate(rootTreeFor(filePath) || tree, tried); });
+      }
+      if (!tried.refresh) {
+        tried.refresh = true;
+        return refreshFolder(tree.path, { silent: true })
+          .then(function () { return locate(rootTreeFor(filePath) || tree, tried); });
+      }
+      return Promise.resolve(null);
+    }
+
+    return mountParent().then(function (tree) {
+      if (!tree) {
+        render();
+        toast(fileName + ' is not in the folder tree', 'error');
+        return false;
+      }
+      return locate(tree, {}).then(function (found) {
+        if (!found) {
+          render();
+          toast(fileName + ' is not in the folder tree', 'error');
+          return false;
+        }
+        expandAncestorsTo(found.tree.path, found.hit.keys);
+        // UXF-07: folders the display policy hides stay shown for the session.
+        var showing = (TVTree.policyHiddenChain ? TVTree.policyHiddenChain(found.tree, filePath, treeOpts()) : [])
+          .map(function (n) { state.sessionVisibleFolders[n.path] = true; return n.name; });
+        return revealSidebarRow('file:' + filePath, null, { block: 'center', cls: 'tv-reveal', ms: REVEAL_MS })
+          .then(function (row) {
+            if (!row) return false;
+            announce((showing.length ? 'Showing ' + showing.join(', ') + '. ' : '') +
+              'Revealed ' + fileName + ' in ' + pathBasename(TVTree.normFolderPath(found.tree.path)));
+            return true;
+          });
+      });
+    });
+  }
+
   // Close a folder by path. ISS-FOLDER (chosen behavior): closing a folder
   // closes ALL of that folder's open files too (so they never re-group as a
   // muted phantom section), records the folder in Recent, and removes the tree.
@@ -1061,54 +1441,6 @@
   // (tab close, folder removal, prune, unwatch, recent, render) happens ONLY
   // after it resolves — never synchronously before, or state desyncs from the
   // dialog outcome. Exactly ONE batched dialog is shown, never one per tab.
-  /* ── C-29: re-scan a truncated folder without the cap ───────── */
-  // Deliberately NOT registerFolder(): its refresh branch fires
-  // revealSidebarRow('… is already open'), which is a misleading toast here and
-  // yanks the keyboard cursor. Swapping the tree object in its existing slot
-  // gives exactly what the item asks for — same root, same MRU position,
-  // state.folderCollapsed untouched (so every expansion survives) and sbKbd.id
-  // untouched (so the cursor stays where the user left it).
-  function loadMoreFolder(path) {
-    if (!path) return;
-    state.folderMoreLoading = state.folderMoreLoading || {};
-    if (state.folderMoreLoading[path]) return; // already in flight
-    if (!(window.TVNative && typeof TVNative.readDirTree === 'function')) return;
-
-    state.folderMoreLoading[path] = true;
-    render();
-
-    function done() {
-      delete state.folderMoreLoading[path];
-    }
-
-    TVNative.readDirTree(path, { uncapped: true }).then(function (tree) {
-      done();
-      if (tree && tree.path) {
-        var replaced = false;
-        for (var i = 0; i < state.openFolders.length; i++) {
-          if (state.openFolders[i].path === tree.path) {
-            state.openFolders[i] = tree;
-            replaced = true;
-            break;
-          }
-        }
-        // The folder was closed while the scan was running — do not re-mount it.
-        if (!replaced) { render(); return; }
-      }
-      render();
-      // C-32: the row the user activated has just vanished from the list; say
-      // what happened, since nothing else does.
-      announce(pathBasename(path) + ' fully loaded');
-    }).catch(function (err) {
-      done();
-      render();
-      console.warn('[Galley] C-29 uncapped folder scan failed', path, err);
-      if (window.TVNative && typeof TVNative.showToast === 'function') {
-        TVNative.showToast('Could not load the rest of this folder', { kind: 'error' });
-      }
-    });
-  }
-
   function closeFolder(path) {
     if (!path) return;
 
@@ -1192,6 +1524,7 @@
 
   // Toggle the collapse state for a key (folder root path or a nested subfolder key)
   function toggleFolderCollapse(key) {
+    _chevMotion = { key: key, opening: !!state.folderCollapsed[key] };
     state.folderCollapsed[key] = !state.folderCollapsed[key];
     render();
   }
@@ -1313,19 +1646,13 @@
   // immediately after, so the restore lands before paint.
   var _sidebarScrollTop = 0;
 
-  // JANK-01 (QA round 2): the sidebar has MORE THAN ONE scroller. DR-41 caps a
-  // tree over 50 rows with .tv-folder-body.capped { max-height:60vh; overflow-y:auto },
-  // so for any folder of real size the element the user scrolls is that body,
-  // not .tv-side-scroll — which then never overflows and sits at 0 forever.
-  // Preserving only .tv-side-scroll therefore fixed nothing for exactly the
-  // folders where it matters most. Keyed by folder path (stable across renders,
-  // unlike DOM order) so several open trees each keep their own offset.
-  var _folderBodyScroll = {};
+  // UXF-03: DR-41's capped folder bodies (a second, nested scroller) are gone,
+  // so .tv-side-scroll is the only sidebar scroller to preserve.
 
   // An element inside a display:none ancestor (⌘B collapses the sidebar via
-  // .tv-sidebar.collapsed) reports scrollTop 0, and a collapsed folder body is
-  // simply absent. Reading either unconditionally would wipe the saved offset
-  // and drop the user at the top when the panel comes back. clientHeight is 0
+  // .tv-sidebar.collapsed) reports scrollTop 0. Reading it unconditionally
+  // would wipe the saved offset and drop the user at the top when the panel
+  // comes back. clientHeight is 0
   // in exactly those cases and non-zero whenever the element is really on screen.
   function hasLayout(el) {
     return !!el && !!el.clientHeight;
@@ -1335,16 +1662,6 @@
     if (!root || typeof root.querySelectorAll !== 'function') return;
     var el = root.querySelector('.tv-side-scroll');
     if (hasLayout(el)) _sidebarScrollTop = el.scrollTop || 0;
-
-    var bodies = root.querySelectorAll('[data-folder-body]');
-    for (var i = 0; i < bodies.length; i++) {
-      var b = bodies[i];
-      if (!hasLayout(b)) continue;
-      // An UNCAPPED body has no overflow and always reads 0 — harmless to store,
-      // and it keeps the map correct if the same tree later crosses the 50-row
-      // cap and becomes a scroller.
-      _folderBodyScroll[b.getAttribute('data-folder-body')] = b.scrollTop || 0;
-    }
   }
 
   function restoreSidebarScroll(root) {
@@ -1353,13 +1670,6 @@
     // (folder collapsed, tree closed), so no manual clamp is needed anywhere here.
     var el = root.querySelector('.tv-side-scroll');
     if (el && _sidebarScrollTop) el.scrollTop = _sidebarScrollTop;
-
-    var bodies = root.querySelectorAll('[data-folder-body]');
-    for (var i = 0; i < bodies.length; i++) {
-      var b = bodies[i];
-      var saved = _folderBodyScroll[b.getAttribute('data-folder-body')];
-      if (saved) b.scrollTop = saved;
-    }
   }
 
   /* ── C-04 (round 4): the tab strip is the THIRD scroller ──────
@@ -1407,6 +1717,227 @@
     if (_tabStripScrollLeft) strip.scrollLeft = _tabStripScrollLeft;
   }
 
+  /* ── UXF-01: table widths (policy v2, iteration 2) ────────────
+     A table is sized by what it NEEDS (min-content M) and by what it holds,
+     not by what it wants (max-content W): prose tables stop at the column
+     plus an 80px bleed per side, short-cell tables may use the pane, and only
+     a table whose M exceeds the pane scrolls in its own box (.tbl-wide, with
+     data-edge start|mid|end for the edge fade). The width is written as
+     --tv-tbl-w on the wrapper. One ResizeObserver watches .tv-scroll and every
+     top-level table; ⌘= schedules a pass too. Top-level tables only. */
+  var _tableObserver = null;
+  var _tableRaf = null;
+  // DR-10: { tabId: { tableIndex: {left, top} } } — the last offset of every
+  // wide table, kept live by its scroll listener and re-read before each
+  // repaint, so ANY path that rebuilds the document (live-watch, re-scan,
+  // theme, zoom, ⌘B, switching tabs and back) puts it back. Memory only (DR-06).
+  var _tableScroll = {};
+
+  function topTableWraps(root) {
+    return (root && typeof root.querySelectorAll === 'function') ? root.querySelectorAll('.md > .tbl-wrap') : [];
+  }
+
+  function tableEdge(w) {
+    var max = w.scrollWidth - w.clientWidth;
+    if (max <= 1) return null;
+    if (w.scrollLeft <= 1) return 'start';
+    if (w.scrollLeft >= max - 1) return 'end';
+    return 'mid';
+  }
+
+  function syncTableEdge(w) {
+    var edge = w.classList.contains('tbl-wide') ? tableEdge(w) : null;
+    if (edge) {
+      if (w.getAttribute('data-edge') !== edge) w.setAttribute('data-edge', edge);
+    } else if (w.hasAttribute('data-edge')) {
+      w.removeAttribute('data-edge');
+    }
+  }
+
+  // UXF-01 print: the print layout is narrower, so re-measuring there would
+  // strip .tbl-wide and with it tv-print.css's .72em rule. Freeze the screen
+  // classification while printing (beforeprint/afterprint, or print media).
+  var _printing = false;
+  function isPrinting() {
+    if (_printing) return true;
+    try { return !!(window.matchMedia && window.matchMedia('print').matches); } catch (e) { return false; }
+  }
+
+  var TABLE_BLEED = 80;     // px of bleed per side for a prose table
+  var TABLE_PROSE_EM = 22;  // a column wider than ~45 characters is prose
+  var TABLE_SLACK = 2;      // px of room on a width taken from the content
+
+  // The width policy, pure so it is unit-tested (tv-tables.test.js).
+  //   C text column · A most the table may use (pane − 48) · M min-content
+  //   W max-content · cols natural column widths · P prose threshold
+  function tableWidth(o) {
+    var prose = false;
+    for (var i = 0; i < (o.cols || []).length; i++) {
+      if (o.cols[i] > o.P) { prose = true; break; }
+    }
+    var B = Math.min(o.A, o.C + 2 * TABLE_BLEED);
+    var T = Math.max(o.C, Math.min(o.W, prose ? B : o.A));
+    T = Math.max(T, Math.min(o.M, o.A));
+    // A width taken from the content (W or M) gets 2px of slack, rounded UP:
+    // rounding a fractional max-content down, or meeting it exactly, left no
+    // room, so a find <mark> splitting a text run (shaping) wrapped a cell and
+    // grew the table (+24px). Never past A.
+    var width = Math.ceil(T - 0.01);
+    var roomy = function (x) { return Math.min(Math.ceil(x - 0.01) + TABLE_SLACK, Math.max(width, Math.floor(o.A))); };
+    if (o.W <= width + 0.01 && width - o.W < TABLE_SLACK) width = Math.max(width, roomy(o.W));
+    else if (o.M <= width + 0.01 && width - o.M < TABLE_SLACK) width = Math.max(width, roomy(o.M));
+    return { width: width, wide: o.M > o.A + 1, prose: prose };
+  }
+
+  var _tableSizePasses = 0;
+
+  // Measure every top-level table and apply tableWidth(). Writes are batched
+  // so layout is forced twice per pass in total (min-content, then
+  // max-content), not twice per table. Nothing is written when unchanged, so
+  // the ResizeObserver settles after one extra pass.
+  function sizeTables(root) {
+    if (isPrinting()) return;
+    var wraps = topTableWraps(root);
+    var items = [];
+    for (var i = 0; i < wraps.length; i++) {
+      var t = wraps[i].querySelector('table');
+      var sc = wraps[i].closest ? wraps[i].closest('.tv-scroll') : null;
+      if (t && sc && sc.clientWidth) items.push({ w: wraps[i], t: t, sc: sc });
+    }
+    if (!items.length) return;
+    _tableSizePasses++;
+    // DR-03: the measuring layouts below (every table at min-content, then
+    // max-content) change the document height for a moment, and WebKit and
+    // Chrome's scroll anchoring both move the reader's offset in response.
+    // Hold it: note it now and put it back once the final widths are set.
+    var scrollers = [];
+    items.forEach(function (it) {
+      if (scrollers.indexOf(it.sc) === -1) scrollers.push(it.sc);
+    });
+    var held = scrollers.map(function (sc) { return sc.scrollTop; });
+    function restoreHeld() {
+      scrollers.forEach(function (sc, k) {
+        if (sc.scrollTop !== held[k]) sc.scrollTop = held[k];
+      });
+    }
+    items.forEach(function (it) {
+      var cs = window.getComputedStyle(it.t);
+      it.C = parseFloat(cs.minWidth) || 0;      // --tv-tbl-col, resolved
+      it.P = TABLE_PROSE_EM * (parseFloat(cs.fontSize) || 14);
+      it.A = it.sc.clientWidth - 48;
+      it.key = it.A + '|' + it.P;
+    });
+    // ⌘F wraps matches in padded <mark>s, which nudges a table's natural
+    // width; re-sizing on that reflowed the table under the match. While a
+    // table holds find marks it keeps its width unless the pane or the font
+    // changed.
+    // Also skip a table whose pane, font and own box are all unchanged since
+    // its last sizing — the observer's echo after a synchronous pass (⌘B).
+    items = items.filter(function (it) {
+      if (it.w._tvSizedFor !== it.key) return true;
+      if (it.t.querySelector('mark[data-find]')) return false;
+      return it.w._tvBox !== it.t.offsetWidth + 'x' + it.t.offsetHeight;
+    });
+    if (!items.length) { restoreHeld(); return; }
+    items.forEach(function (it) { it.t.style.minWidth = '0px'; it.t.style.width = 'min-content'; });
+    items.forEach(function (it) { it.M = it.t.getBoundingClientRect().width; });
+    items.forEach(function (it) { it.t.style.width = 'max-content'; });
+    items.forEach(function (it) {
+      it.W = it.t.getBoundingClientRect().width;
+      var head = it.t.rows && it.t.rows[0];
+      it.cols = [];
+      for (var c = 0; head && c < head.cells.length; c++) it.cols.push(head.cells[c].getBoundingClientRect().width);
+    });
+    items.forEach(function (it) {
+      it.t.style.minWidth = '';
+      it.t.style.width = '';
+      var r = tableWidth({ C: it.C, A: it.A, M: it.M, W: it.W, cols: it.cols, P: it.P });
+      it.w._tvSizedFor = it.key;
+      if (it.w._tvTblW !== r.width) {
+        it.w._tvTblW = r.width;
+        it.w.style.setProperty('--tv-tbl-w', r.width + 'px');
+      }
+      if (r.wide !== it.w.classList.contains('tbl-wide')) it.w.classList.toggle('tbl-wide', r.wide);
+      syncTableEdge(it.w);
+    });
+    restoreHeld();
+    items.forEach(function (it) { it.w._tvBox = it.t.offsetWidth + 'x' + it.t.offsetHeight; });
+  }
+
+  var _tableSizeAfterMotion = false;
+  function scheduleWideTables() {
+    if (_sbRunning) { _tableSizeAfterMotion = true; return; } // UXF-08: after the slide
+    if (_tableRaf) return;
+    var raf = window.requestAnimationFrame || function (fn) { return setTimeout(fn, 16); };
+    _tableRaf = raf(function () {
+      _tableRaf = null;
+      sizeTables(document);
+    });
+  }
+
+  // After each render: classify, restore DR-10 offsets, and re-observe the new
+  // DOM (render() replaced the old elements, so the old observations are dead).
+  function setupWideTables(root) {
+    var wraps = topTableWraps(root);
+    if (_tableObserver) _tableObserver.disconnect();
+    sizeTables(root);
+    var tabId = state.activeId;
+    Object.keys(_tableScroll).forEach(function (k) {
+      if (!state.tabs.some(function (t) { return t.id === k; })) delete _tableScroll[k];
+    });
+    var saved = (tabId && _tableScroll[tabId]) || null;
+    for (var i = 0; i < wraps.length; i++) {
+      var w = wraps[i];
+      w._tvTableIndex = i;
+      if (saved && saved[i] && w.classList.contains('tbl-wide')) {
+        w.scrollLeft = saved[i].left;
+        w.scrollTop = saved[i].top;
+        syncTableEdge(w);
+      }
+      w.addEventListener('scroll', function () {
+        syncTableEdge(this);
+        rememberTableScroll(tabId, this._tvTableIndex, this);
+      }, { passive: true });
+    }
+    if (typeof window.ResizeObserver !== 'function') return;
+    if (!_tableObserver) _tableObserver = new ResizeObserver(scheduleWideTables);
+    if (!wraps.length) return;
+    var scroller = root.querySelector('.tv-scroll');
+    if (scroller) _tableObserver.observe(scroller);
+    for (var j = 0; j < wraps.length; j++) {
+      var tbl = wraps[j].querySelector('table');
+      if (tbl) _tableObserver.observe(tbl);
+    }
+  }
+
+  function rememberTableScroll(tabId, index, w) {
+    if (!tabId || typeof index !== 'number') return;
+    (_tableScroll[tabId] = _tableScroll[tabId] || {})[index] = { left: w.scrollLeft, top: w.scrollTop };
+  }
+
+  // DR-03 / UXF-01: size the tables FIRST, then restore the content offset.
+  // sizeTables changes every table's width and therefore the document's
+  // height; restoring scrollTop before it put the offset into a layout that
+  // was about to change, and Chrome's scroll anchoring then carried the
+  // reader further down on every repaint (tab switch, theme, ⌘B).
+  function settleDocumentLayout(root, activeTab) {
+    setupWideTables(root);
+    _renderedTabId = activeTab ? activeTab.id : null;
+    var scroller = root.querySelector('[data-scroll]');
+    if (scroller && activeTab) scroller.scrollTop = activeTab.scrollTop || 0;
+    return scroller;
+  }
+
+  // DR-10: a repaint must not throw a scrolled wide table back to its start.
+  // Re-read the live offsets (keyed by table index) of the tab the DOM shows.
+  function captureTableScroll(root) {
+    var wraps = topTableWraps(root);
+    for (var i = 0; i < wraps.length; i++) {
+      if (wraps[i].classList.contains('tbl-wide')) rememberTableScroll(_renderedTabId, i, wraps[i]);
+    }
+  }
+  var _renderedTabId = null; // the tab whose document the live DOM shows
+
   /* ── F-19 / ISS-005: build one folder's nested tree section ── */
   // Delegates the tree build + collapse logic to the pure window.TVTree module
   // (js/tv-tree.js) so it stays unit-testable; this function only renders the
@@ -1446,22 +1977,71 @@
       '" data-tv-kind="file">No markdown files</div>';
   }
 
+  // UXF-03: the muted, right-aligned markdown count on a folder row ('…' for a
+  // folder the scan has not read yet). Text, not a badge.
+  function treeCountHtml(n) {
+    return '<span class="tv-tree-count">' + (n.unscanned ? '…' : esc(String(n.count || 0))) + '</span>';
+  }
+
+  // UXF-07: "2 folders are hidden. Dot-folders: .husky. No markdown: src."
+  // Up to six names, then "and N more".
+  // `total` (UXF-07 #5): hidden at any depth, inside the hidden ones too.
+  function hiddenFoldersTitle(hidden, total) {
+    var n = hidden.length;
+    var shown = 0;
+    function names(reason) {
+      var picked = [];
+      hidden.forEach(function (h) {
+        if (h.reason === reason && shown < 6) { picked.push(h.name); shown++; }
+      });
+      return picked;
+    }
+    var dots = names('dot'), empties = names('empty');
+    var parts = [n + (n === 1 ? ' folder is hidden' : ' folders are hidden') +
+      (typeof total === 'number' ? ' (' + total + ' at any depth).' : '.')];
+    if (dots.length) parts.push('Dot-folders: ' + dots.join(', ') + '.');
+    if (empties.length) parts.push('No markdown: ' + empties.join(', ') + '.');
+    if (n > shown) parts.push('And ' + (n - shown) + ' more.');
+    return parts.join(' ');
+  }
+
+  // An interactive footer row (DR-108 cursor attributes), .tv-tree-more style.
+  function treeActionRow(itemKey, attrs, depth, label, loading) {
+    return (
+      '<div class="tv-tree-more' + (loading ? ' loading' : '') + '"' +
+        ' id="' + sbItemId(itemKey) + '"' +
+        ' role="option"' +
+        ' aria-selected="false"' +
+        ' data-sidebar-item="' + esc(itemKey) + '"' +
+        attrs +
+        (loading ? ' aria-busy="true"' : '') +
+        ' data-tv-depth="' + depth + '" data-tv-kind="file">' +
+        esc(label) +
+      '</div>'
+    );
+  }
+
   function buildFolderSection(tree, dupes) {
     var icons = window.TV_ICONS || {};
     var TVTree = window.TVTree;
     if (!TVTree || !tree || !tree.path) return '';
 
-    var nodes = TVTree.buildTreeNodes(tree, state.folderCollapsed);
+    var opts = treeOpts();
+    var nodes = TVTree.buildTreeNodes(tree, state.folderCollapsed, opts);
     if (!nodes.length) return '';
 
     var head = nodes[0];
     var bodyNodes = nodes.slice(1);
-    // DR-41: cap section height when the expanded tree is large.
-    var capped = bodyNodes.length > 50;
+    var loadingMap = state.folderMoreLoading || {};
 
-    // Root folder head — chevron, folder icon, name, close button; DR-108 a11y.
+    // UXF-03: one <section> per root. The head is sticky inside it, so it pins
+    // while its own section is on screen and the next section's head pushes it
+    // off. DR-41's capped inner scroller is gone (it hid most of a real tree).
+    var html = '<section class="tv-folder-section" role="group" aria-label="' + esc(pathBasename(head.path)) + '">';
+
+    // Root folder head — chevron, folder icon, name, count, close button; DR-108 a11y.
     var fhKey = 'folder:' + head.path;
-    var html = (
+    html += (
       '<div class="tv-folder-head"' +
         ' id="' + sbItemId(fhKey) + '"' +
         ' role="option"' +
@@ -1476,6 +2056,7 @@
         '<span class="tv-chev' + (head.collapsed ? '' : ' open') + '">' + (icons.chevron || '') + '</span>' +
         '<span class="ic">' + (icons.folder || '') + '</span>' +
         '<span class="fname" title="' + esc(head.path) + '">' + headerLabelHtml(head.path, dupes) + '</span>' +
+        treeCountHtml(head) +
         '<button class="folder-x" data-folder-close="' + esc(head.path) + '" title="Close folder" type="button">' +
           (icons.close || '') +
         '</button>' +
@@ -1483,72 +2064,61 @@
     );
 
     if (!head.collapsed) {
-      // JANK-01: data-folder-body keys this element for scroll preservation.
-      // DR-41's .capped gives it its OWN overflow-y, so past 50 rows THIS is the
-      // element the user actually scrolls — not .tv-side-scroll. Keyed by folder
-      // path so several open trees each keep their own offset across renders.
-      html += '<div class="tv-folder-body' + (capped ? ' capped' : '') + '"' +
-        ' data-folder-body="' + esc(head.path) + '">';
+      html += '<div class="tv-folder-body">';
+      var hasEntries = false;
       bodyNodes.forEach(function (n, i) {
         if (n.kind === 'folder') {
+          hasEntries = true;
           html += buildTreeFolderRow(n);
           // C-28: an EXPANDED subfolder with nothing under it used to render
-          // zero rows and no message — the A4 placeholder only ever fired for
-          // an empty root, so expanding an empty subfolder looked broken.
-          // buildTreeNodes emits a flat depth-annotated list, so "has no
-          // children" is "the next node is not deeper than me".
+          // zero rows and no message. buildTreeNodes emits a flat
+          // depth-annotated list, so "has no children" is "the next node is
+          // not deeper than me".
           if (!n.collapsed) {
             var next = bodyNodes[i + 1];
             if (!next || next.depth <= n.depth) {
               html += treeEmptyRow(n.depth + 1);
             }
           }
-        } else {
+        } else if (n.kind === 'file') {
+          hasEntries = true;
           html += buildTreeFileRow(n);
+        } else if (n.kind === 'loading') {
+          // UXF-02: an expanded "…" folder; render() starts its load.
+          if (!loadingMap[n.path]) _pendingFolderLoads.push(n.path);
+          html += '<div class="tv-tree-empty" data-tv-depth="' + n.depth + '" data-tv-kind="file">Loading…</div>';
+        } else if (n.kind === 'more') {
+          // C-29 / UXF-02: per folder, re-reads that folder uncapped.
+          var moreLoading = !!loadingMap[n.path];
+          html += treeActionRow('more:' + n.path, ' data-tree-more="' + esc(n.path) + '"', n.depth,
+            moreLoading ? 'Loading…' : 'Show ' + n.count + ' more ' + (n.count === 1 ? 'file' : 'files'),
+            moreLoading);
         }
       });
-      // A4: empty-folder placeholder. A muted, NON-interactive row (no
-      // role=option / data-sidebar-item / id) so the DR-108 keyboard cursor
-      // skips it. Shown only when the expanded tree has no files/subfolders.
-      if (bodyNodes.length === 0) {
+      // A4 / C-28: a root with no markdown anywhere keeps its placeholder.
+      if (!hasEntries) {
         html += treeEmptyRow(1);
       }
-      // C-29: the native scanner caps how many entries it visits. "Some items
-      // not shown" told the user neither how many were hidden nor how to see
-      // them. Now it names the count (tree.skipped, added to DirTree by the
-      // native side) and re-scans uncapped on click. Unlike the two rows above
-      // this one IS interactive, so it takes part in the DR-108 keyboard
-      // cursor — a mouse-only control would repeat the C-32 defect this pass
-      // is fixing.
-      if (tree.truncated) {
-        var moreKey = 'more:' + head.path;
-        var loading = !!(state.folderMoreLoading && state.folderMoreLoading[head.path]);
-        // P1-1: tree.skippedExact === false means the scan stopped blind
-        // (e.g. the max_subfolders cap) — the count is a lower bound, so the
-        // label must say "N+" rather than a number the walk never verified.
-        var moreLabel = loading
-          ? 'Loading…'
-          : (typeof tree.skipped === 'number' && tree.skipped > 0
-              ? 'Show ' + tree.skipped + (tree.skippedExact === false ? '+' : '') +
-                ' more ' + (tree.skipped === 1 && tree.skippedExact !== false ? 'file' : 'files')
-              : 'Show all files');
-        html += (
-          '<div class="tv-tree-more' + (loading ? ' loading' : '') + '"' +
-            ' id="' + sbItemId(moreKey) + '"' +
-            ' role="option"' +
-            ' aria-selected="false"' +
-            ' data-sidebar-item="' + esc(moreKey) + '"' +
-            ' data-tree-more="' + esc(head.path) + '"' +
-            (loading ? ' aria-busy="true"' : '') +
-            ' data-tv-depth="1" data-tv-kind="file">' +
-            esc(moreLabel) +
-          '</div>'
-        );
+      // UXF-02: folders with no markdown below them are hidden by default.
+      // UXF-07: one footer for both reasons a folder is hidden (a dot-folder
+      // that is not an agent's, or no viewable file); the title names them.
+      var hidden = TVTree.hiddenFolders(tree, opts);
+      if (hidden.length) {
+        var nh = hidden.length;
+        html += treeActionRow('empty:' + head.path,
+          ' data-tree-toggle-empty title="' + esc(hiddenFoldersTitle(hidden, TVTree.hiddenFolderTotal(tree, opts))) + '"', 1,
+          state.treeShowEmpty
+            ? 'Hide ' + nh + ' extra folder' + (nh === 1 ? '' : 's')
+            : 'Show ' + nh + ' more folder' + (nh === 1 ? '' : 's'));
+      }
+      if (tree.unreadable > 0) {
+        html += '<div class="tv-tree-empty tv-tree-note" data-tv-depth="1" data-tv-kind="file">' +
+          tree.unreadable + ' folder' + (tree.unreadable === 1 ? '' : 's') + ' could not be read</div>';
       }
       html += '</div>';
     }
 
-    return html;
+    return html + '</section>';
   }
 
   // A nested subfolder row (any depth). Disclosure caret toggles the same
@@ -1558,12 +2128,14 @@
     // DR-108: subfolder rows participate in the sidebar keyboard cursor.
     var sfKey = 'subfolder:' + n.key;
     return (
-      '<div class="tv-tree-row subfolder"' +
+      '<div class="tv-tree-row subfolder' + (n.extra ? ' is-extra' : '') + '"' +
         ' id="' + sbItemId(sfKey) + '"' +
         ' role="option"' +
         ' aria-selected="false"' +
         ' data-sidebar-item="' + esc(sfKey) + '"' +
         ' data-folder-toggle="' + esc(n.key) + '"' +
+        // UXF-03: subfolders get their own context menu (Expand/Collapse All).
+        (n.path ? ' data-folder-ctx-target="' + esc(n.path) + '"' : '') +
         // SBH-01: depth travels as a DATA attribute; the geometry is applied via
         // CSSOM in applyTreeDepths() after innerHTML. A style="" attribute set
         // inside an innerHTML string does NOT take effect in WKWebView, which
@@ -1574,7 +2146,9 @@
         // QA D6: .tname, like file rows and the folder head's .fname — without a
         // class the name span had no ellipsis rule, so a long subfolder name
         // overflowed instead of truncating the way every sibling row does.
-        '<span class="tname" title="' + esc(n.name) + '">' + esc(n.name) + '</span>' +
+        // UXF-07: an agent folder's tooltip names its tool ("Claude Code · .claude").
+        '<span class="tname" title="' + esc(n.tool ? n.tool + ' · ' + n.name : n.name) + '">' + esc(n.name) + '</span>' +
+        treeCountHtml(n) +
       '</div>'
     );
   }
@@ -1630,6 +2204,7 @@
   // but listed nowhere) and ⌘G / ⇧⌘G. DR-17's row cap was raised from 18 to 20
   // by the user on 2026-08-21 to make room — see the DR-17 amendment note in
   // .claude/docs/feature-gaps/waad-grounded-requirements.md. 19 rows → a 10/9 split.
+  // UXF-06 adds ⇧⌘J as row 21; the cap went 20 → 22 (DR-17 amendment, same file).
   var SHORTCUTS = [
     { keys: ['⌘K'], action: 'Command palette' },
     { keys: ['⌘O'], action: 'Open file' },
@@ -1649,6 +2224,7 @@
     { keys: ['⌘=', '⌘−'], action: 'Larger / smaller text' },
     { keys: ['⌘0'], action: 'Reset text size' },
     { keys: ['⌘B'], action: 'Toggle sidebar' },
+    { keys: ['⇧⌘J'], action: 'Reveal in sidebar' },
     { keys: ['Esc'], action: 'Exit / close' },
     { keys: ['?'], action: 'This shortcuts overlay' },
   ];
@@ -1753,27 +2329,56 @@
     if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeTabCtx(); }
   }
 
-  function openFolderCtx(x, y, path) {
+  // UXF-03: `key` is the row's collapse key ('root:' + path for a root head,
+  // the bare key for a subfolder); subfolders get Expand/Collapse All and
+  // Reveal in Finder, root heads also Refresh and Close Folder.
+  function openFolderCtx(x, y, path, key) {
     closeFolderCtx();
     closeTabCtx();
     var icons = window.TV_ICONS || {};
     var tvRoot = document.querySelector('.tv');
     if (!tvRoot) return;
-    state.folderCtx = { x: x, y: y, path: path };
+    var ctxKey = key || ('root:' + path);
+    var isRoot = ctxKey.indexOf('root:') === 0;
+    state.folderCtx = { x: x, y: y, path: path, key: ctxKey };
+
+    // UXF-07: a dot-folder that is not a built-in agent folder can be promoted
+    // ("Always Show") or, once added, demoted again. Roots are always shown.
+    var fName = pathBasename(path);
+    var fLower = fName.toLowerCase();
+    var agentItem = '';
+    if (!isRoot && fName.charAt(0) === '.' && !(window.TVTree && TVTree.AGENT_FOLDERS.indexOf(fLower) !== -1)) {
+      var added = state.agentFolders.indexOf(fLower) !== -1;
+      agentItem =
+        '<div class="tv-ctx-item" data-ctx-action="' + (added ? 'agent-remove' : 'agent-add') + '">' +
+          '<span class="ic"></span> ' + (added ? 'Stop Always Showing' : 'Always Show') + ' "' + esc(fName) + '"' +
+        '</div>' +
+        '<div class="tv-ctx-sep"></div>';
+    }
 
     var html = (
       '<div class="tv-ctx-scrim" data-ctx-scrim>' +
-        '<div class="tv-ctx" style="left:' + x + 'px;top:' + y + 'px" data-ctx-menu>' +
+        '<div class="tv-ctx" data-ctx-menu>' +
+          agentItem +
+          '<div class="tv-ctx-item" data-ctx-action="expand-all">' +
+            '<span class="ic"></span> Expand All' +
+          '</div>' +
+          '<div class="tv-ctx-item" data-ctx-action="collapse-all">' +
+            '<span class="ic"></span> Collapse All' +
+          '</div>' +
+          '<div class="tv-ctx-sep"></div>' +
           '<div class="tv-ctx-item" data-ctx-action="reveal">' +
             '<span class="ic">' + (icons.reveal || '') + '</span> Reveal in Finder' +
           '</div>' +
-          '<div class="tv-ctx-item" data-ctx-action="refresh">' +
-            '<span class="ic">' + (icons.refresh || '') + '</span> Refresh' +
-          '</div>' +
-          '<div class="tv-ctx-sep"></div>' +
-          '<div class="tv-ctx-item danger" data-ctx-action="close">' +
-            '<span class="ic">' + (icons.close || '') + '</span> Close Folder' +
-          '</div>' +
+          (isRoot ? (
+            '<div class="tv-ctx-item" data-ctx-action="refresh">' +
+              '<span class="ic">' + (icons.refresh || '') + '</span> Refresh' +
+            '</div>' +
+            '<div class="tv-ctx-sep"></div>' +
+            '<div class="tv-ctx-item danger" data-ctx-action="close">' +
+              '<span class="ic">' + (icons.close || '') + '</span> Close Folder' +
+            '</div>'
+          ) : '') +
         '</div>' +
       '</div>'
     );
@@ -1817,6 +2422,7 @@
       if (!item) return;
       var action = item.getAttribute('data-ctx-action');
       var ctxPath = state.folderCtx && state.folderCtx.path;
+      var ctxKey = state.folderCtx && state.folderCtx.key;
       closeFolderCtx();
       if (!ctxPath) return;
       if (action === 'reveal') {
@@ -1824,11 +2430,13 @@
           TVNative.revealInFinder(ctxPath);
         }
       } else if (action === 'refresh') {
-        if (window.TVNative && typeof TVNative.readDirTree === 'function') {
-          TVNative.readDirTree(ctxPath).then(function (tree) {
-            if (tree) registerFolder(tree);
-          }).catch(function () {});
-        }
+        // UXF-02 (S7): re-scan in place — no "already open" toast, no scroll move.
+        var rt = rootTreeFor(ctxPath);
+        if (rt) refreshFolder(rt.path);
+      } else if (action === 'expand-all' || action === 'collapse-all') {
+        setSubtreeCollapsed(ctxKey, action === 'collapse-all');
+      } else if (action === 'agent-add' || action === 'agent-remove') {
+        setAgentFolder(pathBasename(ctxPath), action === 'agent-add');
       } else if (action === 'close') {
         closeFolder(ctxPath);
       }
@@ -1867,6 +2475,11 @@
     var html = (
       '<div class="tv-ctx-scrim" data-ctx-scrim>' +
         '<div class="tv-ctx" style="left:' + x + 'px;top:' + y + 'px" data-ctx-menu>' +
+          // UXF-06: first item, disabled with its neighbours when there is no path.
+          '<div class="tv-ctx-item' + disCls + '"' + disAttr + ' data-ctx-action="reveal-sidebar">' +
+            '<span class="ic">' + (icons.sidebar || '') + '</span> Reveal in Sidebar' +
+            '<span class="tv-ctx-hint">⇧⌘J</span>' +
+          '</div>' +
           '<div class="tv-ctx-item' + disCls + '"' + disAttr + ' data-ctx-action="reveal">' +
             '<span class="ic">' + (icons.reveal || '') + '</span> Reveal in Finder' +
           '</div>' +
@@ -1943,7 +2556,9 @@
       for (var i = 0; i < state.tabs.length; i++) {
         if (state.tabs[i].id === ctx.tabId) { ctxTab = state.tabs[i]; break; }
       }
-      if (action === 'reveal') {
+      if (action === 'reveal-sidebar') {
+        if (ctxTab) revealInSidebar(ctxTab.id);
+      } else if (action === 'reveal') {
         if (ctxTab && ctxTab.nativePath && window.TVNative && typeof TVNative.revealInFinder === 'function') {
           TVNative.revealInFinder(ctxTab.nativePath);
         }
@@ -2432,14 +3047,11 @@
 
     var sidebarCls = 'tv-sidebar' + (collapsed ? ' collapsed' : '');
     return (
-      '<aside class="' + sidebarCls + '">' +
-        // UX-SB3: sidebar header
+      '<aside class="' + sidebarCls + '" id="tv-sidebar">' +
+        // UX-SB3: sidebar header. UXF-05: the hide control moved to the one
+        // tab-bar button; the header keeps only its label.
         '<div class="tv-side-header">' +
           '<span class="tv-side-header-label">Files</span>' +
-          '<button class="tv-side-collapse" data-sidebar-toggle' +
-            ' title="Hide sidebar (⌘B)" aria-label="Hide sidebar (⌘B)" type="button">' +
-            (icons.collapseLeft || '«') +
-          '</button>' +
         '</div>' +
         '<div class="tv-side-scroll"' +
           ' id="tv-sidebar-listbox"' +
@@ -2965,6 +3577,15 @@
       return;
     }
 
+    endSidebarWarmup();
+    // UXF-08: a render for any other reason mid-slide replaces the nodes the
+    // slide is moving — end it silently (cleanup still runs).
+    if (_sbRunning && !_sbPending) {
+      _tableSizeAfterMotion = false; // this render sizes the new DOM itself
+      _sbRunning.anims.forEach(function (a) { try { a.cancel(); } catch (e) { /* gone */ } });
+      sidebarMotionCleanup();
+    }
+
     // C-33: keep tab.savedSource honest. Any path that changes tab.source
     // WITHOUT marking the tab dirty is by definition writing DISK content —
     // the live-watch update (tv-live.js / tv-native.js), a reload, a session
@@ -2981,6 +3602,8 @@
     captureSidebarScroll(root);
     // C-04: same for the tab strip's horizontal offset.
     captureTabStripScroll(root);
+    // UXF-01 / DR-10: and for any wide table scrolled inside its own box.
+    captureTableScroll(root);
 
     // S-02/S-08: reset overlay state before replacing DOM
     // (overlay elements are about to be detached; reset their _open flags
@@ -3062,11 +3685,9 @@
     // position the user actually has, not a fresh 0.
     restoreTabStripScroll(root);
 
-    // Restore scroll position (DR-03)
-    var newScroll = root.querySelector('[data-scroll]');
-    if (newScroll && activeTab) {
-      newScroll.scrollTop = activeTab.scrollTop || 0;
-    }
+    // Restore scroll position (DR-03) — AFTER the tables have their final
+    // widths, so the offset lands in the document's final layout.
+    var newScroll = settleDocumentLayout(root, activeTab);
 
     // Wire live scroll listener for continuous preservation + debounced session save
     if (newScroll && activeTab) {
@@ -3145,10 +3766,17 @@
     // Wire event delegation
     wireEvents(root.querySelector('.tv'));
 
+    // UXF-02: start loading any expanded "…" folder this render drew.
+    kickPendingFolderLoads();
+
     // UF-06: Re-inject find bar after render if it was active before.
     // Only restore in reading mode (find bar searches rendered markdown DOM).
     if (_savedFindQuery !== null && state.mode === 'reading') {
-      _openFindBar();
+      _openFindBar({ restoring: true });
+      // UXF-06 #14: _openFindBar() resets _findQuery; put it back, or the
+      // NEXT render (reveal renders more than once) would save '' and empty
+      // the field.
+      _findQuery = _savedFindQuery;
       if (_savedFindQuery) {
         _runFind(_savedFindQuery);
         // Restore match index (clamp to new match count)
@@ -3213,6 +3841,52 @@
     // C-38: the Window menu, ⌘-Tab switcher and Mission Control read
     // document.title. Follow the NSDocument convention (name, then Edited).
     _syncTitles();
+
+    // UXF-08: motion runs on top of the finished DOM (complete at rest).
+    playRenderMotion(root);
+  }
+
+  // UXF-08: the enter effects a render owes — the sidebar slide, the new tab
+  // pill (160ms fade) and the edit-mode crossfade (100ms, from .5 opacity).
+  // Tab switches, live updates and scroll restores animate nothing (DR-09/10).
+  var _enterTabId = null;
+  var _modeEnter = false;
+  var _chevMotion = null; // audit row 9: { key, opening } of the folder just toggled
+  function playRenderMotion(root) {
+    if (_sbPending) playSidebarMotion(root);
+    if (!window.TVMotion) { _enterTabId = null; _modeEnter = false; _chevMotion = null; return; }
+    if (_chevMotion) {
+      // The row was rebuilt in its new state, so rotate its chevron from the
+      // old angle (100ms). Rows themselves appear at once (no height motion).
+      var cm = _chevMotion;
+      _chevMotion = null;
+      var toggles = root.querySelectorAll('[data-folder-toggle]');
+      for (var c = 0; c < toggles.length; c++) {
+        if (toggles[c].getAttribute('data-folder-toggle') !== cm.key) continue;
+        var chev = toggles[c].querySelector('.tv-chev');
+        if (chev) {
+          TVMotion.play(chev, cm.opening
+            ? [{ transform: 'rotate(0deg)' }, { transform: 'rotate(90deg)' }]
+            : [{ transform: 'rotate(90deg)' }, { transform: 'rotate(0deg)' }], { dur: 'fast', ease: 'enter' });
+        }
+        break;
+      }
+    }
+    if (_enterTabId) {
+      var pills = root.querySelectorAll('.tv-tab[data-tab-id]');
+      for (var i = 0; i < pills.length; i++) {
+        if (pills[i].getAttribute('data-tab-id') === _enterTabId) {
+          TVMotion.play(pills[i], [{ opacity: 0 }, { opacity: 1 }], { dur: 'base', ease: 'enter' });
+          break;
+        }
+      }
+      _enterTabId = null;
+    }
+    if (_modeEnter) {
+      _modeEnter = false;
+      var view = root.querySelector(state.mode === 'edit' ? '.tv-edit-area' : '.tv-content');
+      if (view) TVMotion.enter(view, { from: 0.5, dur: 'fast' });
+    }
   }
 
   // UX-10 / DR-108: Renders the sidebar keyboard cursor highlight using .kbd-cursor class
@@ -3287,7 +3961,9 @@
   var _findBarEl = null;
   var _findQuery = '';
 
-  function _openFindBar() {
+  // opts.restoring: render() re-creating the bar after a repaint (UF-06) —
+  // that is not an "open", so it does not animate (UXF-08).
+  function _openFindBar(opts) {
     if (_findOpen) {
       // Re-focus if already open
       if (_findBarEl) {
@@ -3317,6 +3993,7 @@
       '<button class="tv-find-nav tv-find-close" data-find-close aria-label="Close find bar">&#10005;</button>';
 
     tvEl.appendChild(_findBarEl);
+    if (!(opts && opts.restoring) && window.TVMotion) TVMotion.enter(_findBarEl, { y: -6, reducedFade: true });
 
     var inputEl = _findBarEl.querySelector('.tv-find-input');
     if (inputEl) {
@@ -4612,9 +5289,9 @@
         return;
       }
 
-      // UX-SB3: sidebar collapse button → toggleSidebar (same as ⌘B)
+      // UXF-05: the one sidebar button — a pointer route, so no keyboard ring.
       if (e.target.closest('[data-sidebar-toggle]')) {
-        toggleSidebar();
+        toggleSidebar({ seedCursor: false });
         return;
       }
 
@@ -4736,12 +5413,20 @@
         return;
       }
 
-      // F-19 TASK 2: folder head toggle (collapse/expand) — DR-36
+      // UXF-02: "Show / Hide N folders without markdown".
+      if (e.target.closest('[data-tree-toggle-empty]')) {
+        toggleShowEmptyFolders();
+        return;
+      }
+
+      // F-19 TASK 2: folder head toggle (collapse/expand) — DR-36.
+      // UXF-03: ⌥-click toggles the folder and its whole subtree.
       var folderToggle = e.target.closest('[data-folder-toggle]');
       if (folderToggle && !e.target.closest('[data-folder-close]')) {
         var ftKey = folderToggle.getAttribute('data-folder-toggle');
         if (ftKey) {
-          toggleFolderCollapse(ftKey);
+          if (e.altKey) toggleSubtree(ftKey);
+          else toggleFolderCollapse(ftKey);
         }
         return;
       }
@@ -4888,7 +5573,7 @@
         e.preventDefault();
         pt = _ctxAnchor(e, fh);
         var ctxPath = fh.getAttribute('data-folder-ctx-target');
-        if (ctxPath) openFolderCtx(pt.x, pt.y, ctxPath);
+        if (ctxPath) openFolderCtx(pt.x, pt.y, ctxPath, fh.getAttribute('data-folder-toggle'));
         return;
       }
       // Suppress the leaky native WebKit context menu everywhere else in the
@@ -5001,6 +5686,7 @@
 
       var tab = makeTab(opts);
       state.tabs.push(tab);
+      if (!state.sessionRestoring) _enterTabId = tab.id; // UXF-08: the new pill fades in
       activateTab(tab.id);
       return tab.id;
     });
@@ -5123,6 +5809,7 @@
     }
     var tab = makeTab({ name: 'Untitled', untitled: true });
     state.tabs.push(tab);
+    _enterTabId = tab.id;
     activateTab(tab.id);
     return tab.id;
   }
@@ -5185,6 +5872,7 @@
     } else {
       tab = makeTab({ name: name, isNew: true, suggestedDir: dir });
       state.tabs.push(tab);
+      _enterTabId = tab.id;
     }
     sbKbd.active = false;
     renderSidebarCursor();
@@ -5200,23 +5888,14 @@
   // Re-scan the open folder that now contains `filePath`, so a file just created
   // there shows in the tree without reopening the folder.
   function refreshFolderFor(filePath) {
-    if (!filePath || !(window.TVNative && typeof TVNative.readDirTree === 'function')) return;
+    if (!filePath) return;
     var root = null;
     for (var i = 0; i < state.openFolders.length; i++) {
       var p = state.openFolders[i].path;
       if (filePath.indexOf(p.replace(/\/+$/, '') + '/') === 0) { root = p; break; }
     }
     if (!root) return;
-    TVNative.readDirTree(root).then(function (tree) {
-      if (!tree || !tree.path) return;
-      for (var j = 0; j < state.openFolders.length; j++) {
-        if (state.openFolders[j].path === tree.path) {
-          state.openFolders[j] = tree;
-          render();
-          return;
-        }
-      }
-    }).catch(function () { /* the tree just stays as it was */ });
+    refreshFolder(root, { silent: true }); // UXF-02: in place, keeps every expansion
   }
 
   // ISS-FOLDER: reopen a folder recorded in Recent. Mirrors a REAL folder open
@@ -5582,11 +6261,21 @@
       if (state.mode !== 'edit') _seedEditAnchorFromViewport();
     }
     var enteringEdit = (m === 'edit' && state.mode !== 'edit');
+    if (state.mode !== m) _modeEnter = true; // UXF-08: crossfade the new view
     state.mode = m;
     render();
     // C-35: after the editor exists and tv-edit has placed the caret.
     if (enteringEdit) _restoreEditEntryScroll();
     tvEmit('modechange', { mode: m });
+  }
+
+  // UXF-08: a committed theme change crossfades through View Transitions
+  // (160ms). Previews (previewAppearance) never come here; Reduce Motion and
+  // engines without the API switch instantly.
+  function themeTransition(fn) {
+    var reduce = window.TVMotion && TVMotion.reduced();
+    if (reduce || typeof document.startViewTransition !== 'function') { fn(); return; }
+    try { document.startViewTransition(fn); } catch (e) { fn(); }
   }
 
   function setTheme(t) {
@@ -5615,7 +6304,7 @@
       state.theme = t;
       localStorage.setItem('tv-theme', t);
     }
-    render();
+    themeTransition(render);
     // C-36: one appearance truth. `t` is the CHOICE the user made
     // ('light'|'dark'|'system'); state.theme is the resolved paint. Rust
     // re-checks the right Appearance item from the choice, so send both.
@@ -5655,6 +6344,7 @@
       var px = Math.max(13, Math.min(22, p.fontSize));
       root.style.setProperty('--tv-md-font', px + 'px');
       root.style.setProperty('--tv-edit-font', editFontFor(px) + 'px');
+      scheduleWideTables();
     }
   }
   function endAppearancePreview() {
@@ -5668,8 +6358,259 @@
     render();
   }
 
-  function toggleSidebar() {
+  /* ── UXF-08: sidebar slide (FLIP on transforms) ────────────────
+     render() rebuilds the DOM, so the layout changes ONCE (the normal
+     re-render) and transforms hide the jump: the incoming sidebar slides from
+     its edge, a clone of the outgoing one slides away, and the viewer glides
+     from where it was. `delta` is MEASURED (viewer centre before minus after)
+     because the drag handle's -6px margin makes S / 2 three pixels off. Only
+     user actions slide; resize, first paint and restore never call this. */
+  var _sbPending = null;   // FIRST, noted before the state change
+  var _afterMotion = [];   // work that must not run during the slide
+
+  // Run fn once the running slide has ended (or now, if none is running).
+  function afterSidebarMotion(fn) {
+    if (_sbRunning) _afterMotion.push(fn);
+    else fn();
+  }
+  var _sbRunning = null;   // { anims, body, ghost, els }
+
+  function sidebarMotionStart(opening) {
+    endSidebarWarmup();
+    if (!window.TVMotion || TVMotion.reduced()) return;
+    if (_sbRunning) finishSidebarMotion(); // interruption: jump to the end first
+    var viewer = document.querySelector('.tv-viewer');
+    if (!viewer) return;
+    var vr = viewer.getBoundingClientRect();
+    var side = document.querySelector('.tv-sidebar:not(.collapsed)');
+    var S = opening ? state.sidebarWidth : (side ? side.getBoundingClientRect().width : 0);
+    var ghost = null, ghostScroll = 0;
+    if (!opening && side && S) {
+      ghost = side.cloneNode(true);
+      var list = side.querySelector('.tv-side-scroll');
+      ghostScroll = list ? list.scrollTop : 0;
+    }
+    _sbPending = { opening: opening, center: vr.left + vr.width / 2, S: S, ghost: ghost, ghostScroll: ghostScroll, t: Date.now() };
+  }
+
+  function sidebarMotionCleanup() {
+    var run = _sbRunning;
+    _sbRunning = null;
+    if (!run) return;
+    if (run.ghost && run.ghost.parentNode) run.ghost.parentNode.removeChild(run.ghost);
+    if (run.body) run.body.classList.remove('tv-animating');
+    run.els.forEach(function (el) { el.style.willChange = ''; });
+    if (_tableSizeAfterMotion) {
+      _tableSizeAfterMotion = false;
+      sizeTables(document);
+    }
+    var queued = _afterMotion;
+    _afterMotion = [];
+    queued.forEach(function (fn) { fn(); });
+  }
+
+  function finishSidebarMotion() {
+    if (!_sbRunning) return;
+    _sbRunning.anims.forEach(function (a) { try { a.finish(); } catch (e) { /* gone */ } });
+    sidebarMotionCleanup();
+  }
+
+  // Called at the end of render(): LAST, INVERT, PLAY.
+  function playSidebarMotion(root) {
+    var p = _sbPending;
+    _sbPending = null;
+    if (!p || Date.now() - p.t > 1000 || !p.S) return; // stale: the render was not the toggle's
+    var body = root.querySelector('.tv-body');
+    var viewer = root.querySelector('.tv-viewer');
+    if (!body || !viewer) return;
+    var vr = viewer.getBoundingClientRect();
+    var delta = Math.round((p.center - (vr.left + vr.width / 2)) * 10) / 10;
+    var move = { dur: 'slow', ease: 'move' };
+    var anims = [], els = [viewer];
+    body.classList.add('tv-animating');
+    var moving;
+    if (p.opening) {
+      moving = root.querySelector('.tv-sidebar:not(.collapsed)');
+      if (!moving) { body.classList.remove('tv-animating'); return; }
+      els.push(moving);
+      moving.style.willChange = 'transform';
+      anims.push(TVMotion.play(moving, [{ transform: 'translateX(' + (-p.S) + 'px)' }, { transform: 'none' }], move));
+    } else if (p.ghost) {
+      moving = p.ghost;
+      moving.classList.add('tv-sidebar-ghost');
+      moving.classList.remove('collapsed');
+      moving.setAttribute('aria-hidden', 'true');
+      moving.setAttribute('inert', '');
+      moving.removeAttribute('id');
+      Array.prototype.forEach.call(moving.querySelectorAll('[id]'), function (n) { n.removeAttribute('id'); });
+      moving.style.width = p.S + 'px';
+      moving.style.willChange = 'transform';
+      body.appendChild(moving);
+      var gl = moving.querySelector('.tv-side-scroll');
+      if (gl) gl.scrollTop = p.ghostScroll;
+      els.push(moving);
+      anims.push(TVMotion.play(moving, [{ transform: 'none' }, { transform: 'translateX(' + (-p.S) + 'px)' }], { dur: 'slow', ease: 'move', fill: 'forwards' }));
+    }
+    viewer.style.willChange = 'transform';
+    anims.push(TVMotion.play(viewer, [{ transform: 'translateX(' + delta + 'px)' }, { transform: 'none' }], move));
+    anims = anims.filter(Boolean);
+    _sbRunning = { anims: anims, body: body, ghost: p.opening ? null : moving, els: els };
+    var left = anims.length;
+    var run = _sbRunning;
+    anims.forEach(function (a) {
+      var done = function () {
+        if (--left === 0 && _sbRunning === run) {
+          sidebarMotionCleanup();
+          anims.forEach(function (x) { try { x.cancel(); } catch (e) { /* gone */ } }); // drop the ghost's fill
+        }
+      };
+      a.addEventListener('finish', done);
+      a.addEventListener('cancel', done);
+    });
+    if (!anims.length) sidebarMotionCleanup();
+  }
+
+  /* UXF-08 (native cold first toggle, 80-135 ms vs 17-27 warm): run the
+     toggle's cold paths once during idle after launch, invisibly — read the
+     motion tokens, select the first visible row, clone the sidebar exactly as
+     the hide slide does, paint that clone once at opacity .001 (glyphs and
+     the hidden sidebar's styles, which a sidebar closed at launch has never
+     had) and start one real 100ms transform animation on it. The clone lives
+     for that one animation only (DR-04). */
+  var _warm = null;
+  function endSidebarWarmup() {
+    var w = _warm;
+    _warm = null;
+    if (!w) return;
+    if (w.anim) { try { w.anim.cancel(); } catch (e) { /* gone */ } }
+    if (w.ghost.parentNode) w.ghost.parentNode.removeChild(w.ghost);
+    w.body.classList.remove('tv-warming');
+  }
+  function warmSidebarToggle() {
+    if (_warm || _sbRunning || _sbPending || !window.TVMotion || TVMotion.reduced()) return;
+    var host = document.getElementById('tv-root');
+    var body = host && host.querySelector('.tv-body');
+    var side = body && body.querySelector(':scope > .tv-sidebar');
+    if (!side) return;
+    TVMotion.dur('slow');
+    TVMotion.ease('move');
+    var listbox = document.getElementById('tv-sidebar-listbox');
+    if (listbox && state.sidebarOpen) firstVisibleSidebarOption(listbox);
+    var ghost = side.cloneNode(true);
+    ghost.classList.remove('collapsed');
+    ghost.classList.add('tv-sidebar-ghost');
+    ghost.setAttribute('aria-hidden', 'true');
+    ghost.setAttribute('inert', '');
+    ghost.removeAttribute('id');
+    Array.prototype.forEach.call(ghost.querySelectorAll('[id]'), function (n) { n.removeAttribute('id'); });
+    ghost.style.width = state.sidebarWidth + 'px';
+    ghost.style.opacity = '0.001';
+    ghost.setAttribute('data-tv-warmup', '');
+    body.classList.add('tv-warming');
+    body.appendChild(ghost);
+    _warm = { ghost: ghost, body: body, anim: null };
+    var anim = TVMotion.play(ghost, [{ transform: 'translateX(0px)' }, { transform: 'translateX(-1px)' }], { dur: 'fast', ease: 'move' });
+    if (!anim) { endSidebarWarmup(); return; }
+    _warm.anim = anim;
+    anim.addEventListener('finish', function () { if (_warm && _warm.anim === anim) endSidebarWarmup(); });
+  }
+  // At most once per launch, about 3 s after load, and only while the user is
+  // not giving input (a pointer or key event in the last 500 ms, or a pending
+  // input where the engine can tell) — otherwise it waits and tries again.
+  var _warmedThisLaunch = false;
+  var _lastInputAt = 0;
+  ['pointerdown', 'pointermove', 'keydown', 'wheel'].forEach(function (type) {
+    window.addEventListener(type, function () { _lastInputAt = Date.now(); }, { passive: true, capture: true });
+  });
+  function scheduleSidebarWarmup(tries) {
+    tries = tries || 0;
+    if (_warmedThisLaunch || tries > 20) return;
+    var run = function () {
+      var pending = navigator.scheduling && typeof navigator.scheduling.isInputPending === 'function' &&
+        navigator.scheduling.isInputPending();
+      if (document.hidden || pending || Date.now() - _lastInputAt < 500 || _sbRunning || _sbPending) {
+        setTimeout(function () { scheduleSidebarWarmup(tries + 1); }, 1000);
+        return;
+      }
+      _warmedThisLaunch = true;
+      warmSidebarToggle();
+    };
+    if (typeof window.requestIdleCallback === 'function') window.requestIdleCallback(run, { timeout: 2000 });
+    else setTimeout(run, 0);
+  }
+
+  // UXF-08 (native first-frame hitch): showing or hiding the sidebar changes
+  // nothing the sidebar or the document renders, so it no longer rebuilds the
+  // whole of #tv-root (79-116 ms in WKWebView before the slide could start).
+  // The persistent nodes are updated in place: the .collapsed class, the drag
+  // handle, the toggle button; the document keeps its scroll by itself. Falls
+  // back to render() when the shell is not on screen or a batch is open.
+  function applySidebarInPlace() {
+    var host = document.getElementById('tv-root');
+    var tvEl = host && host.querySelector('.tv');
+    var side = tvEl && tvEl.querySelector('.tv-body > .tv-sidebar');
+    var btn = tvEl && tvEl.querySelector('.tv-tabbar [data-sidebar-toggle]');
+    if (!side || !btn || _renderSuspend > 0) return false;
+    var open = state.sidebarOpen;
+    var icons = window.TV_ICONS || {};
+    if (!open) captureSidebarScroll(host); // JANK-01: before display:none drops it
+    side.classList.toggle('collapsed', !open);
+    var resizer = tvEl.querySelector('.tv-body > .tv-sidebar-resizer');
+    if (open && !resizer) {
+      resizer = document.createElement('div');
+      resizer.className = 'tv-sidebar-resizer';
+      resizer.setAttribute('data-sidebar-resize', '');
+      side.parentNode.insertBefore(resizer, side.nextSibling);
+      wireSidebarResize(tvEl);
+    } else if (!open && resizer) {
+      resizer.parentNode.removeChild(resizer);
+    }
+    btn.setAttribute('aria-expanded', String(open));
+    btn.title = (open ? 'Hide' : 'Show') + ' sidebar (⌘B)';
+    btn.innerHTML = (open ? icons.sidebarOn : icons.sidebar) || icons.sidebar || '';
+    if (open) restoreSidebarScroll(host);
+    renderSidebarCursor();
+    if (_sbPending) {
+      // The pane width changed, but re-measuring tables now would put two
+      // forced layouts in the slide's first frame: size them when it ends.
+      _tableSizeAfterMotion = true;
+      playSidebarMotion(host);
+      if (!_sbRunning) { _tableSizeAfterMotion = false; sizeTables(host); }
+    } else {
+      sizeTables(host);        // holds the reader's offset
+    }
+    return true;
+  }
+
+  // DR-113 seed: the first option fully visible in the list, below any root
+  // head pinned at the top (UXF-03 sticky heads). The first option in DOM
+  // order may be scrolled away, and scrolling to it moved the list 34px.
+  function firstVisibleSidebarOption(listbox) {
+    var opts = listbox.querySelectorAll('[role="option"][data-sidebar-item],[role="option"][data-sidebar-tab]');
+    if (!opts.length) return null;
+    var box = listbox.getBoundingClientRect();
+    var minTop = box.top;
+    if (listbox.scrollTop > 0) {
+      var heads = listbox.querySelectorAll('.tv-folder-head');
+      for (var h = 0; h < heads.length; h++) {
+        var hr = heads[h].getBoundingClientRect();
+        if (hr.top <= box.top + 1 && hr.bottom > box.top) minTop = Math.max(minTop, hr.bottom);
+      }
+    }
+    for (var i = 0; i < opts.length; i++) {
+      var r = opts[i].getBoundingClientRect();
+      if (r.height && r.top >= minTop - 1 && r.bottom <= box.bottom + 1) return opts[i];
+    }
+    return opts[0];
+  }
+
+  // UXF-05: opts.seedCursor (default true) — keyboard routes (⌘B, menu,
+  // palette) keep DR-113; pointer routes (button, swipe) pass false so opening
+  // by mouse paints no keyboard ring. UXF-08: opts.animate (default true).
+  function toggleSidebar(opts) {
+    var seedCursor = !(opts && opts.seedCursor === false);
     var wasOpen = state.sidebarOpen;
+    if (!(opts && opts.animate === false)) sidebarMotionStart(!wasOpen);
     state.sidebarOpen = !state.sidebarOpen;
     // F-09: an explicit user toggle pins the choice — the responsive
     // ResizeObserver stops auto-adjusting the sidebar default after this.
@@ -5677,20 +6618,28 @@
     // Closing: clear the keyboard cursor BEFORE render() so the stale .kbd-cursor
     // class isn't painted onto the (now hidden) listbox.
     if (wasOpen && !state.sidebarOpen) sbKbd.active = false;
-    render();
+    if (!applySidebarInPlace()) render();
+    if (opts && opts.announce) announce(state.sidebarOpen ? 'Sidebar shown' : 'Sidebar hidden');
     // DR-113: when ⌘B opens the sidebar, seed the keyboard cursor to the first
     // option so the user can navigate immediately via arrow keys — new work.
-    if (!wasOpen && state.sidebarOpen) {
-      requestAnimationFrame(function () {
+    if (!wasOpen && state.sidebarOpen && seedCursor) {
+      // ⌘B / menu / palette: seed AFTER the slide (fix round 5). In the
+      // slide's first frames the layout reads, the ring class and the
+      // aria-activedescendant change (an accessibility notification in
+      // WKWebView) stalled the native ⌘B first toggle to 81-141 ms.
+      afterSidebarMotion(function () { requestAnimationFrame(function () {
         var listbox = document.getElementById('tv-sidebar-listbox');
         if (!listbox) return;
-        var firstOpt = listbox.querySelector('[data-sidebar-item],[data-sidebar-tab]');
+        var firstOpt = firstVisibleSidebarOption(listbox);
         if (firstOpt) {
           sbKbd.active = true;
           sbKbd.id = firstOpt.getAttribute('data-sidebar-item') || firstOpt.getAttribute('data-sidebar-tab');
+          // Seeding must not scroll: ⌘B keeps the list where the user left it,
+          // exactly like the button and the swipe (UXF-08 fix round 4).
+          _lastCursorScrollId = sbKbd.id;
           renderSidebarCursor();
         }
-      });
+      }); });
     }
   }
 
@@ -5717,6 +6666,7 @@
       // zoomed the reading view — an accessibility control that half worked.
       tvRoot.style.setProperty('--tv-edit-font', editFontFor(clamped) + 'px');
     }
+    scheduleWideTables(); // UXF-01: W, M and P all follow the table font
     // C-20: so the palette's Increase / Decrease rows can show the current size
     // instead of a new on-screen chip (DR-31: zero-pixel chrome budget).
     tvEmit('fontsize', clamped);
@@ -5775,7 +6725,7 @@
         }
       }
       if (target) {
-        target.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        target.scrollIntoView({ behavior: (window.TVMotion && TVMotion.reduced()) ? 'auto' : 'smooth', block: 'start' });
         // Also update scrollTop on the tab
         var scrollEl = document.querySelector('[data-scroll]');
         var tab = getActiveTab();
@@ -6205,6 +7155,11 @@
       var toggleKey = curEl.getAttribute('data-folder-toggle');
       var isFolderRow = (itemKey.indexOf('folder:') === 0 ||
                          itemKey.indexOf('subfolder:') === 0);
+      if (isFolderRow && toggleKey && e.altKey) {
+        // UXF-03: ⌥→ / ⌥← expand / collapse the whole subtree; cursor stays.
+        setSubtreeCollapsed(toggleKey, e.key === 'ArrowLeft');
+        return;
+      }
       if (isFolderRow && toggleKey) {
         var isCollapsed = !!state.folderCollapsed[toggleKey];
         if (e.key === 'ArrowLeft') {
@@ -6267,6 +7222,11 @@
       if (sidebarItem.indexOf('more:') === 0) {
         loadMoreFolder(cursorEl.getAttribute('data-tree-more'));
         requestAnimationFrame(function () { renderSidebarCursor(); });
+        return;
+      }
+      // UXF-02: the "folders without markdown" footer toggle.
+      if (sidebarItem.indexOf('empty:') === 0) {
+        toggleShowEmptyFolders();
         return;
       }
 
@@ -6461,6 +7421,16 @@
         e.preventDefault();
         _findStep(e.shiftKey ? -1 : 1);
       }
+      return;
+    }
+
+    // UXF-06: ⇧⌘J — Reveal in Sidebar, an explicit command that runs wherever
+    // focus is (palette, find field, edit textarea). Native builds get it from
+    // the View menu accelerator first; this route serves the browser build,
+    // where there is no path to reveal, so it is a quiet no-op there.
+    if (e.code === 'KeyJ' && e.metaKey && e.shiftKey && !e.altKey) {
+      e.preventDefault(); // never type a "J" into the focused field
+      if (window.TVNative && TVNative.available) revealInSidebar();
       return;
     }
 
@@ -6853,6 +7823,35 @@
       }
     }
 
+    // UXF-05: two-finger swipe — one document-level listener for the app's life.
+    if (window.TVSwipe && typeof TVSwipe.install === 'function') {
+      TVSwipe.install({
+        onShow: function () { if (!state.sidebarOpen) toggleSidebar({ seedCursor: false, announce: true }); },
+        onHide: function () { if (state.sidebarOpen) toggleSidebar({ seedCursor: false, announce: true }); },
+        isEnabled: isSwipeEnabled,
+        isBlocked: function () {
+          return !!((window.TVPalette && TVPalette.isOpen && TVPalette.isOpen()) ||
+                    (window.TVSearch && TVSearch.isOpen && TVSearch.isOpen()) ||
+                    state.shortcutsOpen || _ctxEl || _tabCtxEl || _tabOverflowEl ||
+                    document.querySelector('.tv-ctx-scrim'));
+        }
+      });
+    }
+
+    // UXF-01: keep the screen's wide-table classification through a print.
+    window.addEventListener('beforeprint', function () { _printing = true; });
+    window.addEventListener('afterprint', function () { _printing = false; scheduleWideTables(); });
+
+    // UXF-08: warm the sidebar toggle once the app is idle after launch.
+    setTimeout(scheduleSidebarWarmup, 3000);
+
+    // UXF-02: a folder an agent changed while Galley was in the background
+    // shows up when the window comes back (the stopgap for folder watching).
+    window.addEventListener('focus', rescanStaleFolders);
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState === 'visible') rescanStaleFolders();
+    });
+
     // Init file feature (drag-drop) first so drop works during async boot
     if (window.TVFiles && typeof TVFiles.init === 'function') {
       TVFiles.init();
@@ -7118,6 +8117,15 @@
     previewAppearance: previewAppearance,
     endAppearancePreview: endAppearancePreview,
     refreshFolderFor: refreshFolderFor,
+    // UXF-02/03/05/06
+    refreshFolder: refreshFolder,
+    collapseAllFolders: collapseAllFolders,
+    revealInSidebar: revealInSidebar,
+    // UXF-01 diagnostic: how many table sizing passes have run (QA counts them
+    // to prove the ResizeObserver settles).
+    tableSizingPasses: function () { return _tableSizePasses; },
+    isSwipeEnabled: isSwipeEnabled,
+    toggleSwipe: toggleSwipe,
     activateTab: activateTab,
     closeTab: closeTab,
     getActiveTab: getActiveTab,

@@ -26,7 +26,8 @@ var CSS = fs.readFileSync(path.join(__dirname, '..', 'css', 'tv-app.css'), 'utf8
 var APP = fs.readFileSync(path.join(__dirname, 'tv-app.js'), 'utf8');
 
 function loadPalette(tv) {
-  var sandbox = { window: { TV_ICONS: {}, TV: tv || undefined }, console: console, localStorage: { getItem: function () { return null; }, setItem: function () {} } };
+  // UXF-02: the palette walks open folders through window.TVTree.
+  var sandbox = { window: { TV_ICONS: {}, TV: tv || undefined, TVTree: require('./tv-tree.js') }, console: console, localStorage: { getItem: function () { return null; }, setItem: function () {} } };
   sandbox.global = sandbox;
   vm.runInContext(SRC, vm.createContext(sandbox), { filename: 'tv-palette.js' });
   return sandbox.window.TVPalette;
@@ -191,8 +192,10 @@ console.log('\nTyping\n');
 (function () {
   var c = threeTabs({
     recents: [{ path: '/Users/me/x/roadmap.md', type: 'file' }, { path: '/Users/me/x/changelog.md', type: 'file' }],
-    openFolders: [{ path: '/Users/me/proj', files: [{ name: 'glossary.md', path: '/Users/me/proj/glossary.md' }, { name: 'runbook.md', path: '/Users/me/proj/runbook.md' }],
-                    subfolders: [{ name: 'docs', files: [{ name: 'plan.md', path: '/Users/me/proj/docs/plan.md' }] }], deep: [] }]
+    openFolders: [{ path: '/Users/me/proj', root: { name: 'proj', path: '/Users/me/proj', scanned: true, mdCount: 3, filesHidden: 0,
+                    files: [{ name: 'glossary.md', path: '/Users/me/proj/glossary.md' }, { name: 'runbook.md', path: '/Users/me/proj/runbook.md' }],
+                    folders: [{ name: 'docs', path: '/Users/me/proj/docs', scanned: true, mdCount: 1, filesHidden: 0, folders: [],
+                                files: [{ name: 'plan.md', path: '/Users/me/proj/docs/plan.md' }] }] } }]
   });
 
   var nw = I.buildModel('new', c);

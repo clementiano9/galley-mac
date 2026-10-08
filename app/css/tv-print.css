@@ -159,6 +159,22 @@
     overflow: visible !important;
   }
 
+  /* UXF-01 / UXF-04: on paper every table is complete and fits the page — no
+     pane-wide overhang, no scroll box or height cap, no edge fade, the header
+     prints in place, and strings too long for a column wrap instead of
+     clipping. Tables the screen flagged .tbl-wide also print smaller. */
+  .md > .tbl-wrap {
+    margin-inline: 0 !important;
+    display: block !important;
+    max-height: none !important;
+    overflow: visible !important;
+    -webkit-mask-image: none !important;
+    mask-image: none !important;
+  }
+  .md > .tbl-wrap > table { width: 100% !important; min-width: 0 !important; table-layout: auto; }
+  .md th, .md td { position: static !important; overflow-wrap: anywhere; word-break: normal; }
+  .md > .tbl-wrap.tbl-wide > table { font-size: .72em; }
+
   /* ── 6. Print header — document basename (DR-106 Should) ─── */
   /* Outputs the basename set by tv-app.js render() via
      contentEl.setAttribute('data-print-title', tab.name).

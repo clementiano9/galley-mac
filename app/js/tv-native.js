@@ -36,11 +36,17 @@
   var _initialized = false;
 
   /* ── accepted path extensions ────────────────────────────── */
-  var MD_EXTS = ['.md', '.markdown', '.txt'];
+  var MD_EXTS = ['.md', '.markdown', '.mdc', '.txt']; // UXF-07: .mdc (Cursor rules)
+
+  // UXF-07: the extensionless agent rule files the sidebar lists (lib.rs
+  // AGENT_FILE_NAMES) open by drop too — the same viewable set everywhere.
+  var AGENT_RULE_FILES = ['.cursorrules', '.windsurfrules', '.clinerules', '.roorules', '.goosehints', '.rules'];
 
   function hasMdExt(path) {
     var lower = (path || '').toLowerCase();
-    return MD_EXTS.some(function (ext) { return lower.endsWith(ext); });
+    var base = lower.split('/').pop();
+    return AGENT_RULE_FILES.indexOf(base) !== -1 ||
+      MD_EXTS.some(function (ext) { return lower.endsWith(ext); });
   }
 
   /* ── classify a read_md_file error string (F-06/F-16) ─────── */
@@ -460,19 +466,15 @@
   }
 
   /* ── public: readDirTree (F-19) ─────────────────────────── */
-  // Wraps the read_dir_tree Rust command.
-  // Returns Promise<DirTree> where DirTree = {
-  //   path: string,
-  //   files: [{name, path}],
-  //   subfolders: [{name, files:[{name, path}]}],
-  //   deep: [{name, path, from}]
-  // }
-  //   truncated: bool,   // a cap dropped something
-  //   skipped: number    // how many matching entries were dropped (C-29)
-  // }
-  // C-29: readDirTree(path, { uncapped: true }) re-scans with a much higher
-  // (still bounded) budget so the sidebar's "Show N more files" row can deliver
-  // what the first pass dropped. Omitting opts keeps the previous behaviour.
+  // Wraps the read_dir_tree Rust command (async on the Rust side, UXF-02).
+  // Returns Promise<DirTree> where
+  //   DirTree = { path, root: DirNode, truncated: bool, unreadable: number }
+  //   DirNode = { name, path, files: [{name, path}], filesHidden: number,
+  //               folders: [DirNode], mdCount: number, scanned: bool }
+  // scanned:false = the scan budget ran out before that folder; load it by
+  // calling readDirTree with that folder's path and grafting the result.
+  // readDirTree(path, { uncapped: true }) uses the wide budget and file cap —
+  // the per-folder "Show N more files" row (C-29).
   function readDirTree(absFolderPath, opts) {
     if (!available) return Promise.resolve(null);
     var args = { path: absFolderPath };
@@ -1027,6 +1029,24 @@
       else showToast('Save this document first, then reveal it in Finder', { kind: 'error' });
     }).catch(function (err) {
       console.error('[TVNative] failed to register menu:reveal-in-finder listener', err);
+    });
+
+    // UXF-09: trackpad finger phases from lib.rs's NSEvent monitor. One touch
+    // is one swipe gesture (exact onset, momentum never sent); TVSwipe owns
+    // the rules. Payload: { phase, t, dx, dy, precise, inverted, x, y, mods }.
+    listen('swipe-touch', function (e) {
+      if (window.TVSwipe && typeof window.TVSwipe.touch === 'function') window.TVSwipe.touch(e && e.payload);
+    }).catch(function (err) {
+      console.error('[TVNative] failed to register swipe-touch listener', err);
+    });
+
+    // UXF-06: View ▸ Reveal in Sidebar (⇧⌘J) — same path as the palette row,
+    // the tab menu item and the browser-build key route.
+    listen('menu:reveal-in-sidebar', function () {
+      var tv = getTV();
+      if (tv && typeof tv.revealInSidebar === 'function') tv.revealInSidebar();
+    }).catch(function (err) {
+      console.error('[TVNative] failed to register menu:reveal-in-sidebar listener', err);
     });
 
     // C-36: Edit ▸ Find ▸ Find Next ⌘G / Find Previous ⇧⌘G. TV.findStep is

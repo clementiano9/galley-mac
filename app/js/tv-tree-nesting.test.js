@@ -24,27 +24,28 @@ function assert(label, condition, detail) {
   }
 }
 
-// A DirTree exactly shaped like read_dir_tree's output (src-tauri/src/lib.rs):
+// UXF-02: a DirNode as read_dir_tree returns it (src-tauri/src/lib.rs).
+function dir(path, fileNames, folders) {
+  var files = (fileNames || []).map(function (n) { return { name: n, path: path + '/' + n }; });
+  folders = folders || [];
+  var count = files.length;
+  folders.forEach(function (f) { count += f.mdCount; });
+  return { name: path.split('/').pop(), path: path, files: files, filesHidden: 0,
+           folders: folders, mdCount: count, scanned: true };
+}
+function tree(path, root) { return { path: path, root: root, truncated: false, unreadable: 0 }; }
+
+// A DirTree shaped like read_dir_tree's output:
 //   /root
-//     a.md, b.md            (depth-0 direct files)
-//     sub/  c.md            (depth-1 subfolder + its file)
-//     sub/deeper/ d.md      (depth-2 file → `deep`, from = "sub/deeper/")
-//     lone/deeper2/ e.md    (deep-only subfolder, no direct files of its own)
+//     a.md, b.md            (direct files)
+//     sub/  c.md            (subfolder + its file)
+//     sub/deeper/ d.md      (depth-2 file)
+//     lone/deeper2/ e.md    (folder with no direct files of its own)
 function makeTree() {
-  return {
-    path: '/root',
-    files: [
-      { name: 'a.md', path: '/root/a.md' },
-      { name: 'b.md', path: '/root/b.md' }
-    ],
-    subfolders: [
-      { name: 'sub', files: [{ name: 'c.md', path: '/root/sub/c.md' }] }
-    ],
-    deep: [
-      { name: 'd.md', path: '/root/sub/deeper/d.md', from: 'sub/deeper/' },
-      { name: 'e.md', path: '/root/lone/deeper2/e.md', from: 'lone/deeper2/' }
-    ]
-  };
+  return tree('/root', dir('/root', ['a.md', 'b.md'], [
+    dir('/root/lone', [], [dir('/root/lone/deeper2', ['e.md'])]),
+    dir('/root/sub', ['c.md'], [dir('/root/sub/deeper', ['d.md'])])
+  ]));
 }
 
 function find(nodes, pred) {
@@ -97,10 +98,10 @@ console.log('\n(a) buildTreeNodes — nested structure + depth\n');
   assert('deep-only "deeper2" folder exists at depth 2', deeper2 && deeper2.depth === 2);
   assert('deep-only file e.md is at depth 3', fileE && fileE.depth === 3, fileE && ('got ' + fileE.depth));
 
-  // files render before folders at the root level
+  // UXF-03: folders render before files at a level
   var iFileA = indexOfNode(nodes, function (n) { return n.kind === 'file' && n.name === 'a.md'; });
   var iSub = indexOfNode(nodes, function (n) { return n.kind === 'folder' && n.name === 'sub'; });
-  assert('files render before folders at a level', iFileA < iSub, 'a.md@' + iFileA + ' sub@' + iSub);
+  assert('folders render before files at a level', iSub < iFileA, 'a.md@' + iFileA + ' sub@' + iSub);
 
   // the renderer multiplies depth → px (file: depth*16+10, folder: depth*16+6).
   // Verify the depth values that drive that mapping are monotonic per level.
@@ -202,12 +203,7 @@ console.log('\n(c2) collapse-key collision — bare subfolder vs namespaced root
   // "/vault/archive" (key "root:/vault/archive") must NOT collapse this
   // subfolder, and collapsing the subfolder must NOT collapse the head.
   function vaultTree() {
-    return {
-      path: '/vault',
-      files: [{ name: 'r.md', path: '/vault/r.md' }],
-      subfolders: [{ name: 'archive', files: [{ name: 'old.md', path: '/vault/archive/old.md' }] }],
-      deep: []
-    };
+    return tree('/vault', dir('/vault', ['r.md'], [dir('/vault/archive', ['old.md'])]));
   }
 
   // (1) A namespaced "root:/vault/archive" key must leave the bare-keyed
@@ -258,7 +254,7 @@ console.log('\n(d2) empty tree yields just the head\n');
   // A folder whose scan found nothing (no files / subfolders / deep) must still
   // produce its head node — and ONLY the head. buildFolderSection slices off the
   // head and, seeing zero body nodes, renders the "No markdown files" row (A4).
-  var emptyExpanded = TVTree.buildTreeNodes({ path: '/empty', files: [], subfolders: [], deep: [] }, {});
+  var emptyExpanded = TVTree.buildTreeNodes(tree('/empty', dir('/empty', [], [])), {});
   assert('empty tree yields exactly one node', emptyExpanded.length === 1, 'got ' + emptyExpanded.length);
   assert('the single node is the head', emptyExpanded[0].kind === 'head');
   assert('empty-tree head carries its path', emptyExpanded[0].path === '/empty');
@@ -302,12 +298,13 @@ console.log('\n(e) collectTreeFilePaths — flat union of every tree file path\n
   assert('empty object → empty array', TVTree.collectTreeFilePaths({}).length === 0);
 
   // missing/!-typed fields are skipped, present ones still collected
-  var partial = {
-    path: '/p',
+  var partial = tree('/p', {
+    name: 'p', path: '/p',
     files: [{ name: 'x.md', path: '/p/x.md' }, { name: 'noPath' }, null],
-    subfolders: [{ name: 's' /* no files */ }, { name: 's2', files: [{ path: '/p/s2/y.md' }] }, null],
-    deep: [{ path: '/p/deep/z.md', from: 'deep/' }, { name: 'noPath2' }],
-  };
+    folders: [{ name: 's', path: '/p/s' /* no files */ },
+              { name: 's2', path: '/p/s2', files: [{ path: '/p/s2/y.md' }] },
+              { name: 'deep', path: '/p/deep', files: [{ path: '/p/deep/z.md' }, { name: 'noPath2' }] }]
+  });
   var pp = TVTree.collectTreeFilePaths(partial);
   assert('partial: collects x.md', pp.indexOf('/p/x.md') !== -1);
   assert('partial: collects subfolder s2/y.md', pp.indexOf('/p/s2/y.md') !== -1);
@@ -315,7 +312,7 @@ console.log('\n(e) collectTreeFilePaths — flat union of every tree file path\n
   assert('partial: skips entries lacking a string .path', pp.length === 3, 'got ' + pp.length);
 
   // tree.files not an array (string) → tolerated, no throw
-  assert('files:non-array tolerated', TVTree.collectTreeFilePaths({ files: 'bad' }).length === 0);
+  assert('files:non-array tolerated', TVTree.collectTreeFilePaths({ root: { files: 'bad' } }).length === 0);
 }());
 
 // ── Report ─────────────────────────────────────────────────────────────────────

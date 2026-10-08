@@ -217,12 +217,11 @@ function makeScrollSandbox() {
   var sandbox = { console: console };
   var src =
     'var _sidebarScrollTop = 0;\n' +
-    'var _folderBodyScroll = {};\n' +
     extractFn(APP_SRC, 'hasLayout') + '\n' +
     extractFn(APP_SRC, 'captureSidebarScroll') + '\n' +
     extractFn(APP_SRC, 'restoreSidebarScroll') + '\n' +
     'function saved() { return _sidebarScrollTop; }\n' +
-    'function savedBody(k) { return _folderBodyScroll[k]; }\n';
+    '';
   vm.runInContext(src, vm.createContext(sandbox), { filename: 'scroll-harness.js' });
   return sandbox;
 }
@@ -235,14 +234,6 @@ function sideEl(scrollTop, clientHeight) {
     scrollTop: scrollTop,
     clientHeight: clientHeight === undefined ? 600 : clientHeight,
   };
-}
-// A DR-41 .tv-folder-body.capped stand-in: its own scroller, keyed by folder path.
-function bodyEl(folderPath, scrollTop, clientHeight) {
-  var el = sideEl(scrollTop, clientHeight);
-  el.getAttribute = function (name) {
-    return name === 'data-folder-body' ? folderPath : null;
-  };
-  return el;
 }
 // A #tv-root stand-in, mirroring how render() reaches the sidebar after the
 // innerHTML swap: querySelector for .tv-side-scroll, querySelectorAll for the
@@ -301,52 +292,14 @@ sc.captureSidebarScroll(fakeRoot(sideEl(0)));
 sc.restoreSidebarScroll(fakeRoot(untouched));
 eq('a zero offset is not written back', untouched.scrollTop, 77);
 
-/* ── the DR-41 capped body is a SECOND scroller (QA round 2 blocker) ── */
-// Past 50 rows buildFolderSection adds .capped, whose CSS gives the body its own
-// max-height:60vh + overflow-y:auto. That body — not .tv-side-scroll — is then
-// what the user scrolls, and .tv-side-scroll never overflows at all. Preserving
-// only .tv-side-scroll fixed nothing for exactly the folders where it matters.
-sc = makeScrollSandbox();
-var cappedBefore = bodyEl('/work/notes', 430);
-sc.captureSidebarScroll(fakeRoot(sideEl(0), [cappedBefore]));
-eq('a capped folder body offset is captured', sc.savedBody('/work/notes'), 430);
-var cappedAfter = bodyEl('/work/notes', 0);
-sc.restoreSidebarScroll(fakeRoot(sideEl(0), [cappedAfter]));
-eq('a capped folder body offset is restored', cappedAfter.scrollTop, 430);
-
-// Several trees open at once: each keeps its OWN offset. Keying by folder path
-// rather than DOM order matters because buildSidebar renders openFolders
-// reversed (most-recent first), so index-keying would swap them.
-sc = makeScrollSandbox();
-sc.captureSidebarScroll(fakeRoot(sideEl(60), [bodyEl('/a', 100), bodyEl('/b', 250)]));
-var ra = bodyEl('/a', 0), rb = bodyEl('/b', 0), rside = sideEl(0);
-sc.restoreSidebarScroll(fakeRoot(rside, [rb, ra]));   // note: reversed order
-eq('tree /a keeps its own offset regardless of DOM order', ra.scrollTop, 100);
-eq('tree /b keeps its own offset regardless of DOM order', rb.scrollTop, 250);
-eq('the outer list offset is independent of the bodies', rside.scrollTop, 60);
-
-// A collapsed folder body is absent from the DOM entirely; its offset must
-// survive so expanding the folder again lands where the user left it.
-sc = makeScrollSandbox();
-sc.captureSidebarScroll(fakeRoot(sideEl(0), [bodyEl('/a', 310)]));
-sc.captureSidebarScroll(fakeRoot(sideEl(0), []));     // folder collapsed
-eq('a collapsed folder body does not discard its offset', sc.savedBody('/a'), 310);
-var reexpanded = bodyEl('/a', 0);
-sc.restoreSidebarScroll(fakeRoot(sideEl(0), [reexpanded]));
-eq('re-expanding a folder restores its offset', reexpanded.scrollTop, 310);
-
-// An UNCAPPED body never overflows and always reads 0 — storing that is
-// harmless, but it must not clobber a real offset saved while it WAS capped.
-sc = makeScrollSandbox();
-sc.captureSidebarScroll(fakeRoot(sideEl(0), [bodyEl('/a', 0, 0)]));  // no layout
-eq('an unlaid-out folder body is skipped', sc.savedBody('/a'), undefined);
-
-assert('buildFolderSection tags the body with data-folder-body',
-  /data-folder-body="' \+ esc\(head\.path\)/.test(APP_SRC));
-assert('capture reaches every folder body, not just .tv-side-scroll',
-  extractFn(APP_SRC, 'captureSidebarScroll').indexOf("querySelectorAll('[data-folder-body]')") !== -1);
-assert('restore reaches every folder body, not just .tv-side-scroll',
-  extractFn(APP_SRC, 'restoreSidebarScroll').indexOf("querySelectorAll('[data-folder-body]')") !== -1);
+/* ── UXF-03: DR-41's capped body (a second scroller) is gone ── */
+// .tv-side-scroll is now the only sidebar scroller, so it is the only offset
+// render() has to carry across the innerHTML swap.
+assert('no folder body is capped into its own scroller any more',
+  APP_SRC.indexOf("' capped'") === -1 && !/\.tv-folder-body\.capped/.test(CSS_SRC));
+assert('capture/restore touch only .tv-side-scroll',
+  extractFn(APP_SRC, 'captureSidebarScroll').indexOf('[data-folder-body]') === -1 &&
+  extractFn(APP_SRC, 'restoreSidebarScroll').indexOf('[data-folder-body]') === -1);
 
 /* ── the keyboard cursor must not drag the list on every render ── */
 // renderSidebarCursor() runs at the END of render(), after restoreSidebarScroll().

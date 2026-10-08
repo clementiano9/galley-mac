@@ -473,7 +473,7 @@ function dirtyBoot(extra) {
      C-29 · folder scan
      ═════════════════════════════════════════════════════════ */
   console.log('\nC-29: uncapped folder rescan\n');
-  h = boot({ responses: { read_dir_tree: { path: '/x', files: [], subfolders: [], deep: [], truncated: false, skipped: 0 } } });
+  h = boot({ responses: { read_dir_tree: { path: '/x', root: { name: 'x', path: '/x', files: [], filesHidden: 0, folders: [], mdCount: 0, scanned: true }, truncated: false, unreadable: 0 } } });
   h.TVNative.readDirTree('/x');
   check('default scan sends no uncapped flag',
     h.lastArgs('read_dir_tree').uncapped === undefined, h.lastArgs('read_dir_tree'));
@@ -640,6 +640,30 @@ function dirtyBoot(extra) {
   check('the keys JS sends without a directory are exactly the required Rust parameters',
     Object.keys(h2.lastArgs('save_md_file_as') || {}).sort().join() === required,
     { js: Object.keys(h2.lastArgs('save_md_file_as') || {}), required: required });
+
+  /* ═════════════════════════════════════════════════════════
+     UXF-02 · DirTree wire names (drift guard)
+     ═════════════════════════════════════════════════════════ */
+  console.log('\nUXF-02: DirTree / DirNode wire names match lib.rs\n');
+  function rustFields(structName) {
+    var m = LIB.match(new RegExp('(#\\[serde\\(rename_all = "camelCase"\\)\\]\\s*)?pub struct ' + structName + ' \\{([\\s\\S]*?)\\n\\}'));
+    if (!m) return null;
+    var fields = [];
+    m[2].replace(/pub (\w+)\s*:/g, function (_, f) { fields.push(f); return _; });
+    return { camelCase: !!m[1], names: fields.map(camel).sort().join() };
+  }
+  var TREE_SRC = fs.readFileSync(path.join(__dirname, 'tv-tree.js'), 'utf8');
+  var dirTree = rustFields('DirTree'), dirNode = rustFields('DirNode');
+  check('DirTree and DirNode serialize camelCase', dirTree && dirTree.camelCase && dirNode && dirNode.camelCase,
+    { dirTree: dirTree, dirNode: dirNode });
+  check('DirTree fields are the ones JS reads', dirTree && dirTree.names === 'path,root,truncated,unreadable', dirTree);
+  check('DirNode fields are the ones JS reads',
+    dirNode && dirNode.names === 'files,filesHidden,folders,mdCount,name,path,scanned', dirNode);
+  check('tv-tree.js reads every camelCase DirNode field',
+    ['filesHidden', 'mdCount', 'scanned', 'folders', 'root'].every(function (f) { return TREE_SRC.indexOf('.' + f) !== -1; }));
+  var rdt = LIB.match(/async fn read_dir_tree\(([^)]*)\)/);
+  check('read_dir_tree is async and takes (path, uncapped) — the keys JS sends',
+    !!rdt && /path: String/.test(rdt[1]) && /uncapped: Option<bool>/.test(rdt[1]), rdt && rdt[1]);
 
   console.log('\n' + (failed === 0
     ? 'ALL PASSED (' + passed + ' passed, 0 failed)'

@@ -324,6 +324,7 @@
       used: _used,
       native: _isNative(),
       mermaid: (typeof TV.isMermaidEnabled === 'function') ? TV.isMermaidEnabled() : true,
+      swipe: (typeof TV.isSwipeEnabled === 'function') ? TV.isSwipeEnabled() : true,
       hasDiscarded: (typeof TV.hasDiscardedEdits === 'function') ? !!TV.hasDiscardedEdits() : false,
       appearance: (typeof TV.appearanceState === 'function')
         ? TV.appearanceState()
@@ -393,10 +394,11 @@
       seen[f.path] = 1;
       out.push({ path: f.path, name: f.name || _baseName(f.path), type: 'file' });
     }
+    // UXF-02: one walk of the recursive tree, shared with the sidebar.
+    var collect = window.TVTree && window.TVTree.collectTreeFilePaths;
+    if (typeof collect !== 'function') return out;
     ctx.openFolders.forEach(function (tree) {
-      (tree.files || []).forEach(add);
-      (tree.subfolders || []).forEach(function (sf) { (sf.files || []).forEach(add); });
-      (tree.deep || []).forEach(add);
+      collect(tree).forEach(function (p) { add({ path: p }); });
     });
     return out;
   }
@@ -411,6 +413,11 @@
     { id: 'appearance',  label: 'Appearance',   ic: 'half',    kind: 'drill', page: 'appearance', chev: true,
       kw: ['theme', 'dark mode', 'light mode', 'accent', 'colour', 'color', 'text size', 'font', 'zoom', 'bigger', 'smaller', 'look'] },
     { id: 'toggle-sidebar', label: 'Toggle Sidebar', ic: 'sidebar', kbd: '⌘B', action: 'toggleSidebar', kw: ['files', 'tree', 'folders'] },
+    // UXF-06 / UXF-03 / UXF-05
+    { id: 'reveal-sidebar', label: 'Reveal in Sidebar', ic: 'sidebar', kbd: '⇧⌘J', action: 'revealSidebar', need: 'file', native: true,
+      kw: ['locate', 'show', 'tree', 'navigator', 'find file'] },
+    { id: 'collapse-folders', label: 'Collapse All Folders', ic: 'folder', action: 'collapseAllFolders', need: 'folder', kw: ['tree', 'fold', 'close folders'] },
+    { id: 'swipe', label: 'Disable swipe to toggle sidebar', ic: 'sidebar', action: 'toggleSwipe', verb: 'Toggle', kw: ['gesture', 'trackpad', 'two finger', 'swipe'] },
     { id: 'start-page',  label: 'Start Page',   ic: 'win',     kbd: '⌘T',  action: 'newTab',     kw: ['new tab', 'launcher', 'blank tab'] },
     { id: 'close-tab',   label: 'Close Tab',    ic: 'close',   kbd: '⌘W',  action: 'closeTab',   need: 'doc', kw: ['close file'] },
     { id: 'edit',        label: 'Edit document', ic: 'pencil', kbd: '⌘E',  action: 'toggleEdit', need: 'doc', kw: ['edit', 'stop editing'] },
@@ -447,6 +454,8 @@
         return cur.nativePath ? null : 'Save the file first';
       case 'discarded':
         return ctx.hasDiscarded ? null : 'Nothing to restore';
+      case 'folder':
+        return ctx.openFolders.length ? null : 'Open a folder first';
       case 'left':
       case 'right': {
         if (!cur) return 'Open a file first';
@@ -462,6 +471,7 @@
   function _cmdLabel(c, ctx) {
     if (c.id === 'edit') return ctx.mode === 'edit' ? 'Stop editing' : 'Edit document';
     if (c.id === 'mermaid') return ctx.mermaid ? 'Disable Mermaid diagrams' : 'Enable Mermaid diagrams';
+    if (c.id === 'swipe') return ctx.swipe === false ? 'Enable swipe to toggle sidebar' : 'Disable swipe to toggle sidebar';
     return c.label;
   }
 
@@ -1057,6 +1067,15 @@
       case 'toggleSidebar':
         if (typeof TV.toggleSidebar === 'function') TV.toggleSidebar();
         return;
+      case 'revealSidebar':
+        if (typeof TV.revealInSidebar === 'function') TV.revealInSidebar();
+        return;
+      case 'collapseAllFolders':
+        if (typeof TV.collapseAllFolders === 'function') TV.collapseAllFolders();
+        return;
+      case 'toggleSwipe':
+        if (typeof TV.toggleSwipe === 'function') TV.toggleSwipe();
+        return;
       case 'closeTab':
         if (TV.state && TV.state.activeId && typeof TV.closeTab === 'function') TV.closeTab(TV.state.activeId);
         return;
@@ -1334,6 +1353,9 @@
       wrapper.innerHTML = _buildOverlayHtml(_query, null);
       _overlayEl = wrapper.firstChild;
       root.appendChild(_overlayEl);
+      // UXF-08: summon with a 100ms fade and 4px rise (one animation; the scrim
+      // carries the panel). Closing stays instant.
+      if (window.TVMotion) window.TVMotion.enter(_overlayEl, { y: 4, reducedFade: true });
       _open = true;
       _model = _buildModel(_query, _ctx(), null);
       _sel = _initialSel(_model);

@@ -142,8 +142,7 @@ assert('selection still uses background-color, never the shorthand (JANK guard)'
 console.log('\nC-32 — a11y: hit targets, keycap contrast, one focus-ring token, motion, .tv-copy\n');
 assert('tab close button is 24px (was 20px)',
   /\.tv-tab \.tv-close\s*\{\s*\n\s*width:\s*24px;\s*height:\s*24px/.test(APP_CSS));
-assert('sidebar collapse is 24px (was 22px)',
-  /\.tv-side-collapse\s*\{[\s\S]{0,200}?width:\s*24px;\s*height:\s*24px/.test(APP_CSS));
+// UXF-05: the .tv-side-collapse button is gone (one tab-bar toggle remains).
 assert('find nav buttons are 24px (was 22px)',
   /\.tv-find-nav\s*\{[^}]*min-width:\s*24px;\s*min-height:\s*24px/.test(APP_CSS));
 assert('sidebar row close is 24px (was 20px)',

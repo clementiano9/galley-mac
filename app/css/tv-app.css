@@ -158,7 +158,7 @@ html, body, #tv-root {
   color: var(--tv-text-secondary) !important;
   border-right: 1px solid transparent;
   position: relative; cursor: default;
-  transition: background .12s, color .12s;
+  transition: background var(--tv-dur-fast) var(--tv-ease-enter), color var(--tv-dur-fast) var(--tv-ease-enter);
 }
 .tv-tab + .tv-tab { margin-left: 2px; }
 .tv-tab:hover { background: var(--tv-bg-hover) !important; }
@@ -210,7 +210,7 @@ html, body, #tv-root {
   width: 24px; height: 24px; border-radius: 4px;
   margin: -4px;
   display: inline-flex; align-items: center; justify-content: center;
-  color: var(--tv-text-muted) !important; opacity: 0; transition: opacity .12s, background .12s;
+  color: var(--tv-text-muted) !important; opacity: 0; transition: opacity var(--tv-dur-fast) var(--tv-ease-enter), background var(--tv-dur-fast) var(--tv-ease-enter);
 }
 .tv-tab:hover .tv-close { opacity: 1; }
 .tv-tab .tv-close:hover { background: var(--tv-bg-sel) !important; }
@@ -263,10 +263,9 @@ html, body, #tv-root {
 }
 .tv-newtab:hover { background: var(--tv-bg-hover) !important; color: var(--tv-text-secondary) !important; }
 
-/* UX-SBR (edge-sidebar): neutral sidebar-reveal toggle — far-left of the tabbar,
-   rendered ONLY when the sidebar is collapsed (JS omits it while open). It is a
-   pure re-entry affordance, so it stays neutral — no accent active state. When
-   the sidebar is open the collapse control lives in the FILES header instead.
+/* UXF-05: the ONE sidebar show/hide button — first in the tab bar, rendered in
+   both states at the same place and size. Neutral (no accent state); the open
+   state shows as the glyph's tinted pane (icons.sidebarOn).
    Matches .tv-newtab sizing so the bar's two ends balance.
    URD-08: no bezel — flat, transparent chrome at rest (border + native button
    appearance reset), the bg-hover fill only appears on interaction. */
@@ -277,7 +276,7 @@ html, body, #tv-root {
   border: 0; -webkit-appearance: none; appearance: none;
   border-radius: 6px; margin: 4px 4px 4px 0;
   background: transparent !important;
-  transition: background-color 0.12s ease, color 0.12s ease;
+  transition: background-color var(--tv-dur-fast) var(--tv-ease-enter), color var(--tv-dur-fast) var(--tv-ease-enter);
 }
 .tv-side-toggle:hover { background: var(--tv-bg-hover) !important; color: var(--tv-text-secondary) !important; }
 /* Keyboard focus ring only. A mouse click leaves WebKit's default :focus outline
@@ -291,9 +290,9 @@ html, body, #tv-root {
 
 /* sidebar ---------------------------------------------------- */
 /* dev1 drives width via --tv-sidebar-w on .tv root (drag-to-resize).
-   Fallback 224px matches the --tv-sidebar-w token in tv-tokens.css. */
+   Fallback 264px matches the --tv-sidebar-w token in tv-tokens.css (UXF-03). */
 .tv-sidebar {
-  width: var(--tv-sidebar-w, 224px); flex: 0 0 var(--tv-sidebar-w, 224px);
+  width: var(--tv-sidebar-w, 264px); flex: 0 0 var(--tv-sidebar-w, 264px);
   background: var(--tv-bg-sidebar) !important;
   border-right: 1px solid var(--tv-border);
   display: flex; flex-direction: column;
@@ -318,7 +317,7 @@ html, body, #tv-root {
   z-index: 10;
   /* transparent at rest — user discovers it by hovering the seam */
   background: transparent;
-  transition: background .12s;
+  transition: background var(--tv-dur-fast) var(--tv-ease-enter);
   /* Pull 6px left (into sidebar border area) so it truly straddles */
   margin-left: -6px;
 }
@@ -328,9 +327,8 @@ html, body, #tv-root {
   /* thin accent line centered on the resizer */
   border-left: 1.5px solid var(--tv-accent);
 }
-/* UX-SB3 (edge-sidebar): sidebar top header — "Files" label + « collapse button.
-   While the sidebar is open this « is the primary hide affordance (the tab-strip
-   toggle is omitted), so the control "recedes into the edge" of the panel. */
+/* UX-SB3: sidebar top header — the "Files" label. UXF-05 moved the hide
+   control to the one .tv-side-toggle in the tab bar. */
 .tv-side-header {
   flex: 0 0 auto;
   display: flex; align-items: center;
@@ -342,23 +340,10 @@ html, body, #tv-root {
   text-transform: uppercase; color: var(--tv-text-muted) !important;
   flex: 1;
 }
-/* C-32: 24×24 hit target (was 22×22, under the 24px a11y floor). */
-.tv-side-collapse {
-  display: inline-flex; align-items: center; justify-content: center;
-  width: 24px; height: 24px; padding: 0; border-radius: 4px;
-  border: 0; background: transparent; cursor: default;
-  color: var(--tv-text-muted) !important;
-  opacity: .7;
-  transition: opacity .12s, background .12s;
-  -webkit-user-select: none; user-select: none;
-}
-.tv-side-collapse:hover { opacity: 1; background: var(--tv-bg-hover) !important; }
-.tv-side-collapse svg { display: block; }
-.tv-side-collapse:focus { outline: none; }
-.tv-side-collapse:focus-visible { opacity: 1; outline: var(--tv-focus-ring); outline-offset: var(--tv-focus-offset); }
-
-/* D-01 / E-09: sidebar file list must scroll when entries exceed panel height */
-.tv-side-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--tv-s3) var(--tv-s2); }
+/* D-01 / E-09: sidebar file list must scroll when entries exceed panel height.
+   UXF-03: the ONLY vertical scroller in the sidebar (DR-41's capped folder
+   body is gone); scroll-padding keeps rows clear of a pinned root head. */
+.tv-side-scroll { flex: 1; overflow-y: auto; overflow-x: hidden; padding: var(--tv-s3) var(--tv-s2); scroll-padding-top: 34px; }
 .tv-side-label {
   font-size: 10.5px; font-weight: 600; letter-spacing: .6px;
   text-transform: uppercase; color: var(--tv-text-muted) !important;
@@ -452,7 +437,7 @@ html, body, #tv-root {
    lives in the animation alone (URD-10 / DR-10). */
 .tv-tree-row.tv-flash,
 .tv-folder-head.tv-flash {
-  animation: tv-sbflash 1.4s cubic-bezier(.2,.9,.3,1);
+  animation: tv-sbflash var(--tv-dur-highlight) var(--tv-ease-enter);
 }
 @keyframes tv-sbflash {
   0%, 60% { background-color: var(--tv-accent-weak); }
@@ -461,6 +446,19 @@ html, body, #tv-root {
 @media (prefers-reduced-motion: reduce) {
   .tv-tree-row.tv-flash,
   .tv-folder-head.tv-flash { animation: none; background-color: var(--tv-accent-weak); }
+}
+
+/* UXF-06: Reveal in Sidebar cue. The revealed row is the active row, whose
+   !important background-color beats an animation, so .tv-flash cannot show
+   there; an inset ring through box-shadow can. A ring, not a left border or
+   under-rule, and never the only signal (the row is centred and announced). */
+.tv-tree-row.tv-reveal { animation: tv-sbreveal var(--tv-dur-highlight) var(--tv-ease-enter); }
+@keyframes tv-sbreveal {
+  0%, 40% { box-shadow: inset 0 0 0 2px var(--tv-accent); }
+  100%    { box-shadow: inset 0 0 0 2px transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tv-tree-row.tv-reveal { animation: none; box-shadow: inset 0 0 0 2px var(--tv-accent); }
 }
 /* UX-10 / DR-108: Keyboard cursor highlight — visible in both light and dark themes,
    on both active and inactive rows. Uses outline so it does not affect layout.
@@ -490,7 +488,7 @@ html, body, #tv-root {
   font-size: 12.5px; color: var(--tv-text-muted) !important;
   /* UX-SB4: show pointer cursor — this is a clickable affordance, not static label */
   cursor: default;
-  transition: background .1s, border-color .1s;
+  transition: background var(--tv-dur-fast) var(--tv-ease-enter), border-color var(--tv-dur-fast) var(--tv-ease-enter);
 }
 .tv-search-box:hover {
   background: var(--tv-bg-hover) !important;
@@ -513,6 +511,10 @@ html, body, #tv-root {
 .tv-viewer { flex: 1; min-width: 0; position: relative; display: flex; flex-direction: column; }
 .tv-scroll {
   flex: 1; overflow-y: auto; overflow-x: hidden; position: relative;
+  /* UXF-01: query container for the cqw units the table block uses. Makes
+     .tv-scroll the containing block for fixed descendants — keep palette,
+     menus, toasts and the drag card outside it (they are children of .tv). */
+  container-type: inline-size;
 }
 /* D-03: scrollbars invisible at rest — macOS overlay-style behaviour.
    Hidden by default; a thin themed thumb appears on hover / focus-within.
@@ -719,10 +721,9 @@ html, body, #tv-root {
 }
 .md blockquote p:last-child { margin-bottom: 0; }
 
-/* tables — L-02: changed overflow:hidden → overflow-x:auto on .tbl-wrap so wide
-   tables scroll horizontally inside the rounded wrapper. overflow-y:hidden keeps
-   the border-radius clip clean vertically. The outer .tv-scroll keeps overflow-x
-   hidden (intentional) — the table self-contains its scroll within .tbl-wrap. */
+/* tables — L-02: a NESTED table (e.g. inside a blockquote) scrolls
+   horizontally inside its rounded wrapper; overflow-y:hidden keeps the
+   border-radius clip clean vertically. Top-level tables: see UXF-01 below. */
 .md .tbl-wrap { margin: 0 0 var(--tv-s4); border: 1px solid var(--tv-border); border-radius: var(--tv-radius-md); overflow-x: auto; overflow-y: hidden; }
 /* C-20: .875em of --tv-md-font (14px at the 16px default — unchanged). */
 .md table { width: 100%; border-collapse: collapse; font-size: .875em; }
@@ -730,6 +731,76 @@ html, body, #tv-root {
   text-align: left; font-weight: 600; color: var(--tv-text-secondary) !important;
   background: var(--tv-table-head) !important; padding: 9px 14px;
   border-bottom: 1px solid var(--tv-border);
+}
+
+/* UXF-01: top-level tables may use the free width of the pane (supersedes
+   L-02 for them). C = text column, A = pane − 2 × 24px gutter. The width is
+   decided in JS (sizeTables, policy v2): at least C, prose tables at most
+   C + 160px, short-cell tables up to A, and a table that NEEDS more than A
+   scrolls in its own box (.tbl-wide). The wrapper spans the pane and centres
+   the table; cells wrap before it grows past its ceiling. Border and radius move onto the table, which
+   needs border-collapse: separate; corner cells carry the inner radius so the
+   header and stripe fills stay inside the rounded border. */
+.md > .tbl-wrap {
+  --tv-tbl-gutter: 24px;
+  --tv-tbl-col: min(calc(var(--tv-content-max) - 2 * var(--tv-s7)),
+                    calc(100cqw - 2 * var(--tv-s7)));
+  margin-block: 0 var(--tv-s4);
+  margin-inline: calc(50% - 50cqw + var(--tv-tbl-gutter));
+  display: grid; justify-content: center;
+  overflow: visible; border: 0; border-radius: 0;
+}
+.md > .tbl-wrap > table {
+  /* --tv-tbl-w: written by sizeTables() (UXF-01 policy v2: sized by need and
+     content kind, prose capped at the column + 80px per side). */
+  width: var(--tv-tbl-w, auto); min-width: var(--tv-tbl-col);
+  border: 1px solid var(--tv-border); border-radius: var(--tv-radius-md);
+  border-collapse: separate; border-spacing: 0;
+  font-size: .875em;
+}
+.md > .tbl-wrap thead tr:first-child th:first-child { border-top-left-radius: calc(var(--tv-radius-md) - 1px); }
+.md > .tbl-wrap thead tr:first-child th:last-child  { border-top-right-radius: calc(var(--tv-radius-md) - 1px); }
+.md > .tbl-wrap tbody tr:last-child td:first-child  { border-bottom-left-radius: calc(var(--tv-radius-md) - 1px); }
+.md > .tbl-wrap tbody tr:last-child td:last-child   { border-bottom-right-radius: calc(var(--tv-radius-md) - 1px); }
+/* UXF-04: a tall tier-3 table scrolls in its own capped box so its header can
+   stick inside it; a short one is never capped. */
+.md > .tbl-wrap.tbl-wide {
+  justify-content: start; overflow: auto;
+  max-height: max(320px, calc(100vh - var(--tv-chrome-h, 160px)));
+  /* ⌘F / keyboard scrollIntoView lands clear of the 32px edge fade and below
+     the pinned header row (~40px). */
+  scroll-padding-inline: 40px; scroll-padding-top: 44px;
+  scrollbar-width: thin; scrollbar-color: var(--tv-scrollthumb) transparent;
+}
+/* UXF-01 AC 16: WebKit sizes a table grid item to the grid area (the wrapper
+   width) even when its cells need more, so the cells overflowed the table box
+   and the table's own right border was painted across them — the faint line
+   ~56px from the left when scrolled to the end. A tier-3 table is exactly its
+   min-content width (cells already wrap as far as they can), so say so. */
+.md > .tbl-wrap.tbl-wide > table { width: min-content; }
+/* UXF-01 rule 7: a 32px fade on each side that still has content. */
+.md > .tbl-wrap[data-edge="start"] {
+  -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, #000 calc(100% - 32px), transparent);
+}
+.md > .tbl-wrap[data-edge="end"] {
+  -webkit-mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to left, #000 calc(100% - 32px), transparent);
+}
+.md > .tbl-wrap[data-edge="mid"] {
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+  mask-image: linear-gradient(to right, transparent, #000 32px, #000 calc(100% - 32px), transparent);
+}
+/* UXF-04: the header row stays at the top of the pane (tiers 1-2: the wrapper
+   is not a scroll container, so th sticks to .tv-scroll) or of the wide box
+   (tier 3). th, not thead/tr: the form WebKit has supported longest. z-index
+   1 keeps it above body cells and below every overlay. Its fill is the opaque
+   --tv-table-head above; no shadow, no "stuck" state. */
+.md .tbl-wrap th { position: sticky; top: 0; z-index: 1; }
+/* Nested tables keep the legacy box and no sticky header. */
+.md :not(.md) > .tbl-wrap th { position: static; }
+@supports not (width: 1cqw) {          /* old WebKit: today's behaviour */
+  .md > .tbl-wrap { margin-inline: 0; display: block; overflow-x: auto; }
 }
 .md td { padding: 9px 14px; border-bottom: 1px solid var(--tv-border); }
 .md tr:last-child td { border-bottom: 0; }
@@ -938,7 +1009,7 @@ html, body, #tv-root {
    No other .md content element uses this animation — only .dg-flow diagrams. */
 .tv-diagram .dg-flow {
   display: flex; align-items: center; justify-content: center; flex-wrap: wrap;
-  gap: 6px; padding-top: 10px; opacity: 0; animation: tv-fade .4s ease forwards;
+  gap: 6px; padding-top: 10px; opacity: 0; animation: tv-fade var(--tv-dur-base) var(--tv-ease-enter) forwards;
 }
 @keyframes tv-fade { to { opacity: 1; } }
 /* Safety net: if the animation is ever prevented from running (e.g. animation-play-state
@@ -1024,7 +1095,7 @@ html, body, #tv-root {
   color: var(--tv-text-muted) !important;
   cursor: default;
   opacity: 0;
-  transition: opacity .15s, background .12s;
+  transition: opacity var(--tv-dur-fast) var(--tv-ease-enter), background var(--tv-dur-fast) var(--tv-ease-enter);
   -webkit-user-select: none; user-select: none;
   z-index: 2;
   pointer-events: auto;
@@ -1097,7 +1168,7 @@ html, body, #tv-root {
 .tv-status.tv-live-status.is-hiding {
   opacity: 0;
   transform: translateY(6px);
-  transition: opacity .22s ease, transform .22s ease;
+  transition: opacity var(--tv-dur-exit) var(--tv-ease-exit), transform var(--tv-dur-exit) var(--tv-ease-exit);
   pointer-events: none;
 }
 .tv-status .sep { color: var(--tv-text-muted) !important; }
@@ -1737,7 +1808,7 @@ html, body, #tv-root {
   border-radius: var(--tv-radius-sm);
   cursor: default;
   opacity: 0;
-  transition: opacity .15s, background .12s, color .12s;
+  transition: opacity var(--tv-dur-fast) var(--tv-ease-enter), background var(--tv-dur-fast) var(--tv-ease-enter), color var(--tv-dur-fast) var(--tv-ease-enter);
   z-index: 2;
   -webkit-user-select: none; user-select: none;
 }
@@ -1791,7 +1862,7 @@ html, body, #tv-root {
   cursor: default;
   opacity: 0;
   pointer-events: none;
-  transition: opacity .15s, background .12s, color .12s;
+  transition: opacity var(--tv-dur-fast) var(--tv-ease-enter), background var(--tv-dur-fast) var(--tv-ease-enter), color var(--tv-dur-fast) var(--tv-ease-enter);
   z-index: 2;
   -webkit-user-select: none; user-select: none;
 }
@@ -1862,7 +1933,7 @@ html, body, #tv-root {
   min-width: 24px; min-height: 24px; border-radius: 5px;
   color: var(--tv-text-secondary) !important; cursor: default;
   border: 0; background: transparent;
-  transition: background .1s;
+  transition: background var(--tv-dur-fast) var(--tv-ease-enter);
 }
 .tv-find-nav:hover { background: var(--tv-bg-hover) !important; }
 .tv-find-close {
@@ -1870,7 +1941,7 @@ html, body, #tv-root {
   min-width: 22px; min-height: 22px; border-radius: 4px;
   color: var(--tv-text-muted) !important; cursor: default;
   border: 0; background: transparent;
-  transition: background .1s;
+  transition: background var(--tv-dur-fast) var(--tv-ease-enter);
   margin-left: 2px;
 }
 .tv-find-close:hover { background: var(--tv-bg-hover) !important; color: var(--tv-text-secondary) !important; }
@@ -1886,7 +1957,9 @@ html, body, #tv-root {
   background: var(--tv-accent) !important;
   color: var(--tv-on-accent) !important;
   border-radius: 2px;
-  padding: 0 1px;
+  /* Layout-neutral (fix round 4): the spread is painted by a shadow, never by
+     padding, so marking a match cannot widen its cell and re-wrap a table. */
+  box-shadow: 0 0 0 1px var(--tv-accent);
 }
 
 /* ── titlebar theme-toggle button (.tv-titlebtn) ─────────── */
@@ -1908,7 +1981,7 @@ html, body, #tv-root {
      light #a4a4a6 on #e9e9e6 was 2.05:1 (fail 3:1 WCAG 1.4.11);
      .72 gives effective ~3.1:1 (pass). Hover still jumps to opacity:1. */
   opacity: .72;
-  transition: opacity .15s, background .1s;
+  transition: opacity var(--tv-dur-fast) var(--tv-ease-enter), background var(--tv-dur-fast) var(--tv-ease-enter);
   flex: 0 0 auto;
 }
 .tv-titlebtn:hover {
@@ -1996,7 +2069,7 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
   line-height: 1;
   cursor: default;
   opacity: 0;
-  transition: opacity .12s, background .12s;
+  transition: opacity var(--tv-dur-fast) var(--tv-ease-enter), background var(--tv-dur-fast) var(--tv-ease-enter);
   /* Don't affect the row's own padding/alignment */
   padding: 0;
   -webkit-user-select: none;
@@ -2067,7 +2140,12 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
   background: var(--tv-accent-weak) !important;
   color: var(--tv-accent-text) !important;
   border-radius: 2px;
-  padding: 0 2px;
+  /* Layout-neutral: a 2px horizontal shadow in the same tint stands in for
+     the old `padding: 0 2px`, which widened every marked word (a find match
+     in a content-sized table re-wrapped its neighbours: 20 rows 43→67px). An
+     outer shadow paints only outside the box, so the tint never doubles. */
+  padding: 0;
+  box-shadow: -2px 0 0 0 var(--tv-accent-weak), 2px 0 0 0 var(--tv-accent-weak);
 }
 
 /* ── h5 / h6 heading scale (C-06, corrected by C-22) ─────── */
@@ -2126,9 +2204,9 @@ html.tauri .tv-titlebtn { margin-right: 2px; }
   color: var(--tv-text-secondary) !important;
   white-space: nowrap;
   pointer-events: none;
-  animation: tv-toast-in .18s ease forwards;
+  animation: tv-toast-in var(--tv-dur-base) var(--tv-ease-enter) forwards;
 }
-.tv-toast.out { animation: tv-toast-out .18s ease forwards; }
+.tv-toast.out { animation: tv-toast-out var(--tv-dur-exit) var(--tv-ease-exit) forwards; }
 @keyframes tv-toast-in  { from { opacity:0; transform:translateX(-50%) translateY(6px); } to { opacity:1; transform:translateX(-50%) translateY(0); } }
 @keyframes tv-toast-out { from { opacity:1; transform:translateX(-50%) translateY(0); } to { opacity:0; transform:translateX(-50%) translateY(6px); } }
 
@@ -2268,7 +2346,7 @@ input:focus-visible,
   background: var(--tv-accent-weak) !important;
   color: var(--tv-accent-text) !important;
   cursor: default;
-  transition: background .12s, border-color .12s;
+  transition: background var(--tv-dur-fast) var(--tv-ease-enter), border-color var(--tv-dur-fast) var(--tv-ease-enter);
 }
 /* C-39: hover swaps to a solid accent fill, never a neutral surface — the
    button is the primary recovery action on an error tab and should never
@@ -2338,14 +2416,33 @@ input:focus-visible,
   font-size: 13px; font-weight: 600; color: var(--tv-text-primary) !important;
   cursor: default; -webkit-user-select: none; user-select: none;
 }
-.tv-folder-head:hover { background: var(--tv-bg-hover) !important; }
+/* UXF-03: the root head is sticky inside its section, so it pins while the
+   section is on screen and the next head pushes it off. Opaque fill so rows
+   never show through; top offsets the scroller's --tv-s3 top padding so it
+   pins flush. No !important on the fill: keeps the .tv-flash animation. */
+.tv-folder-section { display: block; }
+.tv-folder-head {
+  position: sticky; top: calc(-1 * var(--tv-s3)); z-index: 1;
+  background-color: var(--tv-bg-sidebar);
+}
+/* --tv-bg-hover is translucent: layer it over the opaque base. */
+.tv-folder-head:hover {
+  background-color: var(--tv-bg-sidebar) !important;
+  background-image: linear-gradient(var(--tv-bg-hover), var(--tv-bg-hover));
+}
+/* UXF-03: markdown count on folder rows — muted text, not a badge. */
+.tv-tree-count {
+  margin-left: auto; padding-left: 8px; flex: 0 0 auto;
+  font-size: 11px; font-weight: 400; font-variant-numeric: tabular-nums;
+  color: var(--tv-text-muted) !important;
+}
 .tv-folder-head .ic { color: var(--tv-text-muted) !important; display: inline-flex; flex: 0 0 auto; }
 .tv-folder-head .fname { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 1; }
 
 /* Collapse chevron ----------------------------------------- */
 .tv-chev {
   display: inline-flex; width: 10px; flex: 0 0 auto;
-  color: var(--tv-text-muted) !important; transition: transform .14s ease;
+  color: var(--tv-text-muted) !important; transition: transform var(--tv-dur-fast) var(--tv-ease-enter);
 }
 .tv-chev.open { transform: rotate(90deg); }
 @media (prefers-reduced-motion: reduce) { .tv-chev { transition: none !important; } }
@@ -2365,7 +2462,7 @@ input:focus-visible,
   width: 24px; height: 24px; border-radius: 4px; margin-left: 4px;
   display: inline-flex; align-items: center; justify-content: center;
   color: var(--tv-text-muted) !important; opacity: 0; flex: 0 0 auto;
-  transition: opacity .12s, background .12s;
+  transition: opacity var(--tv-dur-fast) var(--tv-ease-enter), background var(--tv-dur-fast) var(--tv-ease-enter);
   border: 0; background: transparent; cursor: pointer;
   -webkit-user-select: none; user-select: none;
 }
@@ -2376,16 +2473,18 @@ input:focus-visible,
 @media (prefers-reduced-motion: reduce) { .folder-x { transition: none !important; } }
 
 /* Folder body (collapsible file list) ---------------------- */
-/* DR-41: cap section height when > 50 rows */
-.tv-folder-body.capped { max-height: 60vh; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: var(--tv-scrollthumb) transparent; }
-.tv-folder-body.capped::-webkit-scrollbar { width: 5px; }
-.tv-folder-body.capped::-webkit-scrollbar-thumb { background: var(--tv-scrollthumb) !important; border-radius: 4px; }
+/* UXF-03: DR-41 superseded — no nested scroller; .tv-side-scroll is the one. */
+.tv-folder-body { overflow: visible; max-height: none; }
 
 /* Subfolder row -------------------------------------------- */
 /* SBH-01: padding-left is deliberately NOT set here — applyTreeDepths() owns
    the left indent for every depth-annotated row (8 + depth*14). A hardcoded
    22px here was the depth-as-a-boolean the design calls DEFECT 1, and it is
    what the flat native tree fell back to. */
+/* UXF-07: a folder shown only because "Show N more folders" is on reads as
+   secondary. Dimming is the only marking; agent folders are never dimmed. */
+.tv-tree-row.is-extra { opacity: .62; }
+
 .tv-tree-row.subfolder {
   /* min-height:30px comes from the shared .subfolder,.file rule above
      (C-28) — was 26px before that (4px padding-block + 1px top/bottom
@@ -2457,7 +2556,7 @@ input:focus-visible,
   position: fixed; min-width: 186px;
   background: var(--tv-bg-elev) !important; border: 1px solid var(--tv-border);
   border-radius: 9px; box-shadow: var(--tv-shadow-pop); padding: 5px;
-  font-size: 13px; animation: tv-fade .12s ease;
+  font-size: 13px; animation: tv-fade-in var(--tv-dur-fast) var(--tv-ease-enter);
 }
 .tv-ctx-item {
   display: flex; align-items: center; gap: 10px; padding: 7px 10px;
@@ -2492,7 +2591,7 @@ input:focus-visible,
   background: var(--tv-bg-elev) !important;
   border: 1px solid var(--tv-border);
   border-radius: 13px; box-shadow: var(--tv-shadow-pop); overflow: hidden;
-  animation: tv-sc-in .16s cubic-bezier(.2,.9,.3,1);
+  animation: tv-sc-in var(--tv-dur-base) var(--tv-ease-enter);
 }
 @keyframes tv-sc-in { from { transform: translateY(8px) scale(.99); opacity: 0; } to { transform: none; opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .tv-sc { animation: none !important; } }
@@ -2574,9 +2673,9 @@ input:focus-visible,
   pointer-events: auto;         /* so the dismiss control is clickable */
   /* Rise + fade uses the independent `translate` property: `transform` is
      pinned above, so the reduced-motion override cannot half-apply here. */
-  animation: tv-toast-rise .18s ease forwards;
+  animation: tv-toast-rise var(--tv-dur-base) var(--tv-ease-enter) forwards;
 }
-#tv-toasts .tv-toast.out { animation: tv-toast-sink .18s ease forwards; }
+#tv-toasts .tv-toast.out { animation: tv-toast-sink var(--tv-dur-exit) var(--tv-ease-exit) forwards; }
 
 @keyframes tv-toast-rise { from { opacity: 0; translate: 0 6px; } to { opacity: 1; translate: 0 0; } }
 @keyframes tv-toast-sink { from { opacity: 1; translate: 0 0; } to { opacity: 0; translate: 0 6px; } }
@@ -2875,7 +2974,7 @@ input:focus-visible,
   min-width: 24px; min-height: 24px; border-radius: 5px;
   color: var(--tv-text-muted) !important; cursor: default;
   border: 0; background: transparent;
-  transition: background .1s;
+  transition: background var(--tv-dur-fast) var(--tv-ease-enter);
   flex: 0 0 auto; margin-left: 4px;
 }
 .tv-search-close:hover { background: var(--tv-bg-hover) !important; color: var(--tv-text-secondary) !important; }
@@ -2937,7 +3036,7 @@ input:focus-visible,
   color: var(--tv-text-muted) !important;
 }
 @media (prefers-reduced-motion: no-preference) {
-  .tv-drag-card { animation: tv-drag-card-in .18s cubic-bezier(.2,.8,.3,1); }
+  .tv-drag-card { animation: tv-drag-card-in var(--tv-dur-base) var(--tv-ease-enter); }
   /* Slow breathe on the disc: immediate feedback that the window is armed,
      without the card itself moving under the cursor. */
   .tv-drag-card-ring { animation: tv-drag-pulse 1.8s ease-in-out infinite; }
@@ -3022,8 +3121,9 @@ button.tv-pin {
   -webkit-mask-position: 0 0, 0 0;
   mask-position: 0 0, 0 0;
 }
-.md .tbl-wrap[data-overflow="1"] {
-  /* tables have no top/bottom-right control to clear — single-layer fade */
+.md :not(.md) > .tbl-wrap[data-overflow="1"] {
+  /* tables have no top/bottom-right control to clear — single-layer fade.
+     UXF-01: nested tables only; top-level ones use data-edge. */
   -webkit-mask-repeat: no-repeat;
   mask-repeat: no-repeat;
   -webkit-mask-image: linear-gradient(to left, transparent, black 28px);
@@ -3087,3 +3187,35 @@ button.tv-pin {
   box-shadow: none;
 }
 .tv-find:focus-within { box-shadow: var(--tv-shadow-pop); }
+
+/* ═══════════════════════════════════════════════════════════
+   UXF-08: motion system. Tokens live in tv-tokens.css; JS-driven motion goes
+   through js/tv-motion.js (sidebar slide, overlay and tab enters, edit
+   crossfade). Transform and opacity only.
+   ═══════════════════════════════════════════════════════════ */
+@keyframes tv-fade-in { from { opacity: 0; } to { opacity: 1; } }
+
+/* Sidebar slide (FLIP): while it runs the translated viewer must not create a
+   horizontal scrollbar, and the hiding sidebar is a clone that slides away. */
+.tv-body.tv-animating { overflow: hidden; position: relative; }
+/* The idle warm-up paints one clone at opacity .001 (tv-app.js warmSidebarToggle). */
+.tv-body.tv-warming { position: relative; }
+.tv-sidebar-ghost {
+  position: absolute; left: 0; top: 0; height: 100%;
+  z-index: 5; pointer-events: none;
+}
+
+/* DR-03 / DR-10: a scroll position is restored, never animated. */
+.tv-scroll { scroll-behavior: auto; }
+
+/* Theme commit crossfade (View Transitions; instant where unsupported). */
+@media (prefers-reduced-motion: no-preference) {
+  ::view-transition-old(root),
+  ::view-transition-new(root) {
+    animation-duration: var(--tv-dur-base);
+    animation-timing-function: var(--tv-ease-enter);
+  }
+}
+/* The UA also animates the root GROUP (size and transform, 250ms); the root
+   never moves on a theme change, so only the 160ms crossfade above runs. */
+::view-transition-group(root) { animation: none; }

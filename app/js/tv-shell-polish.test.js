@@ -269,12 +269,12 @@ console.log('\n#7 C-18: overlay lists ⌘P and ⌘G, ignores bare modifiers\n');
     block.indexOf("action: 'Print / Export PDF'") !== -1);
   assert('the overlay lists ⌘G / ⇧⌘G Find next / previous',
     block.indexOf("action: 'Find next / previous'") !== -1);
-  // F-23 added ⌘N New file, taking the list from 19 to the DR-17 cap of 20. Any
-  // further row needs another DR-17 amendment first.
-  assert('20 rows, exactly at the amended DR-17 cap of 20',
-    rows === 20 && rows <= 20, String(rows));
-  assert('the two columns stay balanced (10 / 10)',
-    Math.ceil(rows / 2) === 10 && rows - Math.ceil(rows / 2) === 10);
+  // F-23 added ⌘N New file (20 rows); UXF-06 added ⇧⌘J Reveal in sidebar (21)
+  // and raised the DR-17 cap to 22. Any further row needs another amendment.
+  assert('21 rows, within the amended DR-17 cap of 22',
+    rows === 21 && rows <= 22, String(rows));
+  assert('the two columns stay balanced (11 / 10)',
+    Math.ceil(rows / 2) === 11 && rows - Math.ceil(rows / 2) === 10);
   assert('a bare modifier no longer dismisses the sheet',
     /_SC_BARE_MODIFIERS\[e\.key\]\) return;/.test(APP) &&
     /Shift: 1, Meta: 1, Alt: 1, Control: 1/.test(APP));
@@ -376,25 +376,19 @@ console.log('\n#11 C-28/C-29: empty subfolders and the truncation footer\n');
     extractFn('treeEmptyRow').indexOf('role="option"') === -1);
   assert('the dead "Some items not shown" footer is gone',
     APP.indexOf('Some items not shown') === -1);
+  // UXF-02: the footer is now per folder (filesHidden), with an exact count.
   assert('it is replaced by a counted, clickable row',
-    /'Show ' \+ tree\.skipped \+ /.test(APP));
-  assert('a missing skipped count falls back to "Show all files"',
-    APP.indexOf("'Show all files'") !== -1);
-  // P1-1: skippedExact === false means the scan stopped blind (e.g. the
-  // max_subfolders cap) — the count is a lower bound, so the row must say
-  // "N+" rather than assert a number the walk never verified.
-  assert('P1-1: an inexact skipped count is shown as a lower bound ("N+")',
-    /tree\.skippedExact === false \? '\+' : ''/.test(APP));
+    /'Show ' \+ n\.count \+ ' more '/.test(APP));
   assert('the row is keyboard-reachable (it IS interactive)',
-    /data-sidebar-item="' \+ esc\(moreKey\)/.test(APP) &&
+    /treeActionRow\('more:' \+ n\.path/.test(APP) &&
     /sidebarItem\.indexOf\('more:'\) === 0/.test(APP));
-  assert('it re-scans uncapped', /readDirTree\(path, \{ uncapped: true \}\)/.test(APP));
-  assert('it swaps the tree in place rather than re-registering '
+  assert('it re-scans that folder uncapped', /loadIntoTree\(folderPath, \{ uncapped: true/.test(APP));
+  assert('it grafts the folder in place rather than re-registering '
        + '(registerFolder would toast "already open" and move the cursor)',
-    /state\.openFolders\[i\] = tree;\s*\n\s*replaced = true;/.test(APP));
+    /TVTree\.graftNode\(tree, folderPath, scan\.root\)/.test(APP));
   assert('a folder closed mid-scan is not re-mounted',
-    /if \(!replaced\) \{ render\(\); return; \}/.test(APP));
-  assert('failure surfaces a toast', /Could not load the rest of this folder/.test(APP));
+    /if \(!tree \|\| !scan \|\| !scan\.root\) \{ render\(\); return false; \}/.test(APP));
+  assert('failure surfaces a toast', /'Could not read ' \+ pathBasename\(folderPath\)/.test(APP));
 })();
 
 /* ═══════════════════════════════════════════════════════════
@@ -496,9 +490,9 @@ console.log('\n#13 copy: no em or en dashes in strings this pass added\n');
     offenders.length === 0, offenders.join(' | '));
 
   [
-    'Show all files', 'No folder open', 'Loading…',
+    'No folder open', 'Loading…',
     'This file is empty. ⌘E to start writing.',
-    'Could not load the rest of this folder',
+    'Could not read ',
     'Already open with unsaved changes',
     'Not refreshed. You are editing this file.',
   ].forEach(function (s) {

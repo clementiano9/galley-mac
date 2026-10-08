@@ -9,6 +9,25 @@
 /* honour system light/dark preference for native widgets */
 :root { color-scheme: light dark; }
 
+/* UXF-08: motion tokens — every transition and animation uses these. Short,
+   decelerating on enter, accelerating on exit, no overshoot. Reduce Motion
+   zeroes the durations; the only motion left then is an opacity fade of at
+   most --tv-fade-reduced on a few overlays. */
+:root {
+  --tv-dur-fast: 100ms;       /* hover, press, chevron, menus, overlay enter, mode crossfade */
+  --tv-dur-base: 160ms;       /* toast in, shortcuts overlay, new tab pill, theme crossfade, image fade */
+  --tv-dur-slow: 220ms;       /* sidebar slide (the one big movement) */
+  --tv-dur-exit: 120ms;       /* anything seen leaving (toast out) */
+  --tv-dur-highlight: 1200ms; /* attention pulses: reveal ring, flash */
+  --tv-ease-enter: cubic-bezier(.2, .7, .2, 1);
+  --tv-ease-exit:  cubic-bezier(.4, 0, 1, 1);
+  --tv-ease-move:  cubic-bezier(.32, .72, 0, 1);
+  --tv-fade-reduced: 80ms;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root { --tv-dur-fast: 0ms; --tv-dur-base: 0ms; --tv-dur-slow: 0ms; --tv-dur-exit: 0ms; --tv-dur-highlight: 0ms; }
+}
+
 .tv {
   /* type */
   --tv-font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display",
@@ -25,7 +44,8 @@
      top offset (calc(40px + tabbar-h + 8px)) is built against. The Visual
      Spec's 38px is superseded by this value; do not "fix" it back to 38. */
   --tv-tabbar-h: 40px;
-  --tv-sidebar-w: 224px;
+  --tv-sidebar-w: 264px;   /* UXF-03: was 224 */
+  --tv-chrome-h: 160px;    /* UXF-04: title + tab + bottom bars + margin; caps a wide table box */
   --tv-toolbar-h: 40px;
   --tv-status-h: 32px;
   --tv-content-max: 720px;

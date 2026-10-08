@@ -14,6 +14,9 @@
 | **Step 4** — Ideation | `step-4-ideation.md` | 3 directions, URD coverage analysis, selected direction |
 | **Step 5** — Information Architecture | `step-5-ia.md` | App map, 3 user flows, navigation schema, content inventory |
 | **Step 6** — Wireframes | `step-6-wireframes.md` | 6 ASCII screens, interaction specs, error states, typography |
+| **Step 8** — Evaluation & Iteration (UX feedback 2026-10) | `step-8-evaluation.md` | Heuristic findings, think-aloud per work role, URD cross-reference, 2–3 ideas and one chosen direction for each of 6 feedback items; build specs `UXF-01…06` in `../feature-gaps/specs/` |
+| Step 8, iteration 2 (2026-10-06) | `step-8-evaluation.md` (section "Iteration 2"), `iteration-2-illustration.html`, `research/stream-6-iteration-2.md` | Width balance for tables (UXF-01 amended), agent dot-folders (UXF-07), motion system (UXF-08); WAN-075 to WAN-107; proposed WR4 Agent Operator and URD-11 |
+| Obsolete-design audit (2026-10) | `obsolete-audit.md` | Docs, mock-ups and code superseded by the shipped Galley build or by UXF-01…06, with a proposed action each |
 
 ---
 

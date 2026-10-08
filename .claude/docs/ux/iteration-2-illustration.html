@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Iteration Two</title>
+<style>
+/* Layout: one calm column, verdict first, one figure per change, one decision list. */
+:root {
+  --bg: #F6F8F8; --surface: #FFFFFF; --surface-2: #EDF1F1;
+  --fg: #101617; --fg-2: #5B6668; --line: #DDE4E4;
+  --accent: #0B7A75; --accent-ink: #FFFFFF; --accent-soft: #E8F5F3;
+  --good: #1F8A4C; --good-soft: #E2F3E9;
+  --warn: #A45F00; --warn-soft: #FBEFD8;
+  --bad: #C23B3B; --bad-soft: #FAE5E5;
+  --series-1: #008D85; --series-2: #BC653B; --series-3: #1460A1; --series-4: #933A5B; --series-5: #8C6DBF;
+  --ctx: #4D5858; --axis: #B8C3C4;
+  --shadow: 0 1px 2px rgba(16,22,23,.04), 0 12px 28px -16px rgba(16,22,23,.16);
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px; --s6: 32px; --s7: 48px; --s8: 72px;
+  --r0: 4px; --r1: 8px; --r2: 12px; --r3: 20px;
+  --ease: cubic-bezier(.2,.7,.2,1);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0C1112; --surface: #141B1C; --surface-2: #1B2426;
+    --fg: #EEF2F2; --fg-2: #93A0A2; --line: #263032;
+    --accent: #4CC9BF; --accent-ink: #062321; --accent-soft: #12302E;
+    --good: #4CC38A; --good-soft: #14291F;
+    --warn: #E8A93C; --warn-soft: #30240F;
+    --bad: #F07171; --bad-soft: #341818;
+    --series-1: #00ABA5; --series-2: #D47A51; --series-3: #2E75B7; --series-4: #AA4E6E; --series-5: #A182D6;
+    --ctx: #636E6F; --axis: #39474A;
+    --shadow: 0 0 0 1px rgba(255,255,255,.02);
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0C1112; --surface: #141B1C; --surface-2: #1B2426;
+  --fg: #EEF2F2; --fg-2: #93A0A2; --line: #263032;
+  --accent: #4CC9BF; --accent-ink: #062321; --accent-soft: #12302E;
+  --good: #4CC38A; --good-soft: #14291F;
+  --warn: #E8A93C; --warn-soft: #30240F;
+  --bad: #F07171; --bad-soft: #341818;
+  --series-1: #00ABA5; --series-2: #D47A51; --series-3: #2E75B7; --series-4: #AA4E6E; --series-5: #A182D6;
+  --ctx: #636E6F; --axis: #39474A;
+  --shadow: 0 0 0 1px rgba(255,255,255,.02);
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--fg);
+  font: 15px/1.5 var(--font); -webkit-font-smoothing: antialiased;
+  padding-inline: 20px; padding-block: var(--s7) var(--s8);
+}
+.wrap { max-width: 880px; margin-inline: auto; display: flex; flex-direction: column; gap: var(--s7); }
+section { display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
+h1, h2, p { margin: 0; }
+h2 { font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-2); }
+.eyebrow { font: 500 12px/1 var(--mono); letter-spacing: .04em; color: var(--fg-2); text-transform: uppercase; }
+.hero { display: flex; flex-direction: column; gap: var(--s3); }
+.hero h1 { font-size: clamp(28px, 5.2vw, 40px); line-height: 1.1; font-weight: 650; letter-spacing: -.022em; text-wrap: balance; max-width: 20ch; }
+.hero p { font-size: 17px; color: var(--fg-2); max-width: 52ch; text-wrap: pretty; }
+.hero b { color: var(--accent); font-weight: 600; }
+
+figure { margin: 0; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r3); padding: var(--s5); display: flex; flex-direction: column; gap: var(--s4); min-width: 0; }
+figcaption { font-size: 14px; color: var(--fg-2); max-width: 60ch; }
+.dg { display: block; width: 100%; max-width: 460px; height: auto; margin-inline: auto; color: var(--fg-2); }
+.dg .pane { fill: var(--surface-2); stroke: var(--line); stroke-width: 1; }
+.dg .col { fill: var(--surface); stroke: var(--axis); stroke-width: 1; stroke-dasharray: 3 3; }
+.dg .bar { fill: var(--ctx); }
+.dg .bar.hot { fill: var(--accent); }
+.dg .t { fill: var(--fg); font: 600 12px var(--font); }
+.dg .s { fill: var(--fg-2); font: 400 11px var(--font); }
+
+.matrix { border: 1px solid var(--line); border-radius: var(--r3); background: var(--surface); overflow-x: auto; }
+.matrix table { width: 100%; min-width: 0; border-collapse: collapse; font-size: 14px; }
+.matrix th, .matrix td { text-align: left; padding: 12px var(--s4); border-top: 1px solid var(--line); font-weight: 400; vertical-align: top; }
+.matrix thead th { border-top: 0; font-size: 12px; letter-spacing: .05em; text-transform: uppercase; color: var(--fg-2); font-weight: 600; }
+.matrix tbody th { color: var(--fg); font-weight: 500; }
+.matrix .num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cell { display: inline-flex; align-items: center; gap: 8px; }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--fg-2); flex: none; }
+.dot.acc { background: var(--accent); }
+@media (max-width: 560px) {
+  .matrix thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  .matrix tr { display: block; padding: var(--s3) var(--s4); border-top: 1px solid var(--line); }
+  .matrix tr:first-child { border-top: 0; }
+  .matrix th, .matrix td { display: flex; justify-content: space-between; align-items: center; gap: var(--s3); border: 0; padding: 4px 0; }
+  .matrix td::before { content: attr(data-label); color: var(--fg-2); }
+}
+
+/* folder mock */
+.zones { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: var(--s4); align-items: start; }
+.zone { display: flex; flex-direction: column; gap: var(--s2); min-width: 0; }
+.zl { font-size: 13px; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--fg-2); }
+.side { background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r2); padding: var(--s2); display: flex; flex-direction: column; font-size: 13px; }
+.side .row { display: flex; align-items: center; gap: 7px; padding: 5px 8px 5px calc(8px + var(--d, 0) * 14px); border-radius: 6px; min-width: 0; color: var(--fg-2); }
+.side .row.f { color: var(--fg); font-weight: 600; }
+.side .row .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.side .row .ct { font-variant-numeric: tabular-nums; font-size: 11px; color: var(--fg-2); font-weight: 400; }
+.side .row.x { opacity: .62; }
+.side .row.act { margin-top: var(--s1); color: var(--accent); font-weight: 600; background: var(--accent-soft); }
+.ico { width: 14px; height: 14px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.chips { display: flex; flex-wrap: wrap; gap: var(--s2); margin: 0; padding: 0; list-style: none; }
+.chips li { font: 500 12px/1 var(--mono); padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--r1); background: var(--surface-2); color: var(--fg); }
+.never li { color: var(--fg-2); text-decoration: line-through; text-decoration-color: var(--axis); }
+
+/* motion demo */
+.stage { position: relative; display: flex; height: 168px; border: 1px solid var(--line); border-radius: var(--r2); overflow: hidden; background: var(--surface); max-width: 520px; width: 100%; margin-inline: auto; }
+.sb { flex: 0 0 104px; background: var(--surface-2); border-right: 1px solid var(--line); padding: var(--s3); display: flex; flex-direction: column; gap: 10px; }
+.sb.off { display: none; }
+.sb .ln { height: 8px; border-radius: 4px; background: var(--line); }
+.ghost { position: absolute; left: 0; top: 0; bottom: 0; width: 104px; pointer-events: none; z-index: 2; }
+.vw { flex: 1; min-width: 0; display: flex; justify-content: center; padding: var(--s4); }
+.vcol { width: min(100%, 220px); display: flex; flex-direction: column; gap: 10px; }
+.vcol .ln { height: 8px; border-radius: 4px; background: var(--line); }
+.vcol .ln.h { height: 12px; width: 60%; background: var(--ctx); }
+.ctl { display: flex; flex-wrap: wrap; align-items: center; gap: var(--s3); justify-content: center; }
+.btn { font: 600 14px var(--font); color: var(--accent-ink); background: var(--accent); border: 0; border-radius: var(--r1); padding: 8px 14px; cursor: pointer; }
+.btn:hover { filter: brightness(1.05); }
+.read { font: 500 12px/1.4 var(--mono); color: var(--fg-2); }
+
+.rows { display: flex; flex-direction: column; margin: 0; padding: 0; list-style: none; background: var(--surface); border: 1px solid var(--line); border-radius: var(--r3); }
+.rows li { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--s3); align-items: baseline; padding: 14px var(--s4); border-top: 1px solid var(--line); font-size: 14px; }
+.rows li:first-child { border-top: 0; }
+.rows b { font-weight: 600; }
+.rows .def { color: var(--fg-2); font-size: 13px; text-align: right; }
+@media (max-width: 560px) { .rows li { grid-template-columns: 1fr; } .rows .def { text-align: left; } }
+
+.foot { font-size: 12px; color: var(--fg-2); }
+
+@keyframes rise { from { transform: translateY(8px); } to { transform: none; } }
+.wrap > * { animation: rise .42s var(--ease) backwards; }
+.wrap > *:nth-child(2) { animation-delay: .04s; } .wrap > *:nth-child(3) { animation-delay: .08s; }
+.wrap > *:nth-child(4) { animation-delay: .12s; } .wrap > *:nth-child(5) { animation-delay: .16s; }
+@media (prefers-reduced-motion: reduce) { .wrap > * { animation: none; } }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<main class="wrap">
+
+  <header class="hero">
+    <div class="eyebrow">Iteration 2 · 3 changes</div>
+    <h1>Balance width, show agents, slide the sidebar.</h1>
+    <p>Prose tables <b>stop at 800 px</b>. Known agent folders show by default and other dot-folders wait behind one toggle. The sidebar slides in 220 ms.</p>
+  </header>
+
+  <section aria-labelledby="h-tables">
+    <h2 id="h-tables">Table width</h2>
+    <figure>
+      <svg class="dg" viewBox="0 0 400 286" role="img" aria-label="Four panes drawn to scale, one third of real size. A prose table was 1,122 pixels wide and is now 800. A numeric table is 1,017 pixels wide before and after. The dashed band is the 640 pixel text column.">
+        <!-- pane 392 wide = 1,176 px; column 213 = 640 px; bars at 1/3 scale -->
+        <text class="t" x="4" y="12">Prose table, before</text><text class="s" x="396" y="12" text-anchor="end">1,122 px</text>
+        <rect class="pane" x="4" y="20" width="392" height="40" rx="8"/>
+        <rect class="col" x="93" y="20" width="214" height="40"/>
+        <rect class="bar" x="13" y="28" width="374" height="24" rx="4"/>
+
+        <text class="t" x="4" y="86">Prose table, after</text><text class="s" x="396" y="86" text-anchor="end">800 px</text>
+        <rect class="pane" x="4" y="94" width="392" height="40" rx="8"/>
+        <rect class="col" x="93" y="94" width="214" height="40"/>
+        <rect class="bar hot" x="67" y="102" width="267" height="24" rx="4"/>
+
+        <text class="t" x="4" y="160">10 numeric columns, before</text><text class="s" x="396" y="160" text-anchor="end">1,017 px</text>
+        <rect class="pane" x="4" y="168" width="392" height="40" rx="8"/>
+        <rect class="col" x="93" y="168" width="214" height="40"/>
+        <rect class="bar" x="31" y="176" width="339" height="24" rx="4"/>
+
+        <text class="t" x="4" y="234">10 numeric columns, after</text><text class="s" x="396" y="234" text-anchor="end">1,017 px, unchanged</text>
+        <rect class="pane" x="4" y="242" width="392" height="40" rx="8"/>
+        <rect class="col" x="93" y="242" width="214" height="40"/>
+        <rect class="bar" x="31" y="250" width="339" height="24" rx="4"/>
+      </svg>
+      <figcaption>Panes are a 1,176 px window at one third scale. The dashed band is the 640 px text column. Prose gives up 322 px; data keeps what it needs.</figcaption>
+    </figure>
+    <div class="matrix">
+      <table>
+        <thead><tr><th scope="col">Table</th><th scope="col">Width</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Short, few columns</th><td data-label="Width"><span class="cell"><i class="dot"></i>Text column, 640 px</span></td></tr>
+          <tr><th scope="row">Prose, any column over about 45 characters</th><td data-label="Width"><span class="cell"><i class="dot acc"></i>Up to 800 px</span></td></tr>
+          <tr><th scope="row">Short cells, many columns</th><td data-label="Width"><span class="cell"><i class="dot"></i>Its natural width, up to the pane</span></td></tr>
+          <tr><th scope="row">Needs more than the pane</th><td data-label="Width"><span class="cell"><i class="dot"></i>Pane width, scrolls in its own box</span></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-agents">
+    <h2 id="h-agents">Agent folders</h2>
+    <figure>
+      <div class="zones">
+        <div class="zone">
+          <div class="zl">Shown by default</div>
+          <div class="side" role="img" aria-label="Sidebar tree. Agent folders .agents, .claude, .cursor, .github, .kiro and a normal docs folder are listed with root files AGENTS.md, CLAUDE.md and .cursorrules. The last row says Show 6 more folders.">
+            <div class="row f"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">project</span><span class="ct">47</span></div>
+            <div class="row f" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">.agents</span><span class="ct">2</span></div>
+            <div class="row f" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">.claude</span><span class="ct">14</span></div>
+            <div class="row f" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">.cursor</span><span class="ct">6</span></div>
+            <div class="row f" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">.github</span><span class="ct">3</span></div>
+            <div class="row f" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">.kiro</span><span class="ct">8</span></div>
+            <div class="row f" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">docs</span><span class="ct">11</span></div>
+            <div class="row" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg><span class="nm">AGENTS.md</span></div>
+            <div class="row" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg><span class="nm">CLAUDE.md</span></div>
+            <div class="row" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg><span class="nm">.cursorrules</span></div>
+            <div class="row act" style="--d:1"><span class="nm">Show 6 more folders</span></div>
+          </div>
+        </div>
+        <div class="zone">
+          <div class="zl">After the toggle</div>
+          <div class="side" role="img" aria-label="Same tree after the toggle. Six more folders appear dimmed: .changeset, .codex, .gemini, .husky, .vscode and src. The last row says Hide 6 extra folders.">
+            <div class="row f"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">project</span><span class="ct">50</span></div>
+            <div class="row f x" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">.changeset</span><span class="ct">2</span></div>
+            <div class="row f x" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">.codex</span><span class="ct">0</span></div>
+            <div class="row f x" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">.gemini</span><span class="ct">0</span></div>
+            <div class="row f x" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">.husky</span><span class="ct">1</span></div>
+            <div class="row f x" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">.vscode</span><span class="ct">0</span></div>
+            <div class="row f x" style="--d:1"><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 18 6-6-6-6"/></svg><svg class="ico" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg><span class="nm">src</span><span class="ct">0</span></div>
+            <div class="row f" style="--d:1"><span class="nm">.agents, .claude, .cursor …</span></div>
+            <div class="row act" style="--d:1"><span class="nm">Hide 6 extra folders</span></div>
+          </div>
+        </div>
+        <div class="zone">
+          <div class="zl">Never scanned</div>
+          <ul class="chips never" aria-label="Folders never scanned">
+            <li>.git</li><li>node_modules</li><li>.venv</li><li>venv</li><li>__pycache__</li><li>.next</li><li>.nuxt</li><li>Pods</li><li>.cache</li><li>.tox</li><li>.gradle</li><li>.terraform</li><li>target</li><li>dist</li><li>build</li>
+          </ul>
+          <p class="foot">Generated trees. Not counted, not listed, and they never spend the scan budget. <code>target</code>, <code>dist</code> and <code>build</code> only next to a project file.</p>
+        </div>
+      </div>
+      <figcaption>A folder shows by default when it is on the agent list and holds something readable. Dimmed rows are the extras. Nothing carries a badge.</figcaption>
+    </figure>
+    <section aria-labelledby="h-list" style="gap: var(--s3)">
+      <h2 id="h-list">The agent list, 20 names</h2>
+      <ul class="chips" aria-label="Agent folder names">
+        <li>.agents</li><li>.amazonq</li><li>.augment</li><li>.claude</li><li>.clinerules</li><li>.codex</li><li>.continue</li><li>.cursor</li><li>.devin</li><li>.gemini</li><li>.github</li><li>.junie</li><li>.kilo</li><li>.kilocode</li><li>.kiro</li><li>.opencode</li><li>.roo</li><li>.specstory</li><li>.trae</li><li>.windsurf</li>
+      </ul>
+      <p class="foot">Also shown: AGENTS.md, CLAUDE.md and GEMINI.md at the root, six extensionless rule files such as .cursorrules, Cursor <code>.mdc</code> rules, any folder that holds an open file, and names you add from the folder menu.</p>
+    </section>
+  </section>
+
+  <section aria-labelledby="h-motion">
+    <h2 id="h-motion">Motion</h2>
+    <figure>
+      <div class="stage" id="stage">
+        <aside class="sb" id="sb" aria-hidden="true"><div class="ln"></div><div class="ln"></div><div class="ln"></div><div class="ln"></div></aside>
+        <div class="vw" id="vw"><div class="vcol"><div class="ln h"></div><div class="ln"></div><div class="ln"></div><div class="ln"></div><div class="ln"></div><div class="ln"></div></div></div>
+      </div>
+      <div class="ctl">
+        <button class="btn" id="tog" type="button" aria-pressed="true">Hide sidebar</button>
+        <span class="read" id="read" aria-live="polite">220 ms · ease-move · transform only</span>
+      </div>
+      <figcaption>The layout changes once, then the sidebar and the text column glide on transforms. The column never reflows mid-slide. With Reduce Motion on, nothing moves.</figcaption>
+    </figure>
+    <div class="matrix">
+      <table>
+        <thead><tr><th scope="col">Moment</th><th scope="col">Decision</th><th scope="col">Time</th></tr></thead>
+        <tbody>
+          <tr><th scope="row">Sidebar show and hide</th><td data-label="Decision"><span class="cell"><i class="dot acc"></i>Animates</span></td><td class="num" data-label="Time">220 ms</td></tr>
+          <tr><th scope="row">Palette, search, find bar open</th><td data-label="Decision"><span class="cell"><i class="dot acc"></i>Animates in, closes at once</span></td><td class="num" data-label="Time">100 ms</td></tr>
+          <tr><th scope="row">New tab appears</th><td data-label="Decision"><span class="cell"><i class="dot acc"></i>Animates</span></td><td class="num" data-label="Time">160 ms</td></tr>
+          <tr><th scope="row">Edit mode in and out</th><td data-label="Decision"><span class="cell"><i class="dot acc"></i>Animates</span></td><td class="num" data-label="Time">100 ms</td></tr>
+          <tr><th scope="row">Theme switch</th><td data-label="Decision"><span class="cell"><i class="dot acc"></i>Animates</span></td><td class="num" data-label="Time">160 ms</td></tr>
+          <tr><th scope="row">Toast</th><td data-label="Decision"><span class="cell"><i class="dot acc"></i>Animates</span></td><td class="num" data-label="Time">160 in, 120 out</td></tr>
+          <tr><th scope="row">Tab switch and tab close</th><td data-label="Decision"><span class="cell"><i class="dot"></i>Static</span></td><td class="num" data-label="Time">0 ms</td></tr>
+          <tr><th scope="row">Folder rows</th><td data-label="Decision"><span class="cell"><i class="dot"></i>Chevron only</span></td><td class="num" data-label="Time">100 ms</td></tr>
+          <tr><th scope="row">Live updates, scroll restore</th><td data-label="Decision"><span class="cell"><i class="dot"></i>Static</span></td><td class="num" data-label="Time">0 ms</td></tr>
+          <tr><th scope="row">Reduce Motion on</th><td data-label="Decision"><span class="cell"><i class="dot"></i>No movement</span></td><td class="num" data-label="Time">80 ms fade at most</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-call">
+    <h2 id="h-call">Your call</h2>
+    <ul class="rows">
+      <li><span><b>Config files.</b> Show <code>config.toml</code> and <code>settings.json</code> in a read-only code view?</span><span class="def">Not in this batch</span></li>
+      <li><span><b>Prose bleed.</b> 80 px each side. Set it to 0 for a strict column.</span><span class="def">One constant</span></li>
+      <li><span><b>Finger-following swipe.</b> Needs scroll phases forwarded from Rust.</span><span class="def">Follow-up</span></li>
+    </ul>
+  </section>
+
+  <p class="foot">Widths measured in headless Chrome at 1,440 px, in CSS px. Example tree for illustration.</p>
+</main>
+
+<script>
+(function () {
+  var stage = document.getElementById('stage'), sb = document.getElementById('sb'), vw = document.getElementById('vw');
+  var btn = document.getElementById('tog'), read = document.getElementById('read');
+  if (!stage || !sb || !vw || !btn || !read || !Element.prototype.animate) return;
+  var S = 104, DUR = 220, EASE = 'cubic-bezier(.32,.72,0,1)', open = true, running = [];
+  var idle = read.textContent;
+  function reduced() { return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches); }
+  function centre(el) { var r = el.getBoundingClientRect(); return r.left + r.width / 2; }
+  function settle() {
+    running.forEach(function (a) { try { a.finish(); } catch (e) { /* already done */ } });
+    running = [];
+    Array.prototype.forEach.call(stage.querySelectorAll('.ghost'), function (g) { g.remove(); });
+  }
+  btn.addEventListener('click', function () {
+    settle();
+    var c0 = centre(vw), ghost = null;
+    if (open) {
+      ghost = sb.cloneNode(true);
+      ghost.classList.add('ghost'); ghost.removeAttribute('id');
+    }
+    open = !open;
+    sb.classList.toggle('off', !open);
+    btn.textContent = open ? 'Hide sidebar' : 'Show sidebar';
+    btn.setAttribute('aria-pressed', String(open));
+    if (reduced()) { read.textContent = 'Reduce Motion is on: no movement'; return; }
+    read.textContent = idle;
+    var delta = c0 - centre(vw), anims = [];
+    if (ghost) {
+      stage.appendChild(ghost);
+      anims.push(ghost.animate([{ transform: 'none' }, { transform: 'translateX(' + (-S) + 'px)' }], { duration: DUR, easing: EASE, fill: 'forwards' }));
+    } else {
+      anims.push(sb.animate([{ transform: 'translateX(' + (-S) + 'px)' }, { transform: 'none' }], { duration: DUR, easing: EASE }));
+    }
+    anims.push(vw.animate([{ transform: 'translateX(' + delta + 'px)' }, { transform: 'none' }], { duration: DUR, easing: EASE }));
+    running = anims;
+    Promise.all(anims.map(function (a) { return a.finished; })).then(function () {
+      if (ghost && ghost.parentNode) ghost.remove();
+      running = [];
+    }).catch(function () { /* interrupted by a second click */ });
+  });
+})();
+</script>
+</body>
+</html>

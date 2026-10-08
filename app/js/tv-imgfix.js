@@ -135,7 +135,25 @@
   // Wire the broken-image handler onto an img after its src is set.
   // For block images the figure parent gets .tv-img-missing.
   // For inline images the img itself gets .tv-img-broken.
+  // UXF-08 (audit row 26): an image fades in (160ms, opacity only, so no
+  // layout shift) the FIRST time its source loads this session. Re-renders
+  // rebuild every <img>; a source already shown once never fades again, so a
+  // tab switch or theme change animates nothing (DR-09).
+  var _shownSrc = {};
+  function wireLoadFade(img) {
+    if (typeof img.addEventListener !== 'function') return;
+    var key = function () { return img.currentSrc || img.src || img.getAttribute('src') || ''; };
+    if (img.complete && img.naturalWidth) { _shownSrc[key()] = true; return; }
+    img.addEventListener('load', function () {
+      var src = key();
+      if (_shownSrc[src]) return;
+      _shownSrc[src] = true;
+      if (window.TVMotion) window.TVMotion.enter(img, { dur: 'base' });
+    }, { once: true });
+  }
+
   function wireOnerror(img) {
+    wireLoadFade(img);
     var figure = img.parentNode && img.parentNode.classList &&
                  img.parentNode.classList.contains('md-img') ? img.parentNode : null;
     if (figure) {

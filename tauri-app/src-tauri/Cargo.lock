@@ -3482,7 +3482,10 @@ dependencies = [
 name = "tauri-app"
 version = "0.1.0"
 dependencies = [
+ "block2",
  "notify",
+ "objc2",
+ "objc2-app-kit",
  "serde",
  "serde_json",
  "tauri",

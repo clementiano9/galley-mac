@@ -11,12 +11,16 @@
   /* ── helpers ─────────────────────────────────────────────── */
 
   // Accepted MIME / extension combos
-  var MD_EXTS = ['.md', '.markdown', '.txt'];
-  var MD_ACCEPT = { 'text/markdown': ['.md', '.markdown'], 'text/plain': ['.txt'] };
+  var MD_EXTS = ['.md', '.markdown', '.mdc', '.txt']; // UXF-07: .mdc (Cursor rules)
+  var MD_ACCEPT = { 'text/markdown': ['.md', '.markdown', '.mdc'], 'text/plain': ['.txt'] };
+
+  // UXF-07: extensionless agent rule files (same list as lib.rs AGENT_FILE_NAMES).
+  var AGENT_RULE_FILES = ['.cursorrules', '.windsurfrules', '.clinerules', '.roorules', '.goosehints', '.rules'];
 
   function isMdFile(file) {
     var name = (file.name || '').toLowerCase();
-    return MD_EXTS.some(function (ext) { return name.endsWith(ext); });
+    return AGENT_RULE_FILES.indexOf(name) !== -1 ||
+      MD_EXTS.some(function (ext) { return name.endsWith(ext); });
   }
 
   function getTV() {
@@ -260,7 +264,7 @@
     return new Promise(function (resolve) {
       var input = document.createElement('input');
       input.type = 'file';
-      input.accept = '.md,.markdown,.txt';
+      input.accept = '.md,.markdown,.mdc,.txt';
       input.multiple = true;
       input.style.cssText = 'position:absolute;width:0;height:0;opacity:0;pointer-events:none';
 

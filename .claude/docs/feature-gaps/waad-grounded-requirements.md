@@ -71,7 +71,7 @@
 | DR | Requirement | URD | MoSCoW |
 |----|-------------|-----|--------|
 | DR-16 | Pressing `?` in Reading Mode (no modifier, no text input focused, no overlay open) opens a compact shortcut-reference overlay. | URD-08 | Must |
-| DR-17 | The overlay lists all application shortcuts in a two-column layout (key / action), max **20 rows** (raised from 18 — see amendment below). | URD-08 | Must |
+| DR-17 | The overlay lists all application shortcuts in a two-column layout (key / action), max **22 rows** (raised from 18, then 20 — see amendments below). | URD-08 | Must |
 | DR-18 | The overlay closes on any keypress, click outside its bounds, or Esc. No explicit close button required. | URD-08 | Must |
 | DR-19 | The overlay must NOT auto-activate on first launch, file open, or any action other than explicit `?` or `Help > Keyboard Shortcuts`. | URD-05 | Must |
 | DR-20 | `Help > Keyboard Shortcuts` opens the identical overlay as DR-16. | URD-08 | Must |
@@ -89,6 +89,14 @@ mirrored by the native Edit ▸ Find menu items). The sheet is the app's only
 discovery surface for keyboard-first use, so a shortcut that exists and is not
 listed is a documentation defect; the cap moves rather than the shortcuts.
 Shipped list is now **19 rows** in a 10/9 split, one row under the new cap.
+
+**Amendment · 2026-10-06 (UXF-06, Reveal in Sidebar)**
+
+DR-17's row cap is raised from **20 to 22**. F-23 had already taken the list to
+exactly 20 with `⌘N` New file; UXF-06 adds `⇧⌘J` Reveal in sidebar as row 21, so
+the sheet is **21 rows** in an 11/10 split, one row under the new cap. Same
+reasoning as C-18: a bound shortcut the overlay does not list is a documentation
+defect.
 
 DR-18 is narrowed by the same cluster: the overlay no longer closes on a **bare
 modifier** keydown (Shift, ⌘, ⌥, Ctrl, Caps Lock and friends). "Closes on any

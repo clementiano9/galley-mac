@@ -70,14 +70,23 @@ assert('a file aligns inside its folder, level-consistently',
   TVTree.treeIndent(1, false) === TVTree.treeIndent(2, true) + 2);
 
 // Depth must survive recursion with no floor and no first-level special case.
+// UXF-02 DirNode builder (read_dir_tree's recursive shape).
+function dirNode(path, fileNames, folders) {
+  var files = (fileNames || []).map(function (n) { return { name: n, path: path + '/' + n }; });
+  var count = files.length;
+  (folders || []).forEach(function (f) { count += f.mdCount; });
+  return { name: path.split('/').pop(), path: path, files: files, filesHidden: 0,
+           folders: folders || [], mdCount: count, scanned: true };
+}
 var deepTree = {
-  path: '/ux-steps',
-  files: [{ name: 'charter.md', path: '/ux-steps/charter.md' }],
-  subfolders: [{ name: 'research', files: [{ name: 's1.md', path: '/ux-steps/research/s1.md' }] }],
-  deep: [
-    { name: 'derived-wans.md', path: '/ux-steps/research/sources/derived-wans.md', from: 'research/sources/' },
-    { name: 'url.md', path: '/ux-steps/research/sources/refs/url.md', from: 'research/sources/refs/' }
-  ]
+  path: '/ux-steps', truncated: false, unreadable: 0,
+  root: dirNode('/ux-steps', ['charter.md'], [
+    dirNode('/ux-steps/research', ['s1.md'], [
+      dirNode('/ux-steps/research/sources', ['derived-wans.md'], [
+        dirNode('/ux-steps/research/sources/refs', ['url.md'])
+      ])
+    ])
+  ])
 };
 var nodes = TVTree.buildTreeNodes(deepTree, {});
 function nodeNamed(n) {
@@ -287,7 +296,8 @@ assert('the bridge re-renders once the tab carries nativePath',
 
 // QA D6 — the subfolder name span had no class, so no ellipsis rule applied.
 assert('subfolder names can truncate like every sibling row',
-  /<span class="tname" title="' \+ esc\(n\.name\)/.test(APP_SRC));
+  // UXF-07: the title also names an agent folder's tool.
+  /<span class="tname" title="' \+ esc\(n\.tool \? n\.tool \+ ' · ' \+ n\.name : n\.name\)/.test(APP_SRC));
 
 console.log('\n' + (fail === 0 ? 'ALL PASSED' : 'FAILURES: ' + fail) +
   '  (' + pass + ' passed, ' + fail + ' failed)\n');

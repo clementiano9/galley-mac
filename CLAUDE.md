@@ -48,8 +48,9 @@ Module map (scripts load in this dependency order — see `index.html`):
 `tv-icons` (inline SVG) → `tv-docs` (seed/stream content) → `tv-markdown` (md→HTML +
 async diagram resolver) → `tv-imgfix` → `tv-edit` (double-click/⌘E source editing) →
 `tv-palette` (⌘K) → `tv-search` (⌘⇧F) → `tv-files` (drag-drop + ⌘O + save) →
-`tv-live` (live-watch + status bar) → `tv-tree` (sidebar folder tree) → `tv-app` (the
-spine) → `tv-native` (Tauri bridge).
+`tv-live` (live-watch + status bar) → `tv-tree` (sidebar folder tree) → `tv-swipe`
+(two-finger swipe toggles the sidebar) → `tv-motion` (motion tokens + Reduce Motion) →
+`tv-app` (the spine) → `tv-native` (Tauri bridge).
 
 Overlays (palette, search, files, edit, live) register a small interface
 (`open()/close()/isOpen()`, etc.) on `window` and are invoked by the shell's keyboard

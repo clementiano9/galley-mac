@@ -84,12 +84,6 @@ pub struct DirEntry {
     pub path: String,
 }
 
-/// A single immediate subdirectory that contains matching files.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct SubfolderEntry {
-    pub name: String,
-    pub files: Vec<DirEntry>,
-}
 
 /// Return shape for pick_folder (B1 · folder-nesting fix).
 ///
@@ -105,52 +99,36 @@ pub struct FolderPick {
     pub files: Vec<FileDoc>,
 }
 
-/// Return shape for read_dir_tree (F-19, DR-33–DR-41).
+/// UXF-02: return shape for read_dir_tree — a real recursive tree.
 ///
-/// - `path`       — the absolute folder path that was scanned.
-/// - `files`      — .md/.markdown/.txt files directly in the folder (depth 0).
-/// - `subfolders` — immediate subdirectories (depth 1) that contain matching files,
-///                  each with their direct matching children.
-/// - `deep`       — matching files nested MORE than one level below (depth 2+),
-///                  flattened; `from` is the relative sub-path prefix (e.g. "sub/deeper/")
-///                  for tooltip display.
-///
-/// Caps: maximum 200 total entries visited, maximum 50 direct `files`, maximum
-/// 10 subfolders (each capped at 50 files), maximum 50 deep entries.
-/// Unreadable directory entries are skipped with an eprintln, matching pick_folder behaviour.
+/// `truncated` is true when any node is `scanned: false` or has `files_hidden > 0`.
+/// `unreadable` counts folders the scan could not open (the root excepted: that
+/// is an error).
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DirTree {
     pub path: String,
-    pub files: Vec<DirEntry>,
-    pub subfolders: Vec<SubfolderEntry>,
-    pub deep: Vec<DeepEntry>,
-    /// B2: true when the scanner dropped any matching file/subfolder because a cap
-    /// (MAX_TOTAL / MAX_DIRECT / MAX_SUBFOLDERS / MAX_SUB_FILES / MAX_DEEP) was hit.
-    /// Drives the sidebar's "Some items not shown" footer row.
+    pub root: DirNode,
     pub truncated: bool,
-    /// C-29: how many MATCHING entries the scan dropped, counted at the sites
-    /// where the scanner actually saw them (the max_direct / max_sub_files /
-    /// max_deep push-guards). `truncated` stays the authoritative "there is
-    /// more" flag: render a count only when `skipped > 0`.
-    pub skipped: u32,
-    /// C-29: whether `skipped` is the WHOLE truth.
-    ///
-    /// True when every drop was counted one by one, so "Show N more files" is
-    /// exact. False when the walk stopped blind — the visit budget ran out, the
-    /// subfolder cap skipped a directory without opening it, or the depth limit
-    /// cut the recursion — in which case `skipped` is a LOWER BOUND and the UI
-    /// should say "N+" rather than "N". Serialised as `skippedExact` for JS.
-    #[serde(rename = "skippedExact")]
-    pub skipped_exact: bool,
+    pub unreadable: u32,
 }
 
-/// A file nested more than one level below the scanned root.
+/// UXF-02: one folder of the tree. Names and paths only — no content (DR-06).
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct DeepEntry {
+#[serde(rename_all = "camelCase")]
+pub struct DirNode {
     pub name: String,
     pub path: String,
-    /// Relative sub-path prefix from the scanned root, e.g. "sub/deeper/" — for tooltip.
-    pub from: String,
+    /// Direct markdown files, natural-sorted, at most FILE_CAP.
+    pub files: Vec<DirEntry>,
+    /// Direct markdown files beyond FILE_CAP.
+    pub files_hidden: u32,
+    /// Direct subfolders, natural-sorted; includes folders with md_count == 0.
+    pub folders: Vec<DirNode>,
+    /// Markdown files in this subtree the scan saw (files_hidden included).
+    pub md_count: u32,
+    /// false = the budget or depth limit ran out before this folder was read.
+    pub scanned: bool,
 }
 
 /// Payload emitted on every file-changed event.
@@ -166,6 +144,151 @@ pub struct FileChanged {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FileRemoved {
     pub path: String,
+}
+
+// ── UXF-09: trackpad finger phases → `swipe-touch` ─────────────────────────────
+
+/// Payload of the `swipe-touch` event (camelCase on the wire). Finger events
+/// only — momentum and phase-less mouse wheels are never sent. `t` is the
+/// NSEvent timestamp in ms (native clock); `dx`/`dy` are scrollingDeltaX/Y,
+/// `inverted` is isDirectionInvertedFromDevice; `x`/`y` are the pointer in
+/// window points (top-left origin, = CSS px at zoom 1); `mods` = ⇧⌃⌥⌘ held.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SwipeTouch {
+    pub phase: &'static str,
+    pub t: f64,
+    pub dx: f64,
+    pub dy: f64,
+    pub precise: bool,
+    pub inverted: bool,
+    pub x: f64,
+    pub y: f64,
+    pub mods: bool,
+}
+
+/// NSEventPhase / momentumPhase bits → the `swipe-touch` phase, or None when
+/// the event must not be forwarded (momentum, stationary, or a mouse wheel,
+/// which has no phase). May-begin (fingers down, not moved yet) counts as began.
+pub fn swipe_phase(phase: u64, momentum: u64) -> Option<&'static str> {
+    if momentum != 0 {
+        return None;
+    }
+    match phase {
+        1 | 32 => Some("began"),
+        4 => Some("changed"),
+        8 => Some("ended"),
+        16 => Some("cancelled"),
+        _ => None,
+    }
+}
+
+/// Forwarding policy, pure so it is unit-tested: per touch, `changed` deltas
+/// are coalesced to at most one message per SWIPE_COALESCE_MS and only during
+/// the first SWIPE_FORWARD_MS (a swipe decides in ~60 ms; a long reading
+/// scroll must not stream IPC). `began`/`ended` always go through, and a
+/// pending delta is flushed before `ended`.
+pub const SWIPE_COALESCE_MS: f64 = 16.0;
+pub const SWIPE_FORWARD_MS: f64 = 1000.0;
+
+#[derive(Debug, Default)]
+pub struct SwipeForwarder {
+    touch_t0: Option<f64>,
+    last_emit: f64,
+    pend_dx: f64,
+    pend_dy: f64,
+}
+
+impl SwipeForwarder {
+    pub fn push(&mut self, ev: SwipeTouch) -> Vec<SwipeTouch> {
+        let mut out = Vec::new();
+        match ev.phase {
+            "began" => {
+                self.touch_t0 = Some(ev.t);
+                self.pend_dx = 0.0;
+                self.pend_dy = 0.0;
+                self.last_emit = f64::NEG_INFINITY;
+                out.push(ev);
+            }
+            "changed" => {
+                let t0 = *self.touch_t0.get_or_insert(ev.t);
+                if ev.t - t0 > SWIPE_FORWARD_MS {
+                    return out;
+                }
+                self.pend_dx += ev.dx;
+                self.pend_dy += ev.dy;
+                if ev.t - self.last_emit >= SWIPE_COALESCE_MS {
+                    self.last_emit = ev.t;
+                    out.push(SwipeTouch { dx: self.pend_dx, dy: self.pend_dy, ..ev });
+                    self.pend_dx = 0.0;
+                    self.pend_dy = 0.0;
+                }
+            }
+            _ => {
+                if self.pend_dx != 0.0 || self.pend_dy != 0.0 {
+                    out.push(SwipeTouch { phase: "changed", dx: self.pend_dx, dy: self.pend_dy, ..ev.clone() });
+                }
+                self.pend_dx = 0.0;
+                self.pend_dy = 0.0;
+                self.touch_t0 = None;
+                out.push(ev);
+            }
+        }
+        out
+    }
+}
+
+/// Install the scroll-wheel local monitor for the app's life. It only READS
+/// each event and returns it unchanged (never nil), so WKWebView scrolls
+/// exactly as before. AppKit calls the handler on the main thread.
+#[cfg(target_os = "macos")]
+fn install_swipe_monitor(app: tauri::AppHandle) {
+    use block2::RcBlock;
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags};
+    use std::cell::RefCell;
+    use std::ptr::NonNull;
+
+    let fwd = RefCell::new(SwipeForwarder::default());
+    let handler = RcBlock::new(move |ev: NonNull<NSEvent>| -> *mut NSEvent {
+        // SAFETY: AppKit hands the monitor a valid event for the call's duration.
+        let e: &NSEvent = unsafe { ev.as_ref() };
+        let phase = swipe_phase(e.phase().0 as u64, e.momentumPhase().0 as u64);
+        if let (Some(phase), Some(mtm)) = (phase, MainThreadMarker::new()) {
+            if let Some(win) = e.window(mtm) {
+                let loc = e.locationInWindow();
+                let h = win.contentView().map(|v| v.frame().size.height).unwrap_or(0.0);
+                let m = e.modifierFlags();
+                let held = NSEventModifierFlags::Shift | NSEventModifierFlags::Control
+                    | NSEventModifierFlags::Option | NSEventModifierFlags::Command;
+                let msg = SwipeTouch {
+                    phase,
+                    t: e.timestamp() * 1000.0,
+                    dx: e.scrollingDeltaX(),
+                    dy: e.scrollingDeltaY(),
+                    precise: e.hasPreciseScrollingDeltas(),
+                    inverted: e.isDirectionInvertedFromDevice(),
+                    x: loc.x,
+                    y: h - loc.y,
+                    mods: m.intersects(held),
+                };
+                let out = fwd.borrow_mut().push(msg);
+                for m in out {
+                    if let Err(err) = app.emit("swipe-touch", m) {
+                        eprintln!("swipe-touch emit error: {}", err);
+                    }
+                }
+            }
+        }
+        ev.as_ptr()
+    });
+    // SAFETY: the block returns the event it was given, a valid pointer.
+    let monitor = unsafe {
+        NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::ScrollWheel, &handler)
+    };
+    // The monitor lives as long as the app; keep it (and the block) alive.
+    std::mem::forget(monitor);
+    std::mem::forget(handler);
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -203,7 +326,7 @@ async fn pick_md_files(app: tauri::AppHandle) -> Result<Vec<FileDoc>, String> {
 
     app.dialog()
         .file()
-        .add_filter("Markdown", &["md", "markdown", "txt"])
+        .add_filter("Markdown", &["md", "markdown", "mdc", "txt"])
         .pick_files(move |paths| {
             let _ = tx.send(paths);
         });
@@ -282,13 +405,12 @@ async fn pick_folder(app: tauri::AppHandle) -> Result<FolderPick, String> {
             continue;
         }
 
-        // Only .md, .markdown, .txt extensions.
-        let ext = path
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        if ext != "md" && ext != "markdown" && ext != "txt" {
+        // Only viewable files (UXF-07: .mdc and the agent rule files too).
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
+        if !is_md_name(&name) {
             continue;
         }
 
@@ -513,7 +635,7 @@ async fn save_md_file_as(
         .dialog()
         .file()
         .set_file_name(&suggested_name)
-        .add_filter("Markdown", &["md", "markdown", "txt"]);
+        .add_filter("Markdown", &["md", "markdown", "mdc", "txt"]);
     if let Some(dir) = directory.filter(|d| std::path::Path::new(d).is_dir()) {
         dialog = dialog.set_directory(dir);
     }
@@ -692,316 +814,290 @@ fn unwatch_file(
     Ok(())
 }
 
-/// Scan a directory and return a DirTree describing its .md/.markdown/.txt contents
-/// at three depth tiers (F-19, DR-33–DR-41).
-///
-/// Depth 0  → `files`      (direct children of `path`)
-/// Depth 1  → `subfolders` (immediate subdirectories with matching files)
-/// Depth 2+ → `deep`       (matching files nested deeper, flattened with `from` prefix)
-///
-/// Caps (all entry-counts, not file-counts only):
-///   - Total entries visited across all depths: 200 (prevents runaway scans).
-///   - `files`: 50 direct entries.
-///   - `subfolders`: 10 subdirectories, each capped at 50 matching files.
-///   - `deep`: 50 flattened entries.
-///
-/// Unreadable entries are skipped with eprintln, matching pick_folder behaviour.
-/// Non-directory, non-matching-extension entries are silently skipped.
-#[tauri::command]
-fn read_dir_tree(path: String, uncapped: Option<bool>) -> Result<DirTree, String> {
-    // C-29: the DEFAULT scan is byte-for-byte the previous behaviour. Passing
-    // `uncapped: true` re-runs the same walk with a much higher (still bounded)
-    // budget, so the sidebar can offer "Show N more files" and actually deliver
-    // them. Nothing else about the returned shape changes.
-    let wide = uncapped.unwrap_or(false);
-    let max_total: usize = if wide { 5000 } else { 200 };
-    let max_direct: usize = if wide { 5000 } else { 50 };
-    let max_subfolders: usize = if wide { 200 } else { 10 };
-    let max_sub_files: usize = if wide { 5000 } else { 50 };
-    let max_deep: usize = if wide { 5000 } else { 50 };
-    // QA D5: how many levels BELOW a subfolder the deep walk descends. 1 was the
-    // old hardcoded behavior (and could not represent the design's depth-4 case);
-    // 6 covers real note trees while still bounding a pathological hierarchy.
-    let max_depth: usize = if wide { 12 } else { 6 };
+/// UXF-02: scan limits. `uncapped: true` (a "Show N more files" row, or loading
+/// one unscanned folder) uses the wide set.
+struct ScanLimits {
+    /// Directory entries read across the whole walk.
+    budget: usize,
+    /// Markdown files listed per folder.
+    file_cap: usize,
+    /// Safety only; deeper folders come back `scanned: false`.
+    max_depth: usize,
+}
 
-    let root = PathBuf::from(&path);
+const SCAN_DEFAULT: ScanLimits = ScanLimits { budget: 20_000, file_cap: 500, max_depth: 40 };
+const SCAN_WIDE: ScanLimits = ScanLimits { budget: 200_000, file_cap: 5_000, max_depth: 40 };
 
-    // Helper: is this path a matching extension?
-    fn is_matching(p: &std::path::Path) -> bool {
-        let ext = p
-            .extension()
-            .and_then(|e| e.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        ext == "md" || ext == "markdown" || ext == "txt"
+/// UXF-02: folder names never scanned, at any depth below the root the user
+/// picked. Generated or vendored trees that would only burn the budget.
+const SCAN_DENY: &[&str] = &[
+    ".git", "node_modules", ".venv", "venv", "__pycache__", ".next", ".nuxt",
+    "Pods", ".cache", ".tox", ".gradle", ".terraform",
+];
+/// Denied only when the parent folder holds one of the listed marker files.
+const SCAN_DENY_IF_PARENT_HAS: &[(&str, &[&str])] = &[
+    ("target", &["Cargo.toml"]),
+    ("dist", &["package.json", "pyproject.toml"]),
+    ("build", &["package.json", "pyproject.toml"]),
+];
+/// macOS package bundles: application internals, not documents.
+const SCAN_PACKAGE_EXTS: &[&str] = &["app", "framework", "xcodeproj", "xcworkspace", "photoslibrary"];
+
+/// UXF-07: extensionless agent rule files, viewable at any depth.
+const AGENT_FILE_NAMES: &[&str] = &[
+    ".cursorrules", ".windsurfrules", ".clinerules", ".roorules", ".goosehints", ".rules",
+];
+
+/// A file the app lists and opens: `md`, `markdown`, `mdc` (Cursor rules,
+/// UXF-07), `txt`, or one of AGENT_FILE_NAMES. Nothing else (DR-39): `.env`,
+/// `settings.json`, `config.toml` never appear.
+fn is_md_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    if AGENT_FILE_NAMES.contains(&lower.as_str()) {
+        return true;
     }
+    let ext = std::path::Path::new(&lower)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_string();
+    ext == "md" || ext == "markdown" || ext == "mdc" || ext == "txt"
+}
 
-    // Helper: build a DirEntry from a PathBuf.
-    fn make_entry(p: &std::path::Path) -> DirEntry {
-        DirEntry {
-            name: p
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default(),
-            path: p.to_string_lossy().to_string(),
+fn is_package_name(name: &str) -> bool {
+    match name.rsplit_once('.') {
+        Some((_, ext)) => {
+            let ext = ext.to_ascii_lowercase();
+            SCAN_PACKAGE_EXTS.iter().any(|p| *p == ext)
+        }
+        None => false,
+    }
+}
+
+/// UXF-02: natural, case-insensitive order — `a2` < `a10` < `B`. Digit runs
+/// compare by value; names equal ignoring case fall back to a byte compare so
+/// the order is total and deterministic.
+pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    use std::cmp::Ordering;
+    let la: Vec<char> = a.chars().flat_map(|c| c.to_lowercase()).collect();
+    let lb: Vec<char> = b.chars().flat_map(|c| c.to_lowercase()).collect();
+    let (mut i, mut j) = (0usize, 0usize);
+    while i < la.len() && j < lb.len() {
+        let (ca, cb) = (la[i], lb[j]);
+        if ca.is_ascii_digit() && cb.is_ascii_digit() {
+            let si = i;
+            while i < la.len() && la[i].is_ascii_digit() { i += 1; }
+            let sj = j;
+            while j < lb.len() && lb[j].is_ascii_digit() { j += 1; }
+            let da: String = la[si..i].iter().collect::<String>().trim_start_matches('0').to_string();
+            let db: String = lb[sj..j].iter().collect::<String>().trim_start_matches('0').to_string();
+            let ord = da.len().cmp(&db.len()).then_with(|| da.cmp(&db));
+            if ord != Ordering::Equal { return ord; }
+        } else {
+            if ca != cb { return ca.cmp(&cb); }
+            i += 1;
+            j += 1;
         }
     }
+    (la.len() - i).cmp(&(lb.len() - j)).then_with(|| a.cmp(b))
+}
 
-    // SBH-01 (QA D5): recursively collect matching files below a subfolder into
-    // the flat `deep` list, tagging each with its FULL relative prefix
-    // ("research/sources/inner/"). The old code walked exactly one level below a
-    // subfolder and pushed only `is_file()` entries, so a directory at depth 3
-    // was never opened and never counted — files below it vanished from the UI
-    // with `truncated` still false, i.e. silently. The JS side already splits an
-    // arbitrary-depth `from` prefix, so nesting renders at any depth.
-    //
-    // Bounded three ways: max_depth levels, the shared max_total visit budget,
-    // and max_deep collected entries. Hitting ANY of them sets `truncated`, so
-    // the sidebar's truncation footer tells the truth.
-    #[allow(clippy::too_many_arguments)]
-    fn collect_deep(
-        dir: &std::path::Path,
-        prefix: &str,
-        depth: usize,
-        max_depth: usize,
-        max_total: usize,
-        max_deep: usize,
-        deep: &mut Vec<DeepEntry>,
-        total_visited: &mut usize,
-        truncated: &mut bool,
-        skipped: &mut u32,
-        exact: &mut bool,
-    ) {
-        if depth > max_depth {
-            *truncated = true;
-            *exact = false;   // C-29: never opened this level, so nothing counted
-            return;
+/// Arena node used during the breadth-first walk; children are indices.
+struct ScanNode {
+    name: String,
+    path: std::path::PathBuf,
+    depth: usize,
+    files: Vec<DirEntry>,
+    files_hidden: u32,
+    children: Vec<usize>,
+    direct_md: u32,
+    scanned: bool,
+}
+
+/// UXF-02: the pure scan behind read_dir_tree (unit-tested below).
+///
+/// Breadth-first with a FIFO queue so one deep subtree can never starve its
+/// siblings; the budget is checked between folders, and a folder reached after
+/// it ran out is returned `scanned: false` (shown with "…", loaded on expand)
+/// instead of silently missing. Symlinked folders are not followed; symlinked
+/// files are. No file content is read (DR-06).
+fn scan_dir_tree(path: &str, wide: bool) -> Result<DirTree, String> {
+    scan_dir_tree_with(path, if wide { &SCAN_WIDE } else { &SCAN_DEFAULT })
+}
+
+fn scan_dir_tree_with(path: &str, limits: &ScanLimits) -> Result<DirTree, String> {
+    use std::collections::VecDeque;
+
+    let root_path = PathBuf::from(path);
+    let root_name = root_path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.to_string());
+
+    let mut arena: Vec<ScanNode> = vec![ScanNode {
+        name: root_name,
+        path: root_path,
+        depth: 0,
+        files: Vec::new(),
+        files_hidden: 0,
+        children: Vec::new(),
+        direct_md: 0,
+        scanned: false,
+    }];
+    let mut queue: VecDeque<usize> = VecDeque::new();
+    queue.push_back(0);
+    let mut visited: usize = 0;
+    let mut unreadable: u32 = 0;
+
+    while let Some(idx) = queue.pop_front() {
+        if idx != 0 && (visited >= limits.budget || arena[idx].depth > limits.max_depth) {
+            continue; // stays scanned: false
         }
-        let entries = match std::fs::read_dir(dir) {
-            Ok(iter) => iter,
+        let dir = arena[idx].path.clone();
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(it) => it,
             Err(e) => {
-                eprintln!(
-                    "read_dir_tree: skipping unreadable deep dir '{}': {}",
-                    dir.display(),
-                    e
-                );
-                return;
+                if idx == 0 {
+                    return Err(format!("read_dir_tree: cannot read '{}': {}", path, e));
+                }
+                eprintln!("read_dir_tree: unreadable folder '{}': {}", dir.display(), e);
+                unreadable += 1;
+                arena[idx].scanned = true;
+                continue;
             }
         };
-        for result in entries {
-            if *total_visited >= max_total {
-                *truncated = true;
-                *exact = false;   // C-29: stopped blind, the rest is uncounted
-                return;
-            }
-            let entry = match result {
+
+        let mut files: Vec<DirEntry> = Vec::new();
+        let mut dirs: Vec<(String, PathBuf)> = Vec::new();
+        let mut names: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+        for entry in entries {
+            let entry = match entry {
                 Ok(e) => e,
                 Err(e) => {
-                    eprintln!("read_dir_tree: skipping unreadable deep entry: {}", e);
+                    eprintln!("read_dir_tree: skipping unreadable entry in '{}': {}", dir.display(), e);
                     continue;
                 }
             };
-            *total_visited += 1;
-
+            visited += 1;
+            let name = entry.file_name().to_string_lossy().to_string();
             let p = entry.path();
-            if p.is_file() {
-                if is_matching(&p) {
-                    // C-29: past max_deep we keep WALKING but stop COLLECTING, so
-                    // the count stays exact instead of stopping at the cap.
-                    if deep.len() >= max_deep {
-                        *truncated = true;
-                        *skipped += 1;
-                        continue;
-                    }
-                    deep.push(DeepEntry {
-                        name: p
-                            .file_name()
-                            .map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_default(),
-                        path: p.to_string_lossy().to_string(),
-                        from: prefix.to_string(),
-                    });
+            let ft = match entry.file_type() {
+                Ok(ft) => ft,
+                Err(_) => continue,
+            };
+            let (is_dir, is_file) = if ft.is_symlink() {
+                // Symlinked folders are never followed (loops); symlinked files are.
+                match std::fs::metadata(&p) {
+                    Ok(m) => (false, m.is_file()),
+                    Err(_) => (false, false),
                 }
-            } else if p.is_dir() {
-                let name = p
-                    .file_name()
-                    .map(|n| n.to_string_lossy().to_string())
-                    .unwrap_or_default();
-                let child_prefix = format!("{}{}/", prefix, name);
-                collect_deep(
-                    &p,
-                    &child_prefix,
-                    depth + 1,
-                    max_depth,
-                    max_total,
-                    max_deep,
-                    deep,
-                    total_visited,
-                    truncated,
-                    skipped,
-                    exact,
-                );
-            }
-        }
-    }
-
-    let mut files: Vec<DirEntry> = Vec::new();
-    let mut subfolders: Vec<SubfolderEntry> = Vec::new();
-    let mut deep: Vec<DeepEntry> = Vec::new();
-    let mut total_visited: usize = 0;
-    // B2: flips to true at EVERY cap-drop site (the three max_total breaks, the
-    // max_subfolders continue, and the three push-guards max_direct /
-    // max_sub_files / max_deep). Surfaced on DirTree.truncated → sidebar footer.
-    let mut truncated = false;
-    // C-29: how many matching entries the caps dropped where we could see them,
-    // and whether that count is the whole truth (see DirTree::skipped_exact).
-    let mut skipped: u32 = 0;
-    let mut skipped_exact = true;
-
-    // Read the root directory entries.
-    let root_entries = std::fs::read_dir(&root)
-        .map_err(|e| format!("read_dir_tree: cannot read '{}': {}", path, e))?;
-
-    for entry_result in root_entries {
-        if total_visited >= max_total {
-            eprintln!(
-                "read_dir_tree: hit entry cap ({}) scanning '{}'",
-                max_total, path
-            );
-            truncated = true; // B2 cap-site 1/6 (root max_total)
-            skipped_exact = false; // C-29: the rest of the folder is uncounted
-            break;
-        }
-        let entry = match entry_result {
-            Ok(e) => e,
-            Err(e) => {
-                eprintln!("read_dir_tree: skipping unreadable entry in '{}': {}", path, e);
-                continue;
-            }
-        };
-        total_visited += 1;
-
-        let entry_path = entry.path();
-
-        if entry_path.is_file() {
-            // Depth-0 matching file.
-            if is_matching(&entry_path) {
-                if files.len() < max_direct {
-                    files.push(make_entry(&entry_path));
-                } else {
-                    truncated = true; // B2 cap-site 2/6 (max_direct push-guard)
-                    skipped += 1;     // C-29: exact for the flat-folder case
+            } else {
+                (ft.is_dir(), ft.is_file())
+            };
+            if is_file {
+                names.insert(name.clone());
+                if is_md_name(&name) {
+                    files.push(DirEntry { name, path: p.to_string_lossy().to_string() });
                 }
-            }
-        } else if entry_path.is_dir() {
-            // Depth-1 subdirectory: collect its matching files and recurse deeper.
-            if subfolders.len() >= max_subfolders {
-                eprintln!(
-                    "read_dir_tree: subfolder cap ({}) reached in '{}'",
-                    max_subfolders, path
-                );
-                truncated = true; // B2 cap-site 3/6 (max_subfolders continue)
-                // C-29: this subfolder is skipped WITHOUT being opened, so its
-                // matching files are dropped uncounted.
-                skipped_exact = false;
-                continue;
-            }
-
-            let sub_name = entry_path
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-
-            let mut sub_files: Vec<DirEntry> = Vec::new();
-
-            // Read depth-1 subdirectory.
-            let sub_entries = match std::fs::read_dir(&entry_path) {
-                Ok(iter) => iter,
-                Err(e) => {
-                    eprintln!(
-                        "read_dir_tree: skipping unreadable subdir '{}': {}",
-                        entry_path.display(),
-                        e
-                    );
+            } else if is_dir {
+                if SCAN_DENY.contains(&name.as_str()) || is_package_name(&name) {
                     continue;
                 }
-            };
-
-            for sub_result in sub_entries {
-                if total_visited >= max_total {
-                    truncated = true; // B2 cap-site 4/6 (sub-loop max_total)
-                    skipped_exact = false; // C-29: stopped blind
-                    break;
-                }
-                let sub_entry = match sub_result {
-                    Ok(e) => e,
-                    Err(e) => {
-                        eprintln!(
-                            "read_dir_tree: skipping unreadable entry in '{}': {}",
-                            entry_path.display(),
-                            e
-                        );
-                        continue;
-                    }
-                };
-                total_visited += 1;
-
-                let sub_path = sub_entry.path();
-
-                if sub_path.is_file() {
-                    // Depth-1 matching file → belongs to this subfolder.
-                    if is_matching(&sub_path) {
-                        if sub_files.len() < max_sub_files {
-                            sub_files.push(make_entry(&sub_path));
-                        } else {
-                            truncated = true; // B2 cap-site 5/6 (max_sub_files push-guard)
-                            skipped += 1;     // C-29
-                        }
-                    }
-                } else if sub_path.is_dir() {
-                    // Depth-2+ — recurse to collect deep entries (flat list).
-                    // QA D5: this now descends to max_depth levels instead of
-                    // exactly one, and flags `truncated` when it stops early.
-                    let deeper_name = sub_path
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_default();
-                    let deep_prefix = format!("{}/{}/", sub_name, deeper_name);
-                    collect_deep(
-                        &sub_path,
-                        &deep_prefix,
-                        1,
-                        max_depth,
-                        max_total,
-                        max_deep,
-                        &mut deep,
-                        &mut total_visited,
-                        &mut truncated,
-                        &mut skipped,
-                        &mut skipped_exact,
-                    );
-                }
-            }
-
-            // Only include this subfolder entry if it has matching direct files.
-            if !sub_files.is_empty() {
-                subfolders.push(SubfolderEntry {
-                    name: sub_name,
-                    files: sub_files,
-                });
+                dirs.push((name, p));
             }
         }
+
+        dirs.retain(|(name, _)| {
+            !SCAN_DENY_IF_PARENT_HAS.iter().any(|(denied, markers)| {
+                name == denied && markers.iter().any(|m| names.contains(*m))
+            })
+        });
+        files.sort_by(|a, b| natural_cmp(&a.name, &b.name));
+        dirs.sort_by(|a, b| natural_cmp(&a.0, &b.0));
+
+        let direct = files.len() as u32;
+        let hidden = files.len().saturating_sub(limits.file_cap) as u32;
+        files.truncate(limits.file_cap);
+
+        let depth = arena[idx].depth;
+        let mut children = Vec::with_capacity(dirs.len());
+        for (name, p) in dirs {
+            let child = arena.len();
+            arena.push(ScanNode {
+                name,
+                path: p,
+                depth: depth + 1,
+                files: Vec::new(),
+                files_hidden: 0,
+                children: Vec::new(),
+                direct_md: 0,
+                scanned: false,
+            });
+            children.push(child);
+            queue.push_back(child);
+        }
+
+        let node = &mut arena[idx];
+        node.files = files;
+        node.files_hidden = hidden;
+        node.direct_md = direct;
+        node.children = children;
+        node.scanned = true;
     }
+
+    // Children always sit at higher indices than their parent (BFS), so one
+    // reverse pass fills every subtree count bottom-up.
+    let mut counts: Vec<u32> = arena.iter().map(|n| n.direct_md).collect();
+    for idx in (0..arena.len()).rev() {
+        let sum: u32 = arena[idx].children.iter().map(|c| counts[*c]).sum();
+        counts[idx] += sum;
+    }
+
+    let mut truncated = false;
+    fn build(
+        idx: usize,
+        arena: &mut Vec<ScanNode>,
+        counts: &[u32],
+        truncated: &mut bool,
+    ) -> DirNode {
+        let children = std::mem::take(&mut arena[idx].children);
+        let folders = children
+            .into_iter()
+            .map(|c| build(c, arena, counts, truncated))
+            .collect();
+        let n = &mut arena[idx];
+        if !n.scanned || n.files_hidden > 0 {
+            *truncated = true;
+        }
+        DirNode {
+            name: std::mem::take(&mut n.name),
+            path: n.path.to_string_lossy().to_string(),
+            files: std::mem::take(&mut n.files),
+            files_hidden: n.files_hidden,
+            folders,
+            md_count: counts[idx],
+            scanned: n.scanned,
+        }
+    }
+    let root = build(0, &mut arena, &counts, &mut truncated);
 
     Ok(DirTree {
-        path,
-        files,
-        subfolders,
-        deep,
-        truncated, // B2: any cap-drop above flipped this
-        skipped,   // C-29: how many of those drops we could count
-        skipped_exact, // C-29: false when the walk stopped blind → render "N+"
+        path: path.to_string(),
+        root,
+        truncated,
+        unreadable,
     })
+}
+
+/// Scan a folder for the sidebar tree (F-19, UXF-02). Async + spawn_blocking so
+/// a large scan never runs on the main thread (the UI and menu bar stay live).
+#[tauri::command]
+async fn read_dir_tree(path: String, uncapped: Option<bool>) -> Result<DirTree, String> {
+    let wide = uncapped.unwrap_or(false);
+    tauri::async_runtime::spawn_blocking(move || scan_dir_tree(&path, wide))
+        .await
+        .map_err(|e| format!("read_dir_tree: scan task failed: {}", e))?
 }
 
 // ── Menu builder ─────────────────────────────────────────────────────────────
@@ -1017,7 +1113,7 @@ fn read_dir_tree(path: String, uncapped: Option<bool>) -> Result<DirTree, String
 ///   Edit               — Undo, Redo, separator, Cut, Copy, Paste, Select All,
 ///                        separator, Find ▶ (Find… ⌘F, Find Next ⌘G,
 ///                        Find Previous ⇧⌘G, Find in Files ⌘⇧F)
-///   View               — Command Palette ⌘K, Toggle Sidebar ⌘B, separator,
+///   View               — Command Palette ⌘K, Toggle Sidebar ⌘B, Reveal in Sidebar ⇧⌘J, separator,
 ///                        Appearance ▶ Light / Dark / System (U-02, DR-11–14),
 ///                        separator, Zoom In ⌘+, Zoom Out ⌘-, Actual Size ⌘0
 ///   Go                 — Previous Tab ⌘[, Next Tab ⌘]
@@ -1192,6 +1288,15 @@ fn build_menu(
         "Toggle Sidebar",
         true,
         Some("CmdOrCtrl+B"),
+    )?)?;
+    // UXF-06: directly under Toggle Sidebar; tv-native.js routes it to
+    // TV.revealInSidebar(). The accelerator means macOS takes ⇧⌘J first.
+    view_menu.append(&MenuItem::with_id(
+        app,
+        "menu:reveal-in-sidebar",
+        "Reveal in Sidebar",
+        true,
+        Some("CmdOrCtrl+Shift+J"),
     )?)?;
     view_menu.append(&PredefinedMenuItem::separator(app)?)?;
 
@@ -1377,6 +1482,15 @@ pub fn run() {
             // C-36: the Open Recent submenu handle, so set_recent_files can
             // rebuild it once the frontend hands over its MRU.
             app.manage(recent_state);
+            // UXF-09: forward trackpad finger phases (AppKit wants the main thread).
+            #[cfg(target_os = "macos")]
+            {
+                let handle = app.handle().clone();
+                let h2 = handle.clone();
+                if let Err(e) = handle.run_on_main_thread(move || install_swipe_monitor(h2)) {
+                    eprintln!("swipe monitor install failed: {}", e);
+                }
+            }
             Ok(())
         })
         // C-02: never let the window close on unsaved edits without asking.
@@ -1428,6 +1542,7 @@ pub fn run() {
                 // View menu
                 | "menu:command-palette"
                 | "menu:toggle-sidebar"
+                | "menu:reveal-in-sidebar"
                 | "menu:zoom-in"
                 | "menu:zoom-out"
                 | "menu:zoom-reset"
@@ -1536,11 +1651,11 @@ pub fn run() {
                         }
                     })
                     .filter(|path| {
-                        // Only forward extensions the app understands.
-                        let lower = path.to_lowercase();
-                        lower.ends_with(".md")
-                            || lower.ends_with(".markdown")
-                            || lower.ends_with(".txt")
+                        // Only forward files the app understands (UXF-07: .mdc too).
+                        std::path::Path::new(path)
+                            .file_name()
+                            .map(|n| is_md_name(&n.to_string_lossy()))
+                            .unwrap_or(false)
                     })
                     .collect();
 
@@ -1611,143 +1726,334 @@ mod tests {
         }
     }
 
-    // F-19 / DR-33, DR-37, DR-39: read_dir_tree lists depth-0 files, one level of
-    // subfolders with their direct files, and flattens depth-2 files into `deep`
-    // with a "sub/deeper/" prefix; non-md/markdown/txt files are excluded.
-    #[test]
-    fn read_dir_tree_structure() {
+    // ── UXF-02: read_dir_tree scan ──────────────────────────────────────
+
+    fn tmp(tag: &str) -> PathBuf {
         let mut base = std::env::temp_dir();
-        base.push(format!("tv_rdt_test_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        fs::create_dir_all(base.join("sub").join("deeper")).unwrap();
-        fs::write(base.join("top.md"), "x").unwrap();
-        fs::write(base.join("notes.txt"), "x").unwrap();
-        fs::write(base.join("ignore.png"), "x").unwrap();
-        fs::write(base.join("sub").join("a.md"), "x").unwrap();
-        fs::write(base.join("sub").join("b.markdown"), "x").unwrap();
-        fs::write(base.join("sub").join("deeper").join("d.md"), "x").unwrap();
-
-        let tree = read_dir_tree(base.to_string_lossy().to_string(), None).expect("read_dir_tree ok");
-
-        // DR-33: top-level md + txt listed, png excluded
-        let names: Vec<&str> = tree.files.iter().map(|f| f.name.as_str()).collect();
-        assert!(names.contains(&"top.md"), "top.md listed: {:?}", names);
-        assert!(names.contains(&"notes.txt"), "notes.txt listed: {:?}", names);
-        assert!(!names.iter().any(|n| n.ends_with(".png")), "png excluded: {:?}", names);
-        assert!(tree.files.iter().all(|f| !f.path.is_empty()), "entries carry absolute path");
-
-        // DR-37: exactly one subfolder ("sub") with its direct files
-        assert_eq!(tree.subfolders.len(), 1, "one subfolder");
-        assert_eq!(tree.subfolders[0].name, "sub");
-        let sub: Vec<&str> = tree.subfolders[0].files.iter().map(|f| f.name.as_str()).collect();
-        assert!(sub.contains(&"a.md") && sub.contains(&"b.markdown"), "sub files: {:?}", sub);
-
-        // DR-37: depth-2 file flattened into `deep` with from="sub/deeper/"
-        assert_eq!(tree.deep.len(), 1, "one deep file");
-        assert_eq!(tree.deep[0].name, "d.md");
-        assert_eq!(tree.deep[0].from, "sub/deeper/", "deep `from` prefix");
-
-        // B2: a tiny tree well under every cap is NOT truncated.
-        assert!(!tree.truncated, "small tree is not truncated");
-
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    // QA D5: the deep walk used to stop exactly one level below a subfolder, so
-    // a directory at depth 3 was never opened — its files vanished from the UI
-    // with `truncated` still false (a SILENT drop). It now recurses to
-    // MAX_DEPTH, tagging each file with its full relative `from` prefix.
-    #[test]
-    fn read_dir_tree_recurses_past_depth_three() {
-        let mut base = std::env::temp_dir();
-        base.push(format!("tv_rdt_deep_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        // research/sources/inner/  — the design's depth-4 case.
-        let inner = base.join("research").join("sources").join("inner");
-        fs::create_dir_all(&inner).unwrap();
-        fs::write(base.join("charter.md"), "x").unwrap();
-        fs::write(base.join("research").join("stream-1.md"), "x").unwrap();
-        fs::write(base.join("research").join("sources").join("derived-wans.md"), "x").unwrap();
-        fs::write(inner.join("refs.md"), "x").unwrap();
-        // One level deeper still, to prove it is recursion and not a second
-        // hardcoded level.
-        let deeper_still = inner.join("evenmore");
-        fs::create_dir_all(&deeper_still).unwrap();
-        fs::write(deeper_still.join("way-down.md"), "x").unwrap();
-
-        let tree = read_dir_tree(base.to_string_lossy().to_string(), None).expect("read_dir_tree ok");
-
-        let find = |n: &str| tree.deep.iter().find(|d| d.name == n).cloned();
-
-        let sources = find("derived-wans.md").expect("depth-3 file collected");
-        assert_eq!(sources.from, "research/sources/", "depth-3 `from`");
-
-        let refs = find("refs.md").expect("depth-4 file collected (was silently dropped)");
-        assert_eq!(refs.from, "research/sources/inner/", "depth-4 `from`");
-
-        let way_down = find("way-down.md").expect("depth-5 file collected");
-        assert_eq!(
-            way_down.from, "research/sources/inner/evenmore/",
-            "depth-5 `from` keeps the full chain"
-        );
-
-        // Nothing here trips a cap, so the truncation footer must stay off.
-        assert!(!tree.truncated, "well under every cap → not truncated");
-
-        let _ = fs::remove_dir_all(&base);
-    }
-
-    // B2: the MAX_DIRECT push-guard is the trickiest cap to wire (a silent
-    // `len() < CAP` guard, not a break). Writing >50 top-level .md files must
-    // flip DirTree.truncated even though the loop never breaks.
-    #[test]
-    fn read_dir_tree_marks_truncated_over_max_direct() {
-        let mut base = std::env::temp_dir();
-        base.push(format!("tv_rdt_trunc_{}", std::process::id()));
+        base.push(format!("tv_uxf02_{}_{}", tag, std::process::id()));
         let _ = fs::remove_dir_all(&base);
         fs::create_dir_all(&base).unwrap();
-        // 60 matching top-level files > MAX_DIRECT (50) but < MAX_TOTAL (200),
-        // so the only cap hit is the MAX_DIRECT push-guard.
-        for i in 0..60 {
-            fs::write(base.join(format!("f{:02}.md", i)), "x").unwrap();
+        base
+    }
+
+    fn scan(base: &std::path::Path) -> DirTree {
+        scan_dir_tree(&base.to_string_lossy(), false).expect("scan ok")
+    }
+
+    fn child<'a>(n: &'a DirNode, name: &str) -> Option<&'a DirNode> {
+        n.folders.iter().find(|f| f.name == name)
+    }
+
+    fn names(files: &[DirEntry]) -> Vec<&str> {
+        files.iter().map(|f| f.name.as_str()).collect()
+    }
+
+    // Criterion 1 (S1/S3): 60 top-level folders, all present, each with its
+    // count, in natural order — the old 10-subfolder cap and the 200-entry
+    // budget would have shown a handful.
+    #[test]
+    fn scan_shows_every_folder_past_ten() {
+        let base = tmp("sixty");
+        for i in 1..=60 {
+            let d = base.join(format!("f{}", i));
+            fs::create_dir_all(&d).unwrap();
+            for j in 0..3 {
+                fs::write(d.join(format!("n{}.md", j)), "x").unwrap();
+            }
         }
-
-        let tree = read_dir_tree(base.to_string_lossy().to_string(), None).expect("read_dir_tree ok");
-
-        assert_eq!(tree.files.len(), 50, "files capped at MAX_DIRECT");
-        assert!(tree.truncated, "exceeding MAX_DIRECT flips truncated");
-        // C-29: the sidebar needs the NUMBER, not just a boolean. 60 matching
-        // files, 50 kept → exactly 10 skipped.
-        assert_eq!(tree.skipped, 10, "skipped counts the dropped entries");
-
+        let t = scan(&base);
+        assert_eq!(t.root.folders.len(), 60);
+        let order: Vec<&str> = t.root.folders.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(&order[..3], &["f1", "f2", "f3"], "natural order: {:?}", &order[..12]);
+        assert_eq!(order[9], "f10");
+        assert!(t.root.folders.iter().all(|f| f.md_count == 3 && f.scanned));
+        assert_eq!(t.root.md_count, 180);
+        assert!(!t.truncated);
         let _ = fs::remove_dir_all(&base);
     }
 
-    // C-29: `uncapped: true` re-scans with a much higher budget so the sidebar's
-    // "Show N more files" row can actually deliver them. Same folder, same
-    // shape, nothing dropped.
+    // Criteria 2, 3, 13 (S2): deny-listed trees are never shown or counted;
+    // hidden folders such as .claude are.
     #[test]
-    fn read_dir_tree_uncapped_returns_everything() {
-        let mut base = std::env::temp_dir();
-        base.push(format!("tv_rdt_uncapped_{}", std::process::id()));
-        let _ = fs::remove_dir_all(&base);
-        fs::create_dir_all(&base).unwrap();
-        for i in 0..60 {
-            fs::write(base.join(format!("f{:02}.md", i)), "x").unwrap();
+    fn scan_skips_deny_list_but_keeps_dot_folders() {
+        let base = tmp("deny");
+        for d in ["node_modules/pkg", ".git/refs", ".claude/docs", "docs", "app/target", "crate/target"] {
+            fs::create_dir_all(base.join(d)).unwrap();
         }
+        fs::write(base.join("node_modules/pkg/readme.md"), "x").unwrap();
+        fs::write(base.join(".git/refs/HEAD.md"), "x").unwrap();
+        fs::write(base.join(".claude/docs/a.md"), "x").unwrap();
+        fs::write(base.join("docs/b.md"), "x").unwrap();
+        // `target` is only denied next to a Cargo.toml.
+        fs::write(base.join("crate/Cargo.toml"), "x").unwrap();
+        fs::write(base.join("crate/target/gen.md"), "x").unwrap();
+        fs::write(base.join("app/target/keep.md"), "x").unwrap();
+        fs::write(base.join("README.md"), "x").unwrap();
 
-        let capped = read_dir_tree(base.to_string_lossy().to_string(), None)
-            .expect("capped read_dir_tree ok");
-        assert_eq!(capped.files.len(), 50);
-        assert!(capped.truncated);
-        assert_eq!(capped.skipped, 10);
+        let t = scan(&base);
+        assert!(child(&t.root, "node_modules").is_none(), "node_modules absent");
+        assert!(child(&t.root, ".git").is_none(), ".git absent");
+        assert_eq!(child(&t.root, ".claude").map(|n| n.md_count), Some(1), ".claude present");
+        assert!(child(&t.root, "docs").is_some());
+        let krate = child(&t.root, "crate").unwrap();
+        assert!(child(krate, "target").is_none(), "Cargo target denied");
+        assert_eq!(krate.md_count, 0);
+        let app = child(&t.root, "app").unwrap();
+        assert!(child(app, "target").is_some(), "target without Cargo.toml kept");
+        assert_eq!(names(&t.root.files), vec!["README.md"]);
+        assert_eq!(t.root.md_count, 4);
 
-        let wide = read_dir_tree(base.to_string_lossy().to_string(), Some(true))
-            .expect("uncapped read_dir_tree ok");
-        assert_eq!(wide.files.len(), 60, "uncapped scan returns every file");
-        assert!(!wide.truncated, "uncapped scan is not truncated");
-        assert_eq!(wide.skipped, 0, "nothing dropped, nothing to report");
+        // The deny-list never applies to the root the user picked.
+        let nm = scan(&base.join("node_modules"));
+        assert_eq!(nm.root.md_count, 1);
+        let _ = fs::remove_dir_all(&base);
+    }
 
+    // Criterion 4: folders without direct markdown files are still present,
+    // carrying the count of what lies below.
+    #[test]
+    fn scan_keeps_folders_whose_markdown_is_deep() {
+        let base = tmp("deep");
+        let mut d = base.clone();
+        for i in 1..=8 {
+            d = d.join(format!("l{}", i));
+        }
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("bottom.md"), "x").unwrap();
+        fs::create_dir_all(base.join("empty/inner")).unwrap();
+        fs::write(base.join("empty/inner/image.png"), "x").unwrap();
+
+        let t = scan(&base);
+        let mut n = &t.root;
+        for i in 1..=8 {
+            n = child(n, &format!("l{}", i)).expect("ancestor present");
+            assert_eq!(n.md_count, 1, "ancestor l{} counts 1", i);
+            assert!(n.scanned);
+        }
+        assert_eq!(names(&n.files), vec!["bottom.md"]);
+        let empty = child(&t.root, "empty").expect("folders without markdown are still returned");
+        assert_eq!(empty.md_count, 0);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // Criterion 5: natural, case-insensitive order for files and folders.
+    #[test]
+    fn scan_sorts_naturally() {
+        let base = tmp("sort");
+        for f in ["a10.md", "c.md", "B.md", "a2.md", "skip.png"] {
+            fs::write(base.join(f), "x").unwrap();
+        }
+        for d in ["Zeta", "alpha"] {
+            fs::create_dir_all(base.join(d)).unwrap();
+            fs::write(base.join(d).join("x.md"), "x").unwrap();
+        }
+        let t = scan(&base);
+        assert_eq!(names(&t.root.files), vec!["a2.md", "a10.md", "B.md", "c.md"]);
+        let folders: Vec<&str> = t.root.folders.iter().map(|f| f.name.as_str()).collect();
+        assert_eq!(folders, vec!["alpha", "Zeta"]);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn natural_cmp_orders_digit_runs_by_value() {
+        use std::cmp::Ordering::*;
+        assert_eq!(natural_cmp("a2", "a10"), Less);
+        assert_eq!(natural_cmp("a10", "B"), Less);
+        assert_eq!(natural_cmp("file007", "file7"), Less, "equal value falls back to bytes");
+        assert_eq!(natural_cmp("Alpha", "alpha"), Less, "case-only twins are both kept, in a fixed order");
+        assert_eq!(natural_cmp("x", "x"), Equal);
+    }
+
+    // Criterion 7 (S5): FILE_CAP per folder, the rest counted; uncapped lists all.
+    #[test]
+    fn scan_caps_files_per_folder() {
+        let base = tmp("cap");
+        for i in 0..520 {
+            fs::write(base.join(format!("f{}.md", i)), "x").unwrap();
+        }
+        let t = scan(&base);
+        assert_eq!(t.root.files.len(), 500);
+        assert_eq!(t.root.files_hidden, 20);
+        assert_eq!(t.root.md_count, 520, "hidden files still counted");
+        assert!(t.truncated);
+        let wide = scan_dir_tree(&base.to_string_lossy(), true).unwrap();
+        assert_eq!(wide.root.files.len(), 520);
+        assert!(!wide.truncated);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // Criterion 8: past the budget, folders come back unscanned — never missing.
+    #[test]
+    fn scan_marks_folders_past_budget_unscanned() {
+        let base = tmp("budget");
+        for d in ["a", "b", "c"] {
+            fs::create_dir_all(base.join(d)).unwrap();
+            for i in 0..5 {
+                fs::write(base.join(d).join(format!("{}.md", i)), "x").unwrap();
+            }
+        }
+        // Root has 3 entries, folder a has 5: budget 8 is spent after a.
+        let limits = ScanLimits { budget: 8, file_cap: 500, max_depth: 40 };
+        let t = scan_dir_tree_with(&base.to_string_lossy(), &limits).unwrap();
+        assert_eq!(t.root.folders.len(), 3, "no folder is missing");
+        assert!(child(&t.root, "a").unwrap().scanned);
+        let b = child(&t.root, "b").unwrap();
+        assert!(!b.scanned && b.files.is_empty() && b.md_count == 0);
+        assert!(t.truncated);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // Criterion 10: a symlink loop is not followed; a symlinked file is listed.
+    #[cfg(unix)]
+    #[test]
+    fn scan_does_not_follow_symlinked_folders() {
+        let base = tmp("link");
+        fs::create_dir_all(base.join("a")).unwrap();
+        fs::write(base.join("a/real.md"), "x").unwrap();
+        std::os::unix::fs::symlink(&base, base.join("a/loop")).unwrap();
+        std::os::unix::fs::symlink(base.join("a/real.md"), base.join("alias.md")).unwrap();
+        let t = scan(&base);
+        let a = child(&t.root, "a").unwrap();
+        assert!(child(a, "loop").is_none(), "symlinked folder not followed");
+        assert_eq!(names(&t.root.files), vec!["alias.md"], "symlinked file listed");
+        assert_eq!(t.root.md_count, 2);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // Criterion 16: an unreadable folder is counted; the rest of the tree is intact.
+    #[cfg(unix)]
+    #[test]
+    fn scan_counts_unreadable_folders() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = tmp("perm");
+        fs::create_dir_all(base.join("locked")).unwrap();
+        fs::create_dir_all(base.join("open")).unwrap();
+        fs::write(base.join("open/a.md"), "x").unwrap();
+        fs::set_permissions(base.join("locked"), fs::Permissions::from_mode(0o000)).unwrap();
+        let readable_anyway = fs::read_dir(base.join("locked")).is_ok(); // running as root
+        let t = scan(&base);
+        fs::set_permissions(base.join("locked"), fs::Permissions::from_mode(0o755)).unwrap();
+        if !readable_anyway {
+            assert_eq!(t.unreadable, 1);
+        }
+        assert_eq!(child(&t.root, "open").unwrap().md_count, 1);
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // UXF-07: Cursor's .mdc rules and the extensionless agent rule files are
+    // viewable at any depth; secrets and config files never are.
+    #[test]
+    fn scan_lists_mdc_and_agent_rule_files() {
+        let base = tmp("agent");
+        fs::create_dir_all(base.join(".cursor/rules")).unwrap();
+        fs::create_dir_all(base.join(".claude")).unwrap();
+        fs::create_dir_all(base.join("pkg")).unwrap();
+        fs::create_dir_all(base.join(".git")).unwrap();
+        fs::write(base.join(".cursor/rules/style.mdc"), "x").unwrap();
+        fs::write(base.join(".cursorrules"), "x").unwrap();
+        fs::write(base.join("pkg/.clinerules"), "x").unwrap();
+        fs::write(base.join(".aider.chat.history.md"), "x").unwrap();
+        fs::write(base.join(".git/notes.md"), "x").unwrap();
+        for secret in [".env", "id_rsa", "credentials.json", "settings.json", "config.toml"] {
+            fs::write(base.join(".claude").join(secret), "x").unwrap();
+            fs::write(base.join(secret), "x").unwrap();
+        }
+        let t = scan(&base);
+        let root_names = names(&t.root.files);
+        assert!(root_names.contains(&".cursorrules"), "{:?}", root_names);
+        assert!(root_names.contains(&".aider.chat.history.md"), "{:?}", root_names);
+        let cursor = child(child(&t.root, ".cursor").unwrap(), "rules").unwrap();
+        assert_eq!(names(&cursor.files), vec!["style.mdc"]);
+        assert_eq!(names(&child(&t.root, "pkg").unwrap().files), vec![".clinerules"]);
+        assert!(child(&t.root, ".git").is_none(), "SCAN_DENY still applies");
+        let claude = child(&t.root, ".claude").unwrap();
+        assert!(claude.files.is_empty() && claude.md_count == 0, "no secret is ever listed");
+        for n in [".env", "id_rsa", "credentials.json", "settings.json", "config.toml"] {
+            assert!(!root_names.contains(&n), "{} listed", n);
+        }
+        assert!(is_md_name("Rule.MDC") && is_md_name(".WindsurfRules") && !is_md_name("rules"));
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // UXF-09: finger phases only — momentum and phase-less mouse wheels are
+    // never forwarded; may-begin counts as began.
+    #[test]
+    fn swipe_phase_maps_finger_phases_only() {
+        assert_eq!(swipe_phase(1, 0), Some("began"));
+        assert_eq!(swipe_phase(32, 0), Some("began"));
+        assert_eq!(swipe_phase(4, 0), Some("changed"));
+        assert_eq!(swipe_phase(8, 0), Some("ended"));
+        assert_eq!(swipe_phase(16, 0), Some("cancelled"));
+        assert_eq!(swipe_phase(2, 0), None, "stationary");
+        assert_eq!(swipe_phase(0, 0), None, "mouse wheel");
+        for mp in [1, 2, 4, 8] {
+            assert_eq!(swipe_phase(0, mp), None, "momentum {}", mp);
+        }
+    }
+
+    fn st(phase: &'static str, t: f64, dx: f64) -> SwipeTouch {
+        SwipeTouch { phase, t, dx, dy: 0.0, precise: true, inverted: true, x: 10.0, y: 20.0, mods: false }
+    }
+
+    // UXF-09: IPC stays small — changed deltas coalesce to one message per
+    // 16 ms (nothing lost: the sum is carried), only for the first second of a
+    // touch, and a pending delta is flushed before `ended`.
+    #[test]
+    fn swipe_forwarder_coalesces_and_bounds_ipc() {
+        let mut f = SwipeForwarder::default();
+        let mut out = f.push(st("began", 0.0, 0.0));
+        for i in 1..=10 {
+            out.extend(f.push(st("changed", i as f64 * 4.0, 2.0)));
+        }
+        out.extend(f.push(st("ended", 44.0, 0.0)));
+        let phases: Vec<&str> = out.iter().map(|m| m.phase).collect();
+        assert_eq!(phases.first(), Some(&"began"));
+        assert_eq!(phases.last(), Some(&"ended"));
+        let moved: f64 = out.iter().filter(|m| m.phase == "changed").map(|m| m.dx).sum();
+        assert_eq!(moved, 20.0, "every delta arrives, coalesced");
+        assert!(out.iter().filter(|m| m.phase == "changed").count() <= 4, "{:?}", phases);
+
+        let mut f = SwipeForwarder::default();
+        f.push(st("began", 0.0, 0.0));
+        let late = f.push(st("changed", 1500.0, 5.0));
+        assert!(late.is_empty(), "no changed messages after the first second of a touch");
+        assert_eq!(f.push(st("ended", 1600.0, 0.0)).last().map(|m| m.phase), Some("ended"));
+    }
+
+    // UXF-09: the wire names tv-swipe.js reads.
+    #[test]
+    fn swipe_touch_serializes_camel_case() {
+        let v = serde_json::to_value(st("changed", 1.0, 2.0)).unwrap();
+        for k in ["phase", "t", "dx", "dy", "precise", "inverted", "x", "y", "mods"] {
+            assert!(v.get(k).is_some(), "SwipeTouch.{}", k);
+        }
+    }
+
+    // Package bundles are skipped; the root itself must exist.
+    #[test]
+    fn scan_skips_packages_and_errors_on_missing_root() {
+        let base = tmp("pkg");
+        fs::create_dir_all(base.join("Thing.app/Contents")).unwrap();
+        fs::write(base.join("Thing.app/Contents/notes.md"), "x").unwrap();
+        let t = scan(&base);
+        assert!(t.root.folders.is_empty());
+        assert!(scan_dir_tree(&base.join("nope").to_string_lossy(), false).is_err());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    // Criterion 18: the wire names JS reads. tv-native.runtime.test.js reads the
+    // same names from this file's source; this pins the serialized form.
+    #[test]
+    fn dir_tree_serializes_camel_case() {
+        let base = tmp("wire");
+        fs::write(base.join("a.md"), "x").unwrap();
+        let v = serde_json::to_value(scan(&base)).unwrap();
+        for k in ["path", "root", "truncated", "unreadable"] {
+            assert!(v.get(k).is_some(), "DirTree.{}", k);
+        }
+        for k in ["name", "path", "files", "filesHidden", "folders", "mdCount", "scanned"] {
+            assert!(v["root"].get(k).is_some(), "DirNode.{}", k);
+        }
         let _ = fs::remove_dir_all(&base);
     }
 }

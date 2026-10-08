@@ -26,3 +26,9 @@ serde_json = "1"
 notify = "6"
 tokio = { version = "1", features = ["sync"] }
 
+# UXF-09: an NSEvent local monitor forwards trackpad finger phases to the page
+# (`swipe-touch`). Already in the lock file through tao / wry; features only.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+block2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSEvent", "NSResponder", "NSWindow", "NSView"] }
