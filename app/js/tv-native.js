@@ -1031,6 +1031,14 @@
       console.error('[TVNative] failed to register menu:reveal-in-finder listener', err);
     });
 
+    // DOC-MENU: a Galley item picked in the document's native context menu
+    // (lib.rs willOpenMenu). Payload: the item id, e.g. 'copy-markdown'.
+    listen('doc-menu', function (e) {
+      if (window.TV && typeof window.TV.runDocMenu === 'function') window.TV.runDocMenu(e && e.payload);
+    }).catch(function (err) {
+      console.error('[TVNative] failed to register doc-menu listener', err);
+    });
+
     // UXF-09: trackpad finger phases from lib.rs's NSEvent monitor. One touch
     // is one swipe gesture (exact onset, momentum never sent); TVSwipe owns
     // the rules. Payload: { phase, t, dx, dy, precise, inverted, x, y, mods }.

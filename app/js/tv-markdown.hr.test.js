@@ -34,6 +34,8 @@ function loadRenderer() {
     Date, Math, JSON, RegExp, String, Number, Array, Object,
   };
   sandbox.window = sandbox;
+  // MD-01: the renderer parses with the vendored marked.
+  sandbox.marked = require('./vendor/marked.umd.js');
   sandbox.globalThis = sandbox;
   sandbox.document = {
     createElement: el, createTextNode: () => el(), createDocumentFragment: el,
@@ -96,7 +98,7 @@ check('"***bold***" is not an <hr>', () => render('***bold***').indexOf('<hr>') 
 check('"-*-" (mixed markers) is not an <hr>', () => render('-*-').indexOf('<hr>') === -1 || 'became <hr>');
 check('setext "Title\\n---" stays a heading', () => {
   const html = render('Title\n---');
-  return html.indexOf('<h2>') !== -1 || `expected <h2>, got ${html.slice(0, 80)}`;
+  return /<h2[ >]/.test(html) || `expected <h2>, got ${html.slice(0, 80)}`;
 });
 
 /* 4. The structural guarantee: the block loop always advances. Feed lines that
@@ -111,7 +113,7 @@ check('unclaimed lines cannot stall the loop', () => {
 check('a mixed document still renders its parts', () => {
   const doc = '# Title\n\nA paragraph.\n\n----\n\n- one\n- two\n\n| a | b |\n| - | - |\n| 1 | 2 |\n\n```js\ncode();\n```\n';
   const html = render(doc);
-  for (const needle of ['<h1>', '<p>', '<hr>', '<li>', '<table', '<pre']) {
+  for (const needle of ['<h1', '<p>', '<hr>', '<li>', '<table', '<pre']) {
     if (html.indexOf(needle) === -1) return `missing ${needle}`;
   }
   return true;

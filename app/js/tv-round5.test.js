@@ -187,7 +187,8 @@ console.log('\n#4 UV-01: rendered <pre> contains .tv-copy button\n');
   var code = fs.readFileSync(__dirname + '/tv-markdown.js', 'utf8');
 
   // Execute in a minimal global context
-  var ctx = {};
+  // MD-01: the renderer parses with the vendored marked.
+  var ctx = { marked: require('./vendor/marked.umd.js') };
   (function () {
     var window = ctx;
     eval(code); // eslint-disable-line no-eval
@@ -203,7 +204,7 @@ console.log('\n#4 UV-01: rendered <pre> contains .tv-copy button\n');
   var src = '```js\nconsole.log("hello");\n```';
   var html = render(src);
 
-  var hasPreTag = html.indexOf('<pre>') !== -1;
+  var hasPreTag = /<pre[ >]/.test(html);
   assert(
     'code fence renders a <pre> element',
     hasPreTag,

@@ -665,7 +665,26 @@ html, body, #tv-root {
 .md li { margin: 4px 0; }
 .md li::marker { color: var(--tv-text-muted) !important; }
 .md .task { list-style: none; margin-left: -24px; padding-left: 0; }
-.md .task li { display: flex; align-items: flex-start; gap: 9px; }
+.md ul.task > li, .md li.task { display: flex; align-items: flex-start; gap: 9px; }
+/* MD-01: YAML front matter (skills, .mdc rules) — metadata, quieter than code. */
+.md pre.tv-frontmatter { opacity: .8; }
+/* MD-01: a task item's content (text, nested lists, code) stacks beside its box. */
+.md .task-body { flex: 1 1 auto; min-width: 0; }
+.md .task-body > :last-child { margin-bottom: 0; }
+.md li > ul, .md li > ol { margin-bottom: 0; }
+.md kbd {
+  font-family: var(--tv-font-mono); font-size: .82em; padding: .1em .45em;
+  border: 1px solid var(--tv-border-strong); border-bottom-width: 2px; border-radius: 4px;
+  background: var(--tv-inline-code-bg) !important;
+}
+.md details { margin: 0 0 var(--tv-s4); }
+.md summary { cursor: pointer; font-weight: 600; }
+.md details[open] > summary { margin-bottom: var(--tv-s2); }
+.md sup { line-height: 0; }
+.md [data-footnote-ref] { text-decoration: none; padding: 0 1px; }
+.md section[data-footnotes] { font-size: .875em; color: var(--tv-text-secondary) !important; }
+.md section[data-footnotes] ol { padding-left: 20px; }
+.md [data-footnote-backref] { text-decoration: none; }
 .md .task .box {
   width: 16px; height: 16px; border-radius: 4px; margin-top: 3px; flex: 0 0 auto;
   border: 1.5px solid var(--tv-border-strong);

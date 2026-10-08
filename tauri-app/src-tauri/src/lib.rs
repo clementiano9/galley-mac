@@ -291,6 +291,239 @@ fn install_swipe_monitor(app: tauri::AppHandle) {
     std::mem::forget(handler);
 }
 
+// ── DOC-MENU: the document's right-click menu ───────────────────────────────
+//
+// The standard macOS pattern for WKWebView apps: let WebKit build its native
+// context menu (Look Up, Translate, Search with Google, Copy, Share, Speech…)
+// and edit it in NSView's willOpenMenu:withEvent: just before it shows.
+// Items that would navigate or download in the app shell are dropped; Galley
+// items are added and report back to the page as the `doc-menu` event with
+// their id. The page decides what each id does (tv-app.js).
+
+const WK_ID: &str = "WKMenuItemIdentifier";
+
+/// One row of the rebuilt menu: a WebKit item kept (index into the original
+/// menu), a Galley item (id, title), or a separator.
+#[derive(Debug, Clone, PartialEq)]
+pub enum MenuEntry {
+    Keep(usize),
+    Item(&'static str, &'static str),
+    Sep,
+}
+
+/// WebKit items that leave or replace the app shell: page navigation, "open
+/// in new window" and downloads (DR-06: nothing writes to disk without Save).
+fn wk_item_dropped(id: &str) -> bool {
+    match id.strip_prefix(WK_ID) {
+        Some(name) => {
+            matches!(name, "GoBack" | "GoForward" | "Reload" | "Stop" | "OpenLink")
+                || name.contains("NewWindow")
+                || name.contains("Download")
+        }
+        None => false,
+    }
+}
+
+/// Pure plan of the rebuilt menu (unit-tested). `items` is (identifier,
+/// is_separator) per original item. Editable text (the source editor) keeps
+/// WebKit's own menu apart from the dropped items.
+pub fn plan_doc_menu(items: &[(Option<String>, bool)]) -> Vec<MenuEntry> {
+    let has = |name: &str| {
+        let want = format!("{}{}", WK_ID, name);
+        items.iter().any(|(id, _)| id.as_deref() == Some(want.as_str()))
+    };
+    let editable = has("Paste") || has("Cut");
+    let selection = has("Copy");
+    let mut out = Vec::new();
+    for (i, (id, sep)) in items.iter().enumerate() {
+        if *sep {
+            out.push(MenuEntry::Sep);
+            continue;
+        }
+        let id = id.as_deref().unwrap_or("");
+        if wk_item_dropped(id) {
+            continue;
+        }
+        if !editable && id == format!("{}CopyLink", WK_ID) {
+            out.push(MenuEntry::Item("open-link", "Open Link"));
+        }
+        out.push(MenuEntry::Keep(i));
+        if !editable && selection && id == format!("{}Copy", WK_ID) {
+            out.push(MenuEntry::Item("copy-markdown", "Copy as Markdown"));
+        }
+    }
+    if !editable {
+        let inspect = format!("{}InspectElement", WK_ID);
+        let blank = out.iter().all(|e| match e {
+            MenuEntry::Keep(i) => items[*i].0.as_deref() == Some(inspect.as_str()),
+            _ => true,
+        });
+        let extra: Vec<MenuEntry> = if blank {
+            vec![
+                MenuEntry::Item("select-all", "Select All"),
+                MenuEntry::Item("find", "Find\u{2026}"),
+                MenuEntry::Item("edit", "Edit Source"),
+                MenuEntry::Sep,
+                MenuEntry::Item("print", "Print\u{2026}"),
+            ]
+        } else if selection {
+            vec![
+                MenuEntry::Item("find-selection", "Find in Document"),
+                MenuEntry::Item("find-in-files", "Find in Files"),
+            ]
+        } else {
+            Vec::new()
+        };
+        if !extra.is_empty() {
+            // Galley items sit above Inspect Element (debug builds only).
+            let at = out
+                .iter()
+                .position(|e| matches!(e, MenuEntry::Keep(i) if items[*i].0.as_deref() == Some(inspect.as_str())))
+                .unwrap_or(out.len());
+            let mut block = vec![MenuEntry::Sep];
+            block.extend(extra);
+            block.push(MenuEntry::Sep);
+            out.splice(at..at, block);
+        }
+    }
+    // No leading, trailing or doubled separators.
+    let mut tidy: Vec<MenuEntry> = Vec::new();
+    for e in out {
+        if e == MenuEntry::Sep && matches!(tidy.last(), None | Some(MenuEntry::Sep)) {
+            continue;
+        }
+        tidy.push(e);
+    }
+    while tidy.last() == Some(&MenuEntry::Sep) {
+        tidy.pop();
+    }
+    tidy
+}
+
+#[cfg(target_os = "macos")]
+mod doc_menu {
+    use super::{plan_doc_menu, MenuEntry};
+    use objc2::rc::Retained;
+    use objc2::runtime::{AnyClass, AnyObject, Imp, Sel};
+    use objc2::{msg_send, sel, MainThreadMarker, MainThreadOnly};
+    use objc2_app_kit::{NSEvent, NSMenu, NSMenuItem, NSUserInterfaceItemIdentification};
+    use objc2_foundation::NSString;
+    use std::sync::OnceLock;
+    use tauri::Emitter;
+
+    static APP: OnceLock<tauri::AppHandle> = OnceLock::new();
+    const PREFIX: &str = "galley:";
+
+    /// Adds willOpenMenu:withEvent: and galleyMenuItem: to wry's WKWebView
+    /// subclass, which defines neither. Called on every page load; installs
+    /// once, from the live webview (wry registers its class lazily, so it
+    /// does not exist yet at setup).
+    pub fn ensure_installed(webview: &tauri::Webview) {
+        use tauri::Manager;
+        static INSTALLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+        if INSTALLED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let _ = APP.set(webview.app_handle().clone());
+        let res = webview.with_webview(|pw| {
+            let ptr = pw.inner() as *const AnyObject;
+            // SAFETY: wry hands over its live WKWebView; read on the main thread.
+            let Some(obj) = (unsafe { ptr.as_ref() }) else { return };
+            // wry's class name carries its version (e.g. "…WryWebView0.55.1"),
+            // so take the instance's class, stepping past a KVO subclass.
+            let mut cls = obj.class();
+            if cls.name().to_string_lossy().starts_with("NSKVONotifying_") {
+                cls = cls.superclass().unwrap_or(cls);
+            }
+            let cls = cls as *const AnyClass as *mut AnyClass;
+            // SAFETY: the IMPs match the type encodings (v@:@@ and v@:@).
+            unsafe {
+                let will: unsafe extern "C-unwind" fn(&AnyObject, Sel, *mut NSMenu, *mut NSEvent) = will_open_menu;
+                let pick: unsafe extern "C-unwind" fn(&AnyObject, Sel, *mut NSMenuItem) = menu_item_picked;
+                let ok1 = objc2::ffi::class_addMethod(cls, sel!(willOpenMenu:withEvent:), std::mem::transmute::<_, Imp>(will), c"v@:@@".as_ptr());
+                let ok2 = objc2::ffi::class_addMethod(cls, sel!(galleyMenuItem:), std::mem::transmute::<_, Imp>(pick), c"v@:@".as_ptr());
+                if !ok1.as_bool() || !ok2.as_bool() {
+                    eprintln!("doc menu: class_addMethod failed on {} ({:?}, {:?})", (*cls).name().to_string_lossy(), ok1, ok2);
+                }
+            }
+        });
+        if let Err(e) = res {
+            eprintln!("doc menu: with_webview failed: {}", e);
+        }
+    }
+
+    unsafe extern "C-unwind" fn will_open_menu(this: &AnyObject, _cmd: Sel, menu: *mut NSMenu, event: *mut NSEvent) {
+        if let Some(sup) = AnyClass::get(c"WKWebView") {
+            let _: () = msg_send![super(this, sup), willOpenMenu: menu, withEvent: event];
+        }
+        let (Some(menu), Some(mtm)) = (menu.as_ref(), MainThreadMarker::new()) else {
+            return;
+        };
+        let originals = menu.itemArray();
+        let items: Vec<(Option<String>, bool)> = (0..originals.count())
+            .map(|i| {
+                let it = originals.objectAtIndex(i);
+                (it.identifier().map(|s| s.to_string()), it.isSeparatorItem())
+            })
+            .collect();
+        let plan = plan_doc_menu(&items);
+        menu.removeAllItems();
+        for entry in plan {
+            match entry {
+                MenuEntry::Keep(i) => menu.addItem(&originals.objectAtIndex(i)),
+                MenuEntry::Sep => menu.addItem(&NSMenuItem::separatorItem(mtm)),
+                MenuEntry::Item(id, title) => {
+                    let item: Retained<NSMenuItem> = NSMenuItem::initWithTitle_action_keyEquivalent(
+                        NSMenuItem::alloc(mtm),
+                        &NSString::from_str(title),
+                        Some(sel!(galleyMenuItem:)),
+                        &NSString::from_str(""),
+                    );
+                    item.setTarget(Some(this));
+                    item.setIdentifier(Some(&NSString::from_str(&format!("{}{}", PREFIX, id))));
+                    menu.addItem(&item);
+                }
+            }
+        }
+    }
+
+    unsafe extern "C-unwind" fn menu_item_picked(_this: &AnyObject, _cmd: Sel, sender: *mut NSMenuItem) {
+        let Some(item) = sender.as_ref() else { return };
+        let Some(id) = item.identifier().map(|s| s.to_string()) else { return };
+        if let (Some(app), Some(id)) = (APP.get(), id.strip_prefix(PREFIX)) {
+            if let Err(e) = app.emit("doc-menu", id.to_string()) {
+                eprintln!("doc-menu emit error: {}", e);
+            }
+        }
+    }
+}
+
+/// DOC-MENU: put plain text on the general pasteboard. The page cannot do it
+/// reliably from a native menu action (WebKit wants a user gesture).
+#[tauri::command]
+fn write_clipboard(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        app.run_on_main_thread(move || {
+            use objc2_app_kit::{NSPasteboard, NSPasteboardTypeString};
+            use objc2_foundation::NSString;
+            let pb = NSPasteboard::generalPasteboard();
+            pb.clearContents();
+            // SAFETY: NSPasteboardTypeString is an AppKit constant.
+            let ok = pb.setString_forType(&NSString::from_str(&text), unsafe { NSPasteboardTypeString });
+            if !ok {
+                eprintln!("write_clipboard: pasteboard refused the string");
+            }
+        })
+        .map_err(|e| e.to_string())
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, text);
+        Err("clipboard is macOS-only".into())
+    }
+}
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 fn read_file_doc(path: &str) -> Result<FileDoc, String> {
@@ -1226,6 +1459,14 @@ fn build_menu(
         true,
         Some("CmdOrCtrl+W"),
     )?)?;
+    // DOC-MENU audit: the tabbed-app standard; reopens the last closed file.
+    file_menu.append(&MenuItem::with_id(
+        app,
+        "menu:reopen-closed-tab",
+        "Reopen Closed Tab",
+        true,
+        Some("CmdOrCtrl+Shift+T"),
+    )?)?;
 
     // ── Edit menu ────────────────────────────────────────────────────────
     // Undo/Redo/Cut/Copy/Paste/SelectAll are predefined so the WebView
@@ -1470,6 +1711,7 @@ pub fn run() {
             confirm_quit_dialog,
             set_appearance_check,
             set_recent_files,
+            write_clipboard,
         ])
         .setup(|app| {
             // Build and register the native macOS menu bar (U-01 / F-08).
@@ -1482,6 +1724,24 @@ pub fn run() {
             // C-36: the Open Recent submenu handle, so set_recent_files can
             // rebuild it once the frontend hands over its MRU.
             app.manage(recent_state);
+            // Window size and position survive relaunch: AppKit's frame
+            // autosave (user defaults, not a document write — DR-06).
+            #[cfg(target_os = "macos")]
+            if let Some(win) = app.get_webview_window("main") {
+                match win.ns_window() {
+                    Ok(ptr) => {
+                        // SAFETY: Tauri's live NSWindow; setup runs on the main thread.
+                        if let Some(w) = unsafe { (ptr as *const objc2::runtime::AnyObject).as_ref() } {
+                            let name = objc2_foundation::NSString::from_str("GalleyMainWindow");
+                            unsafe {
+                                let _: objc2::runtime::Bool = objc2::msg_send![w, setFrameUsingName: &*name];
+                                let _: objc2::runtime::Bool = objc2::msg_send![w, setFrameAutosaveName: &*name];
+                            }
+                        }
+                    }
+                    Err(e) => eprintln!("window frame autosave: {}", e),
+                }
+            }
             // UXF-09: forward trackpad finger phases (AppKit wants the main thread).
             #[cfg(target_os = "macos")]
             {
@@ -1492,6 +1752,13 @@ pub fn run() {
                 }
             }
             Ok(())
+        })
+        // DOC-MENU: edit WebKit's context menu before it opens (lib.rs doc_menu).
+        .on_page_load(|webview, _payload| {
+            #[cfg(target_os = "macos")]
+            doc_menu::ensure_installed(webview);
+            #[cfg(not(target_os = "macos"))]
+            let _ = webview;
         })
         // C-02: never let the window close on unsaved edits without asking.
         //
@@ -1534,6 +1801,7 @@ pub fn run() {
                 | "menu:open-folder"
                 | "menu:save"
                 | "menu:close-tab"
+                | "menu:reopen-closed-tab"
                 // Edit menu
                 | "menu:find"
                 | "menu:find-in-files"
@@ -2055,5 +2323,60 @@ mod tests {
             assert!(v["root"].get(k).is_some(), "DirNode.{}", k);
         }
         let _ = fs::remove_dir_all(&base);
+    }
+
+    // DOC-MENU: the WebKit context menu is edited, never left to navigate.
+    fn wk(name: &str) -> (Option<String>, bool) {
+        (Some(format!("WKMenuItemIdentifier{}", name)), false)
+    }
+    fn sep() -> (Option<String>, bool) {
+        (None, true)
+    }
+
+    #[test]
+    fn doc_menu_selection_keeps_system_items_and_adds_galley_ones() {
+        let items = vec![wk("LookUp"), wk("Translate"), wk("SearchWeb"), sep(), wk("Copy"), sep(), wk("ShareMenu"), sep(), wk("SpeechMenu")];
+        let plan = plan_doc_menu(&items);
+        assert_eq!(plan, vec![
+            MenuEntry::Keep(0), MenuEntry::Keep(1), MenuEntry::Keep(2), MenuEntry::Sep,
+            MenuEntry::Keep(4), MenuEntry::Item("copy-markdown", "Copy as Markdown"), MenuEntry::Sep,
+            MenuEntry::Keep(6), MenuEntry::Sep, MenuEntry::Keep(8), MenuEntry::Sep,
+            MenuEntry::Item("find-selection", "Find in Document"), MenuEntry::Item("find-in-files", "Find in Files"),
+        ]);
+    }
+
+    #[test]
+    fn doc_menu_link_drops_navigation_and_downloads() {
+        let items = vec![wk("OpenLink"), wk("OpenLinkInNewWindow"), wk("DownloadLinkedFile"), wk("CopyLink"), sep(), wk("ShareMenu")];
+        let plan = plan_doc_menu(&items);
+        assert_eq!(plan, vec![
+            MenuEntry::Item("open-link", "Open Link"), MenuEntry::Keep(3), MenuEntry::Sep, MenuEntry::Keep(5),
+        ]);
+    }
+
+    #[test]
+    fn doc_menu_blank_area_gets_document_items_above_inspect() {
+        let items = vec![wk("GoBack"), wk("GoForward"), wk("Reload"), sep(), wk("InspectElement")];
+        let plan = plan_doc_menu(&items);
+        assert_eq!(plan, vec![
+            MenuEntry::Item("select-all", "Select All"), MenuEntry::Item("find", "Find\u{2026}"),
+            MenuEntry::Item("edit", "Edit Source"), MenuEntry::Sep, MenuEntry::Item("print", "Print\u{2026}"),
+            MenuEntry::Sep, MenuEntry::Keep(4),
+        ]);
+    }
+
+    #[test]
+    fn doc_menu_editable_text_is_left_alone() {
+        let items = vec![wk("Cut"), wk("Copy"), wk("Paste"), sep(), wk("SpellingMenu"), (None, false)];
+        let plan = plan_doc_menu(&items);
+        assert_eq!(plan, vec![
+            MenuEntry::Keep(0), MenuEntry::Keep(1), MenuEntry::Keep(2), MenuEntry::Sep, MenuEntry::Keep(4), MenuEntry::Keep(5),
+        ]);
+    }
+
+    #[test]
+    fn doc_menu_image_drops_open_and_download() {
+        let items = vec![wk("OpenImageInNewWindow"), wk("DownloadImage"), wk("CopyImage"), sep(), wk("ShareMenu")];
+        assert_eq!(plan_doc_menu(&items), vec![MenuEntry::Keep(2), MenuEntry::Sep, MenuEntry::Keep(4)]);
     }
 }

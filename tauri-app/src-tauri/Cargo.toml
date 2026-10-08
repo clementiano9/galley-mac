@@ -31,4 +31,6 @@ tokio = { version = "1", features = ["sync"] }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
 block2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSEvent", "NSResponder", "NSWindow", "NSView"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-core-foundation", "NSEvent", "NSResponder", "NSWindow", "NSView", "NSMenu", "NSMenuItem", "NSPasteboard", "NSUserInterfaceItemIdentification"] }
+# DOC-MENU: the document context menu and the clipboard command.
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSString", "NSArray"] }

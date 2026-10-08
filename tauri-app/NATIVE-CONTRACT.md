@@ -27,6 +27,7 @@ capabilities come from Rust commands + events.
 | `confirm_quit_dialog` | `count: u32` | `"save" \| "discard" \| "cancel"` | C-02: native unsaved-changes sheet (Save All / Discard / Cancel) |
 | `set_appearance_check` | `choice: String` | `()` | C-36: check the matching View ▸ Appearance row. `"light" \| "dark" \| "system"` — the USER'S choice, not the resolved colour |
 | `set_recent_files` | `paths: Vec<String>` | `()` | C-36: rebuild File ▸ Open Recent from the frontend MRU (first 10) |
+| `write_clipboard` | `text: String` | `()` | DOC-MENU: put plain text on the general pasteboard (Copy as Markdown — a native menu action has no page user gesture) |
 
 **Argument keys are camelCase on the wire.** Tauri 2 camelCases command parameters, so
 the `suggested_name` above is `suggestedName` from JS (`invoke('save_md_file_as',
@@ -38,6 +39,12 @@ keys JS sends drift from it.
 ### Events (Rust → JS via `app.emit` / `Emitter`)
 - `file-changed` — payload `{ path: String, content: String }` (fired by the watcher).
 - `file-removed` — payload `{ path: String }` when a watched file is deleted.
+- `doc-menu` — DOC-MENU, macOS only. Payload: the id of the Galley item picked in the document's
+  native context menu (`copy-markdown`, `find-selection`, `find-in-files`, `open-link`, `select-all`,
+  `find`, `edit`, `print`). lib.rs adds `willOpenMenu:withEvent:` to wry's WKWebView class: WebKit's
+  own menu (Look Up, Translate, Search with Google, Copy, Share, Speech) is kept, navigation /
+  new-window / download items are dropped, Galley items are added (`plan_doc_menu`, unit-tested).
+  Editable text keeps WebKit's menu. tv-native.js forwards the id to `TV.runDocMenu(id)`.
 - `swipe-touch` — UXF-09, macOS only. Trackpad finger phases from an `NSEvent` local scroll-wheel
   monitor (`install_swipe_monitor`, which returns every event unchanged). Payload (camelCase)
   `{ phase: "began"|"changed"|"ended"|"cancelled", t: f64 ms (NSEvent clock), dx, dy: scrollingDeltaX/Y,

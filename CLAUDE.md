@@ -45,11 +45,13 @@ lives in `app/CONTRACT.md` (web) and `tauri-app/NATIVE-CONTRACT.md` (native) —
 the relevant one before editing**; they are binding and define file ownership.
 
 Module map (scripts load in this dependency order — see `index.html`):
-`tv-icons` (inline SVG) → `tv-docs` (seed/stream content) → `tv-markdown` (md→HTML +
+`tv-icons` (inline SVG) → `tv-docs` (seed/stream content) → `vendor/marked` +
+`vendor/purify` → `tv-markdown` (md→HTML via marked +
 async diagram resolver) → `tv-imgfix` → `tv-edit` (double-click/⌘E source editing) →
 `tv-palette` (⌘K) → `tv-search` (⌘⇧F) → `tv-files` (drag-drop + ⌘O + save) →
 `tv-live` (live-watch + status bar) → `tv-tree` (sidebar folder tree) → `tv-swipe`
 (two-finger swipe toggles the sidebar) → `tv-motion` (motion tokens + Reduce Motion) →
+`tv-docmenu` (Copy as Markdown, document link resolution) →
 `tv-app` (the spine) → `tv-native` (Tauri bridge).
 
 Overlays (palette, search, files, edit, live) register a small interface
@@ -160,5 +162,6 @@ author's own checks and do not count as verification.
   `.github/media/`) unless `requireLiteralLeadingDot` is `false` (ISS-006), and it
   denies `~/.ssh`, `~/.aws`, `~/.gnupg`, `~/Library/Keychains`. Keep those deny entries
   when editing the scope. Relative image paths are normalized in `tv-imgfix.js` (ISS-007).
-- No external network deps at runtime (icons are inline SVG; `mermaid.min.js` is
+- No external network deps at runtime (icons are inline SVG; `mermaid.min.js`,
+  `marked.umd.js` (MIT) and `purify.min.js` (Apache-2.0/MPL-2.0) are
   vendored in `app/js/vendor/`). Respect `prefers-reduced-motion` for all animation.

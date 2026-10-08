@@ -2318,6 +2318,7 @@
   // only when the tracked position is fresh enough to belong to this click.
   var _ctxPtr = { x: 0, y: 0, t: 0 };
   var _CTX_PTR_FRESH_MS = 1200;
+  var _docCtx = { link: null, t: 0 };
 
   // Esc closes the context menus. The menu element isn't focused, so a keydown
   // listener on it never fires — listen on the document (capture) instead, and
@@ -5381,35 +5382,11 @@
         return;
       }
 
-      // N-04: external link click handler
+      // N-04 / DOC-MENU: a document link never navigates the app's WebView.
       var anchor = e.target.closest('.md a[href]');
       if (anchor) {
-        var href = anchor.getAttribute('href');
-        if (href && (href.indexOf('http://') === 0 || href.indexOf('https://') === 0)) {
-          e.preventDefault();
-          if (window.__TAURI__) {
-            // Try opener plugin first, fall back to core invoke
-            var opener = window.__TAURI__.opener;
-            if (opener && typeof opener.openUrl === 'function') {
-              opener.openUrl(href).catch(function () {});
-            } else {
-              window.__TAURI__.core.invoke('plugin:opener|open_url', { url: href }).catch(function () {});
-            }
-          } else {
-            window.open(href, '_blank', 'noopener,noreferrer');
-          }
-          return;
-        }
-        // Internal #anchor links — scroll to heading
-        if (href && href.charAt(0) === '#') {
-          e.preventDefault();
-          var headingText = href.slice(1).replace(/-/g, ' ');
-          var activeTab = getActiveTab();
-          if (activeTab) {
-            scrollToHeading(activeTab.id, headingText);
-          }
-          return;
-        }
+        e.preventDefault();
+        followDocLink(anchor);
         return;
       }
 
@@ -5574,6 +5551,15 @@
         pt = _ctxAnchor(e, fh);
         var ctxPath = fh.getAttribute('data-folder-ctx-target');
         if (ctxPath) openFolderCtx(pt.x, pt.y, ctxPath, fh.getAttribute('data-folder-toggle'));
+        return;
+      }
+      // DOC-MENU: in the document, WebKit's own menu opens (Look Up, Copy,
+      // Share…; lib.rs edits it). Remember the link under the pointer for its
+      // Open Link item.
+      // The scroller covers the margins beside and below the text column.
+      var docContent = e.target.closest('.tv-content') || e.target.closest('.tv-scroll');
+      if (state.mode === 'reading' && docContent && docContent.querySelector('.md[data-md]')) {
+        _docCtx = { link: e.target.closest('.md a[href]'), t: Date.now() };
         return;
       }
       // Suppress the leaky native WebKit context menu everywhere else in the
@@ -5783,6 +5769,123 @@
   }
 
   // F-10/F-16: reveal a file in Finder via the native bridge. No-op in browser.
+  /* ────────────────────────────────────────────────────────────
+     DOC-MENU: document links and the document context menu.
+     The menu is WebKit's native one, edited in lib.rs; its Galley items
+     arrive as `doc-menu` (tv-native.js) and run here.
+   ──────────────────────────────────────────────────────────── */
+  function openExternal(url) {
+    if (window.__TAURI__) {
+      var opener = window.__TAURI__.opener;
+      if (opener && typeof opener.openUrl === 'function') opener.openUrl(url).catch(function () {});
+      else window.__TAURI__.core.invoke('plugin:opener|open_url', { url: url }).catch(function () {});
+    } else {
+      window.open(url, '_blank', 'noopener,noreferrer');
+    }
+  }
+
+  // Web and mail links open outside; #anchors scroll (footnotes have real
+  // ids, headings fall back to their text); a relative markdown file opens in
+  // a tab; any other relative file is revealed in Finder.
+  function followDocLink(anchor) {
+    var tab = getActiveTab();
+    var link = window.TVDocMenu
+      ? TVDocMenu.resolveLink(anchor.getAttribute('href'), tab && tab.nativePath)
+      : { kind: 'none' };
+    if (link.kind === 'web' || link.kind === 'mail') {
+      openExternal(link.url);
+    } else if (link.kind === 'anchor' && link.hash) {
+      var idTarget = null;
+      try {
+        idTarget = anchor.closest('.md').querySelector('#' + CSS.escape(decodeURIComponent(link.hash)));
+      } catch (err) { /* not a valid id */ }
+      if (idTarget) {
+        idTarget.scrollIntoView({ block: 'center', behavior: window.TVMotion && TVMotion.reduced() ? 'auto' : 'smooth' });
+      } else if (tab) {
+        scrollToHeading(tab.id, link.hash.replace(/-/g, ' '));
+      }
+    } else if (link.kind === 'doc') {
+      _openTreeFilePath(link.path);
+    } else if (link.kind === 'file') {
+      revealInFinder(link.path);
+    }
+  }
+
+  function copyText(text, doneMsg) {
+    var done = function () {
+      if (window.TVNative && typeof TVNative.showToast === 'function') TVNative.showToast(doneMsg);
+      announce(doneMsg);
+    };
+    var fail = function (err) { console.warn('[TV] clipboard write failed', err); };
+    if (window.__TAURI__ && window.__TAURI__.core) {
+      window.__TAURI__.core.invoke('write_clipboard', { text: text }).then(done, fail);
+    } else if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done, fail);
+    }
+  }
+
+  function selectedDocText() {
+    var sel = window.getSelection ? window.getSelection() : null;
+    var md = document.querySelector('.tv-content .md[data-md]');
+    if (!sel || sel.isCollapsed || !md || !md.contains(sel.anchorNode)) return { sel: null, text: '' };
+    return { sel: sel, text: sel.toString().replace(/\s+/g, ' ').trim() };
+  }
+
+  function _fillInput(input, value) {
+    if (!input) return;
+    input.value = value;
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+    input.select();
+  }
+
+  function runDocMenu(id) {
+    var picked = selectedDocText();
+    if (id === 'copy-markdown') {
+      var md = picked.sel && window.TVDocMenu ? TVDocMenu.selectionMarkdown(picked.sel) : '';
+      if (md) copyText(md, 'Copied as Markdown');
+    } else if (id === 'find-selection' || id === 'find') {
+      if (state.mode !== 'reading' || !state.tabs.length) return;
+      _openFindBar();
+      if (id === 'find-selection' && picked.text && _findBarEl) {
+        _fillInput(_findBarEl.querySelector('.tv-find-input'), picked.text.slice(0, 200));
+      }
+    } else if (id === 'find-in-files') {
+      if (!window.TVSearch) return;
+      if (!TVSearch.isOpen || !TVSearch.isOpen()) TVSearch.open();
+      _fillInput(document.querySelector('.tv-search-field'), picked.text.slice(0, 200));
+    } else if (id === 'open-link') {
+      // The link was recorded on the right-click that opened this menu.
+      if (_docCtx.link && document.contains(_docCtx.link)) followDocLink(_docCtx.link);
+    } else if (id === 'select-all') {
+      var mdEl = document.querySelector('.tv-content .md[data-md]');
+      if (mdEl) {
+        var range = document.createRange();
+        range.selectNodeContents(mdEl);
+        var sel = window.getSelection();
+        sel.removeAllRanges();
+        sel.addRange(range);
+      }
+    } else if (id === 'edit') {
+      setMode('edit');
+    } else if (id === 'print') {
+      printDocument();
+    }
+  }
+
+  function printDocument() {
+    // window.print() is a no-op in WKWebView — prefer the native print command
+    // (wry WebView.print() via Rust); fall back to window.print() in a browser.
+    if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
+      window.__TAURI__.core.invoke('print_page').catch(function (err) {
+        console.warn('U-15: native print failed; falling back to window.print()', err);
+        if (typeof window.print === 'function') window.print();
+      });
+    } else if (typeof window.print === 'function') {
+      window.print();
+    }
+  }
+
   function revealInFinder(path) {
     if (!path) return;
     if (window.TVNative && typeof TVNative.revealInFinder === 'function') {
@@ -6126,6 +6229,14 @@
     if (idx === -1) return;
 
     var tab = state.tabs[idx];
+    // ⇧⌘T history: user closes only (a replaced preview tab is not a close).
+    // If an unsaved-changes prompt is cancelled the tab stays open and
+    // reopenClosedTab() skips it.
+    if (tab.nativePath) {
+      _closedPaths = _closedPaths.filter(function (p) { return p !== tab.nativePath; });
+      _closedPaths.push(tab.nativePath);
+      if (_closedPaths.length > 20) _closedPaths.shift();
+    }
 
     // S-03: Guard against silent data loss.
     // Untitled new-tab pages never have anything to lose — close instantly.
@@ -6149,6 +6260,19 @@
     }
 
     _doCloseTab(id, idx);
+  }
+
+  // ⇧⌘T: files closed this session, most recent last (memory only, DR-06).
+  var _closedPaths = [];
+
+  function reopenClosedTab() {
+    while (_closedPaths.length) {
+      var p = _closedPaths.pop();
+      if (_tabIdByNativePath(p)) continue;
+      _openTreeFilePath(p);
+      return true;
+    }
+    return false;
   }
 
   function _doCloseTab(id, idx) {
@@ -7371,6 +7495,14 @@
       return;
     }
 
+    // ⇧⌘T — reopen the last closed tab. In the desktop app the File-menu
+    // accelerator takes it first; this route serves the browser build.
+    if ((k === 't' || k === 'T') && e.shiftKey) {
+      e.preventDefault();
+      reopenClosedTab();
+      return;
+    }
+
     // ⌘T — browser-style new tab (creates/activates the Untitled tab)
     if (k === 't' || k === 'T') {
       e.preventDefault();
@@ -7569,16 +7701,7 @@
       var printFocused = document.activeElement;
       if (printFocused && (printFocused.tagName === 'TEXTAREA' || printFocused.tagName === 'INPUT')) return;
       e.preventDefault();
-      // window.print() is a no-op in WKWebView — prefer the native print command
-      // (wry WebView.print() via Rust); fall back to window.print() in a browser.
-      if (window.__TAURI__ && window.__TAURI__.core && typeof window.__TAURI__.core.invoke === 'function') {
-        window.__TAURI__.core.invoke('print_page').catch(function (err) {
-          console.warn('U-15: native print failed; falling back to window.print()', err);
-          if (typeof window.print === 'function') window.print();
-        });
-      } else if (typeof window.print === 'function') {
-        window.print();
-      }
+      printDocument();
       return;
     }
 
@@ -7686,6 +7809,8 @@
     listen('menu:close-tab', function () {
       if (state.activeId) closeTab(state.activeId);
     }).catch(function () {});
+
+    listen('menu:reopen-closed-tab', function () { reopenClosedTab(); }).catch(function () {});
 
     listen('menu:find', function () {
       // UF-05: only open find in reading mode; silently ignore in edit mode
@@ -8121,6 +8246,8 @@
     refreshFolder: refreshFolder,
     collapseAllFolders: collapseAllFolders,
     revealInSidebar: revealInSidebar,
+    runDocMenu: runDocMenu,
+    reopenClosedTab: reopenClosedTab,
     // UXF-01 diagnostic: how many table sizing passes have run (QA counts them
     // to prove the ResizeObserver settles).
     tableSizingPasses: function () { return _tableSizePasses; },

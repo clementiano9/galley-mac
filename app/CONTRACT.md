@@ -21,13 +21,14 @@ ONLY through the documented `window.TV` controller API and the agreed DOM classe
 |------|-------|---------|
 | `index.html`, `js/tv-app.js` | **shell** | App spine: state, render loop, chrome, tabs, sidebar, keyboard router, theme/accent |
 | `js/tv-edit.js` | **render** | Edit-mode source view + real editing back into the tab |
-| `js/tv-markdown.js` | **render** | Markdown renderer (already copied — harden only) |
+| `js/tv-markdown.js` | **render** | MD-01: markdown renderer — parses with vendored `marked` (`js/vendor/`) plus its own footnote extension, renderer overrides keep Galley markup; raw HTML only through DOMPurify (`js/vendor/purify.min.js`) |
 | `js/tv-palette.js` | **features** | ⌘K command palette (fuzzy file + heading jump) |
 | `js/tv-search.js` | **features** | ⌘⇧F cross-tab search across open docs |
 | `js/tv-files.js` | **features** | Drag-drop + ⌘O file open (File System Access API) |
 | `js/tv-live.js` | **features** | Live-watch streaming + status bar |
 | `js/tv-tree.js` | **shell** | Pure folder-tree logic (order, counts, default expansion, reveal lookup) |
 | `js/tv-swipe.js` | **shell** | UXF-05/09: two-finger swipe state machine + one `wheel` listener (`TVSwipe.install`); `TVSwipe.touch(m)` takes the native `swipe-touch` finger phases |
+| `js/tv-docmenu.js` | **shell** | DOC-MENU: `TVDocMenu` — `toMarkdown(node)` / `selectionMarkdown(sel)` (Copy as Markdown), `resolveLink(href, docPath)` |
 | `js/tv-motion.js` | **shell** | UXF-08: `TVMotion` — reads the motion tokens, `play()` / `enter()` (null under Reduce Motion), `cancelAll()` |
 | `css/tv-tokens.css`, `css/tv-app.css` | **style** | Tokens + chrome (copied — adapt to full-viewport single window, add new component styles, a11y) |
 
@@ -98,6 +99,8 @@ TV.tableSizingPasses() -> n      // UXF-01 diagnostic: table sizing passes run s
 // UXF-08: toggleSidebar(opts) slides (220ms) unless opts.animate === false; every motion
 // uses the tokens in tv-tokens.css and goes through TVMotion.
 TV.scrollToHeading(tabId, headingText)  // open tab + scroll its rendered heading into view
+TV.runDocMenu(id)                // DOC-MENU: run a Galley item of the native document menu
+TV.reopenClosedTab() -> bool     // ⇧⌘T: reopen the last file closed this session (memory only)
 TV.markDirty(id, isDirty)
 TV.on(event, fn)                 // tiny emitter; events: 'render', 'tabchange', 'modechange'
 TV.emit(event, payload)

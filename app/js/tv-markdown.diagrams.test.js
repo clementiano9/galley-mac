@@ -386,6 +386,8 @@ function loadMarkdown() {
     atob: function (s) { return Buffer.from(s, 'base64').toString('binary'); },
     console: console,
   };
+  // MD-01: the renderer parses with the vendored marked.
+  windowMock.marked = require('./vendor/marked.umd.js');
   sandbox.window = windowMock;
   sandbox.document = documentMock;
   sandbox.global = sandbox;
