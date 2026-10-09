@@ -106,7 +106,7 @@ Duration, easing and property per row. "Static" is a decision, with its reason.
 | 8 | Hover and press on rows, buttons, tabs | .10 to .15 s | **Tokenise** | 100 ms `--tv-ease-enter`, colour only |
 | 9 | Folder expand and collapse | chevron .14 s | **Chevron only** | rotate 100 ms; rows appear at once (a 100-row subtree animated by height is per-frame layout) |
 | 10 | Selection tint on a sidebar row | none (DOM replaced) | Static | cannot persist; instant is correct |
-| 11 | Command palette open | snap | **Animate in** | opacity 0 to 1 plus translateY 4 px to 0, 100 ms `--tv-ease-enter`; scrim fades with it; **close is instant** (Linear: summon at once) |
+| 11 | Command palette open | snap | **Animate in** | *Amended 2026-10-09 (owner: "I can hardly see any animation")*: scrim fades 0 to 1, panel opacity 0 to 1 plus translateY −8 px and scale .96 to none, both 160 ms `--tv-ease-enter` (Spotlight-style); Reduce Motion: 80 ms scrim fade; **close is instant** |
 | 12 | Cross-tab search open | snap | **Animate in** | same as 11 |
 | 13 | Find bar open | snap | **Animate in** | opacity plus translateY -6 px to 0, 100 ms; close instant |
 | 14 | Shortcuts overlay | .16 s | **Tokenise** | 160 ms enter, close instant |

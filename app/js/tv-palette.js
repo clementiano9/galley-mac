@@ -1353,9 +1353,20 @@
       wrapper.innerHTML = _buildOverlayHtml(_query, null);
       _overlayEl = wrapper.firstChild;
       root.appendChild(_overlayEl);
-      // UXF-08: summon with a 100ms fade and 4px rise (one animation; the scrim
-      // carries the panel). Closing stays instant.
-      if (window.TVMotion) window.TVMotion.enter(_overlayEl, { y: 4, reducedFade: true });
+      // UXF-08 (amended 2026-10-09, "I can hardly see any animation"): the
+      // scrim fades in and the panel drops in from just above with a slight
+      // scale, Spotlight-style. Reduce Motion: an 80ms scrim fade only.
+      // Closing stays instant.
+      if (window.TVMotion) {
+        window.TVMotion.enter(_overlayEl, { dur: 'base', reducedFade: true });
+        var panelEl = _overlayEl.querySelector('.tv-palette');
+        if (panelEl) {
+          window.TVMotion.play(panelEl, [
+            { opacity: 0, transform: 'translateY(-8px) scale(.96)' },
+            { opacity: 1, transform: 'none' }
+          ], { dur: 'base', ease: 'enter' });
+        }
+      }
       _open = true;
       _model = _buildModel(_query, _ctx(), null);
       _sel = _initialSel(_model);

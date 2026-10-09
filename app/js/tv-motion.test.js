@@ -126,8 +126,9 @@ assert('theme commit uses startViewTransition (not under Reduce Motion, not for 
   /themeTransition\(render\);/.test(extractFn(APP, 'setTheme')) && extractFn(APP, 'previewAppearance').indexOf('themeTransition') === -1 &&
   /if \(reduce \|\| typeof document\.startViewTransition !== 'function'\) \{ fn\(\); return; \}/.test(extractFn(APP, 'themeTransition')));
 assert('heading jump: smooth, or auto under Reduce Motion', /behavior: \(window\.TVMotion && TVMotion\.reduced\(\)\) \? 'auto' : 'smooth'/.test(APP));
-assert('palette, search and find bar enter (100ms, 80ms fade under Reduce Motion); close stays instant',
-  /TVMotion\.enter\(_overlayEl, \{ y: 4, reducedFade: true \}\)/.test(PAL) && /TVMotion\.enter\(_containerEl, \{ y: 4, reducedFade: true \}\)/.test(SEARCH) &&
+assert('palette (scrim fade + panel drop/scale, 160ms), search and find bar enter (80ms fade under Reduce Motion); close stays instant',
+  /TVMotion\.enter\(_overlayEl, \{ dur: 'base', reducedFade: true \}\)/.test(PAL) &&
+  /translateY\(-8px\) scale\(\.96\)/.test(PAL) && /TVMotion\.enter\(_containerEl, \{ y: 4, reducedFade: true \}\)/.test(SEARCH) &&
   /TVMotion\.enter\(_findBarEl, \{ y: -6, reducedFade: true \}\)/.test(APP));
 assert('a repaint that re-creates the find bar does not animate it', /_openFindBar\(\{ restoring: true \}\)/.test(APP));
 
