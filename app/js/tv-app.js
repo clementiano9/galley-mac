@@ -2352,7 +2352,7 @@
       var added = state.agentFolders.indexOf(fLower) !== -1;
       agentItem =
         '<div class="tv-ctx-item" data-ctx-action="' + (added ? 'agent-remove' : 'agent-add') + '">' +
-          '<span class="ic"></span> ' + (added ? 'Stop Always Showing' : 'Always Show') + ' "' + esc(fName) + '"' +
+          '<span class="ic">' + ((added ? icons.eyeOff : icons.eye) || '') + '</span> ' + (added ? 'Stop Always Showing' : 'Always Show') + ' "' + esc(fName) + '"' +
         '</div>' +
         '<div class="tv-ctx-sep"></div>';
     }
@@ -2362,10 +2362,10 @@
         '<div class="tv-ctx" data-ctx-menu>' +
           agentItem +
           '<div class="tv-ctx-item" data-ctx-action="expand-all">' +
-            '<span class="ic"></span> Expand All' +
+            '<span class="ic">' + (icons.expandAll || '') + '</span> Expand All' +
           '</div>' +
           '<div class="tv-ctx-item" data-ctx-action="collapse-all">' +
-            '<span class="ic"></span> Collapse All' +
+            '<span class="ic">' + (icons.collapseAll || '') + '</span> Collapse All' +
           '</div>' +
           '<div class="tv-ctx-sep"></div>' +
           '<div class="tv-ctx-item" data-ctx-action="reveal">' +
@@ -2497,10 +2497,10 @@
             '<span class="tv-ctx-hint">⌘W</span>' +
           '</div>' +
           '<div class="tv-ctx-item" data-ctx-action="close-others">' +
-            '<span class="ic"></span> Close Others' +
+            '<span class="ic">' + (icons.closeOthers || '') + '</span> Close Others' +
           '</div>' +
           '<div class="tv-ctx-item danger" data-ctx-action="close-all">' +
-            '<span class="ic"></span> Close All' +
+            '<span class="ic">' + (icons.closeAll || '') + '</span> Close All' +
           '</div>' +
         '</div>' +
       '</div>'

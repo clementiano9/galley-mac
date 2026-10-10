@@ -2582,7 +2582,8 @@ input:focus-visible,
   border-radius: 6px; color: var(--tv-text-primary) !important; cursor: default;
   -webkit-user-select: none; user-select: none;
 }
-.tv-ctx-item .ic { color: var(--tv-text-muted) !important; display: inline-flex; flex: 0 0 auto; }
+/* Fixed-width icon column so every label starts at the same x (icons are 11–15px). */
+.tv-ctx-item .ic { color: var(--tv-text-muted) !important; display: inline-flex; flex: 0 0 16px; width: 16px; justify-content: center; }
 .tv-ctx-item:hover { background: var(--tv-accent-weak) !important; color: var(--tv-accent-text) !important; }
 .tv-ctx-item:hover .ic { color: var(--tv-accent-text) !important; }
 /* C-37: hex/rgba literals replaced by the shared danger tokens; resolves
