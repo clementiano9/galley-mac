@@ -11,9 +11,20 @@ disk unless you ask it to.
 
 ![Galley reading a research document — nested file tree in the sidebar, six open tabs, find-in-document, and a rendered markdown table](.github/media/galley-reading-research-doc.png)
 
-## How to Build Galley
+## Install
 
-Galley is not signed with an Apple Developer ID yet.
+Galley runs on Macs with Apple silicon (M1 or later) and macOS 13 or later.
+
+1. Download `Galley_0.2.0_aarch64.dmg` from the
+   [latest release](https://github.com/clementiano9/galley-mac/releases/latest).
+2. Open the `.dmg` and drag Galley to Applications.
+3. Open Galley. macOS blocks the first launch because Galley is not notarized by Apple.
+   Click **Done**, open **System Settings > Privacy & Security**, find the message about
+   Galley under **Security**, and click **Open Anyway**. You do this once.
+
+What changed in each version is in [CHANGELOG.md](CHANGELOG.md).
+
+## How to Build Galley
 
 ### Before you start
 
@@ -45,8 +56,8 @@ tauri-app/src-tauri/target/release/bundle/macos/Galley.app
 Drag it into `/Applications`, or double-click it where it is. There is no security
 prompt, because you compiled it.
 
-The build also writes `bundle/dmg/Galley_0.1.0_aarch64.dmg`. Ignore it — a `.dmg` you
-send to someone else *does* get quarantined and blocked. Building is the point.
+The build also writes `bundle/dmg/Galley_<version>_aarch64.dmg`, the file a release
+publishes.
 
 ### Update later
 
@@ -115,3 +126,8 @@ The binding interface contracts are [`app/CONTRACT.md`](app/CONTRACT.md) for the
 frontend module boundaries and
 [`tauri-app/NATIVE-CONTRACT.md`](tauri-app/NATIVE-CONTRACT.md) for the JS ⇄ Rust
 bridge. Read the relevant one before editing either side.
+
+## License
+
+MIT, see [LICENSE](LICENSE). Bundled libraries keep their own licenses, listed in
+[THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md).

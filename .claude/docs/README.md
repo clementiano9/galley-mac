@@ -13,11 +13,9 @@ should show what Galley *is* (`app/`, `tauri-app/`), not how it was made.
 |---|---|
 | `ux/` | The 8-step UxPipeline run: `INDEX.md`, `UX-DESIGN-SYSTEM.md` (one-page summary), research streams, steps 2–6, the step-8 evaluation and iteration illustration, and `obsolete-audit.md` |
 | `feature-gaps/` | `waad-grounded-requirements.md`, the per-requirement specs in `specs/` (`DR-##`, `U-##`, `F-##`, `UXF-##`) and test `fixtures/` |
-| `qa/` | `screenshots/` evidence (gitignored); past QA reports were removed as obsolete and remain in git history |
-| `notes/` | Drafts and loose writing not tied to a requirement |
+| `notes/` | Drafts and loose writing not tied to a requirement (gitignored, stays on your machine) |
 
-Two of these are gitignored and stay on your machine: `qa/screenshots/` (regenerated
-evidence, not sources) and `notes/` (personal drafts).
+QA evidence is not kept here; past QA reports remain in git history.
 
 ## Related, deliberately kept elsewhere
 
