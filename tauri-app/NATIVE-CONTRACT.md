@@ -22,6 +22,7 @@ capabilities come from Rust commands + events.
 | `save_md_file_as` | `content: String, suggested_name: String, directory: Option<String>` | `Option<FileDoc>` | Native save dialog; returns new path (null if cancelled). `directory` (F-23) is where the panel opens; a missing or non-existent folder is ignored |
 | `watch_file` | `path: String` | `()` | Start an FSEvents watch (notify crate). On change, re-read and emit `file-changed` |
 | `unwatch_file` | `path: String` | `()` | Stop watching that path |
+| `list_dir` | `path: String` | `PathListing` | UXF-10: one folder's subfolders and viewable files, names only: `{ path, entries: [{ name, dir }], truncated }`. Expands a leading `~`, skips package bundles, natural sort, cap 5,000. Async |
 | `read_dir_tree` | `path: String, uncapped: Option<bool>` | `DirTree` | Scan a folder for the sidebar tree (async, off the main thread). `uncapped: true` uses the wide budget and file cap — see UXF-02 below |
 | `confirm_close` | — | `()` | C-02: the frontend has cleared the quit; releases the guard and exits |
 | `confirm_quit_dialog` | `count: u32` | `"save" \| "discard" \| "cancel"` | C-02: native unsaved-changes sheet (Save All / Discard / Cancel) |
@@ -57,7 +58,8 @@ keys JS sends drift from it.
   close button, ⌘Q, ⇧⌘W). See the quit contract below.
 - `menu:*` — one event per custom menu item id (`menu:new-file` (⌘N, F-23), `menu:print`, `menu:find-next`,
   `menu:find-prev`, `menu:reveal-in-finder`, `menu:reveal-in-sidebar` (View ▸ Reveal in Sidebar ⇧⌘J,
-  UXF-06 → `TV.revealInSidebar()`), `menu:appearance-*`, …).
+  UXF-06 → `TV.revealInSidebar()`), `menu:open-path` (File ▸ Open Path… ⌘L, UXF-10 →
+  `TVPalette.openPath()`), `menu:appearance-*`, …).
 - Native drag-drop uses Tauri's built-in `tauri://drag-drop` window event
   (payload `{ paths: string[], position }`) — the bridge listens for it.
 
@@ -150,6 +152,7 @@ TVNative.saveTab(tab)         // tab.nativePath ? save_md_file : save_md_file_as
 TVNative.startWatch(tab)      // invoke watch_file(tab.nativePath)
 TVNative.stopWatch(tab)       // invoke unwatch_file(tab.nativePath)
 TVNative.readDirTree(p, opts) // read_dir_tree; opts.uncapped -> wide budget + file cap (UXF-02)
+TVNative.listDir(p)           // list_dir (UXF-10 Open Path completer); rejects when unreadable
 TVNative.showToast(msg, opts) // opts.kind 'error' -> dismissible, ~6s (C-01)
 TVNative.syncRecentMenu()     // push the MRU into File > Open Recent (C-36)
 TVNative.syncAppearanceMenu() // re-check the View > Appearance row (C-36)

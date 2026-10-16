@@ -1333,6 +1333,74 @@ async fn read_dir_tree(path: String, uncapped: Option<bool>) -> Result<DirTree, 
         .map_err(|e| format!("read_dir_tree: scan task failed: {}", e))?
 }
 
+/// UXF-10: one folder's entries for the Open Path completer. Names only (DR-06).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PathListing {
+    /// The folder read, with a leading `~` expanded.
+    pub path: String,
+    pub entries: Vec<PathEntry>,
+    /// More than LIST_DIR_CAP entries: the rest were dropped.
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PathEntry {
+    pub name: String,
+    pub dir: bool,
+}
+
+const LIST_DIR_CAP: usize = 5000;
+
+/// `~` and `~/x` expand to the home folder; anything else is returned as is.
+fn expand_home(path: &str) -> String {
+    let home = std::env::var("HOME").unwrap_or_default();
+    if path == "~" {
+        return home;
+    }
+    match path.strip_prefix("~/") {
+        Some(rest) => format!("{}/{}", home.trim_end_matches('/'), rest),
+        None => path.to_string(),
+    }
+}
+
+/// Folders (package bundles excluded) and viewable files directly inside `path`,
+/// natural-sorted. Hidden names are included; the completer decides when to show them.
+fn list_path_entries(path: &str) -> Result<PathListing, String> {
+    let full = expand_home(path);
+    let rd = std::fs::read_dir(&full).map_err(|e| format!("cannot read {}: {}", full, e))?;
+    let mut entries = Vec::new();
+    let mut truncated = false;
+    for entry in rd.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        // metadata() follows symlinks, so a link to a folder lists as a folder.
+        let is_dir = match std::fs::metadata(entry.path()) {
+            Ok(m) => m.is_dir(),
+            Err(_) => continue,
+        };
+        if is_dir && is_package_name(&name) {
+            continue;
+        }
+        if !is_dir && !is_md_name(&name) {
+            continue;
+        }
+        if entries.len() >= LIST_DIR_CAP {
+            truncated = true;
+            break;
+        }
+        entries.push(PathEntry { name, dir: is_dir });
+    }
+    entries.sort_by(|a, b| natural_cmp(&a.name, &b.name));
+    Ok(PathListing { path: full, entries, truncated })
+}
+
+#[tauri::command]
+async fn list_dir(path: String) -> Result<PathListing, String> {
+    tauri::async_runtime::spawn_blocking(move || list_path_entries(&path))
+        .await
+        .map_err(|e| format!("list_dir: task failed: {}", e))?
+}
+
 // ── Menu builder ─────────────────────────────────────────────────────────────
 
 /// Build the native macOS menu bar (U-01 / F-08).
@@ -1413,6 +1481,14 @@ fn build_menu(
         "Open Folder\u{2026}",
         true,
         Some("CmdOrCtrl+Shift+O"),
+    )?)?;
+    // UXF-10: type a path, with fuzzy completion (opens ⌘K in path mode).
+    file_menu.append(&MenuItem::with_id(
+        app,
+        "menu:open-path",
+        "Open Path\u{2026}",
+        true,
+        Some("CmdOrCtrl+L"),
     )?)?;
     // C-36: Open Recent ▸ — filled in by the frontend via set_recent_files
     // (the 20-entry MRU lives in localStorage, so Rust cannot build it here).
@@ -1700,6 +1776,7 @@ pub fn run() {
             pick_folder,
             read_md_file,
             read_dir_tree,
+            list_dir,
             save_md_file,
             save_md_file_as,
             reveal_in_finder,
@@ -1799,6 +1876,7 @@ pub fn run() {
                 "menu:new-file"
                 | "menu:open-file"
                 | "menu:open-folder"
+                | "menu:open-path"
                 | "menu:save"
                 | "menu:close-tab"
                 | "menu:reopen-closed-tab"
@@ -2120,6 +2198,43 @@ mod tests {
         let folders: Vec<&str> = t.root.folders.iter().map(|f| f.name.as_str()).collect();
         assert_eq!(folders, vec!["alpha", "Zeta"]);
         let _ = fs::remove_dir_all(&base);
+    }
+
+    // UXF-10: Open Path lists folders and viewable files only, naturally sorted.
+    #[test]
+    fn list_dir_lists_folders_and_viewable_files() {
+        let base = tmp("listdir");
+        for f in ["b10.md", "b2.md", "notes.txt", "img.png", "data.json", ".cursorrules"] {
+            fs::write(base.join(f), "x").unwrap();
+        }
+        for d in ["sub", ".hidden", "Tool.app"] {
+            fs::create_dir_all(base.join(d)).unwrap();
+        }
+        let l = list_path_entries(base.to_str().unwrap()).unwrap();
+        let got: Vec<(String, bool)> = l.entries.iter().map(|e| (e.name.clone(), e.dir)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (".cursorrules".into(), false),
+                (".hidden".into(), true),
+                ("b2.md".into(), false),
+                ("b10.md".into(), false),
+                ("notes.txt".into(), false),
+                ("sub".into(), true),
+            ]
+        );
+        assert!(!l.truncated);
+        assert!(list_path_entries(base.join("missing").to_str().unwrap()).is_err());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn expand_home_handles_tilde_forms() {
+        let home = std::env::var("HOME").unwrap();
+        assert_eq!(expand_home("~"), home);
+        assert_eq!(expand_home("~/a/b"), format!("{}/a/b", home.trim_end_matches('/')));
+        assert_eq!(expand_home("/abs/~/x"), "/abs/~/x");
+        assert_eq!(expand_home("~user/x"), "~user/x");
     }
 
     #[test]

@@ -271,10 +271,11 @@ console.log('\n#7 C-18: overlay lists ⌘P and ⌘G, ignores bare modifiers\n');
     block.indexOf("action: 'Find next / previous'") !== -1);
   // F-23 added ⌘N New file (20 rows); UXF-06 added ⇧⌘J Reveal in sidebar (21)
   // and raised the DR-17 cap to 22. Any further row needs another amendment.
-  assert('21 rows, within the amended DR-17 cap of 22',
-    rows === 21 && rows <= 22, String(rows));
-  assert('the two columns stay balanced (11 / 10)',
-    Math.ceil(rows / 2) === 11 && rows - Math.ceil(rows / 2) === 10);
+  // UXF-10 added ⌘L Open path: 22 rows, exactly at the cap.
+  assert('22 rows, within the amended DR-17 cap of 22',
+    rows === 22 && rows <= 22, String(rows));
+  assert('the two columns stay balanced (11 / 11)',
+    Math.ceil(rows / 2) === 11 && rows - Math.ceil(rows / 2) === 11);
   assert('a bare modifier no longer dismisses the sheet',
     /_SC_BARE_MODIFIERS\[e\.key\]\) return;/.test(APP) &&
     /Shift: 1, Meta: 1, Alt: 1, Control: 1/.test(APP));

@@ -96,6 +96,8 @@
     width: 100% !important;
   }
 
+  .tv-progress { display: none !important; }   /* UXF-11: screen-only */
+
   .tv-scroll {
     overflow: visible !important;
     height: auto !important;

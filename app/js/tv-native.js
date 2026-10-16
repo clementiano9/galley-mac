@@ -4,8 +4,8 @@
      available, init(), openPicker(), openFolder(),
      saveTab(tab), startWatch(tab), stopWatch(tab),
      openInto(doc), showToast(msg),
-     readDirTree(path, opts), notifyTheme(choice), syncAppearanceMenu(),
-     syncRecentMenu()
+     readDirTree(path, opts), listDir(path), notifyTheme(choice),
+     syncAppearanceMenu(), syncRecentMenu()
    }
 
    Uses window.__TAURI__ (withGlobalTauri: true in tauri.conf.json).
@@ -480,6 +480,14 @@
     var args = { path: absFolderPath };
     if (opts && opts.uncapped) args.uncapped = true;
     return invoke('read_dir_tree', args);
+  }
+
+  // UXF-10: one folder's folders and viewable files, for the Open Path
+  // completer. Promise<{ path, entries: [{ name, dir }], truncated }>; a
+  // leading "~" is expanded by Rust. Rejects when the folder cannot be read.
+  function listDir(path) {
+    if (!available) return Promise.reject(new Error('Needs the desktop app'));
+    return invoke('list_dir', { path: path });
   }
 
   /* ── public: openFolder (F-03) ──────────────────────────── */
@@ -1048,6 +1056,13 @@
       console.error('[TVNative] failed to register swipe-touch listener', err);
     });
 
+    // UXF-10: File ▸ Open Path… (⌘L) — the palette in path mode.
+    listen('menu:open-path', function () {
+      if (window.TVPalette && typeof window.TVPalette.openPath === 'function') window.TVPalette.openPath();
+    }).catch(function (err) {
+      console.error('[TVNative] failed to register menu:open-path listener', err);
+    });
+
     // UXF-06: View ▸ Reveal in Sidebar (⇧⌘J) — same path as the palette row,
     // the tab menu item and the browser-build key route.
     listen('menu:reveal-in-sidebar', function () {
@@ -1117,6 +1132,7 @@
     classifyReadError: classifyReadError,
     showToast: showToast,      // exposed so tv-app.js handleSave can surface errors
     readDirTree: readDirTree,  // F-19: directory tree for sidebar folder section
+    listDir: listDir,          // UXF-10: Open Path completer
     // C-36: pushed to Rust on every render; exposed so the shell can force a
     // refresh right after it mutates the MRU, without waiting for a repaint.
     syncRecentMenu: syncRecentMenu,

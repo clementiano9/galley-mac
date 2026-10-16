@@ -2209,6 +2209,7 @@
     { keys: ['⌘K'], action: 'Command palette' },
     { keys: ['⌘O'], action: 'Open file' },
     { keys: ['⌘⇧O'], action: 'Open folder' },
+    { keys: ['⌘L'], action: 'Open path' },
     { keys: ['⌘N'], action: 'New file' },
     { keys: ['⌘T'], action: 'New tab' },
     { keys: ['⌘W'], action: 'Close tab' },
@@ -7563,6 +7564,14 @@
     if (e.code === 'KeyJ' && e.metaKey && e.shiftKey && !e.altKey) {
       e.preventDefault(); // never type a "J" into the focused field
       if (window.TVNative && TVNative.available) revealInSidebar();
+      return;
+    }
+
+    // UXF-10: ⌘L — Open Path (the palette in path mode). Native builds get it
+    // from the File menu accelerator first.
+    if (e.code === 'KeyL' && !e.shiftKey && !e.altKey) {
+      e.preventDefault();
+      if (window.TVPalette && typeof TVPalette.openPath === 'function') TVPalette.openPath();
       return;
     }
 

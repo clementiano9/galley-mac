@@ -260,3 +260,66 @@ Done before designing. Findings are in [`obsolete-audit.md`](obsolete-audit.md).
 1. **Config files.** `.codex/config.toml`, `.claude/settings.json`, `.cursor/mcp.json` are agent files but not markdown. Showing them needs a read-only code view (they must not open in the markdown renderer or be editable). Not in this batch. Until then a folder holding only config stays behind the toggle. Do you want the code view?
 2. **Prose bleed.** 80 px per side (800 px table). If it still feels wide, `BLEED` = 0 gives the strict column. Your call after you see it.
 3. **Interactive swipe.** The sidebar following your fingers needs the native scroll phases forwarded from Rust. Worth a follow-up?
+
+# Iteration 3 (2026-10-12): open by path, reading progress
+
+*Two more requests from the owner: open a file by typing its path, with completion that "matches or suggests when the path is not fully complete but nearly there", and "a discreet scrollbar … so I know how far I have to read". New requirement IDs: **UXF-10** (Open Path) and **UXF-11** (reading-progress rail). Research: `research/stream-7-iteration-3.md` (WAN-108 to WAN-130).*
+
+## D. Open a file by its path (UXF-10)
+
+**Evidence.**
+- E22. Today a file opens through ⌘O (the Open panel), a tab, Recent, or the open folders' trees. ⌘K matches only files Galley already knows (open folders, recents). A file outside every open folder needs the Open panel and its clicks.
+- E23. Finder's Go to Folder matches "any part of the pathname", "ignore[s] small typing errors" and accepts with Tab (WAN-108). zsh expands every segment (`/u/l/b`, WAN-114); fish ranks prefix, then substring, then subsequence (WAN-113); fzf rewards word starts and penalises gaps (WAN-115).
+- E24. Launchers take a path in their one field: Raycast and Alfred switch to path browsing on a leading `/` or `~` (WAN-116, WAN-117). VS Code's Quick Open stayed a workspace index (WAN-110).
+
+**Heuristic findings.** H-21 (H7 flexibility, sev 3): no accelerator for a path the user already knows; the panel forces mouse work. H-22 (H5 error prevention, sev 2): one wrong letter in a typed path must not end in "not found" (WAN-119: most sites fail this).
+
+**Think-aloud.** WR4 Agent Operator; an agent printed `~/ai-projects/dundun-ai/docs/plan.md` in the terminal: "I want to type that, not click through four folders." Types `~/ai-proj/dun/docs/pla`: "It should already know." WR1 opens a sibling of the current file: "Let me start from this folder."
+
+**Ideas.**
+- **D1. A separate Go to Path dialog** (Finder's sheet). Familiar, but a second launcher with its own keys and look beside ⌘K.
+- **D2. Path mode inside ⌘K (chosen).** A query starting with `/`, `~`, `./` or `../` lists folders and markdown files, each segment matched fuzzily. One field, one list, keys the user knows. ⌘L (Safari's Open Location) and File ▸ Open Path… open ⌘K already in path mode, pre-filled with the current file's folder and selected, as Finder does.
+- D3. Index the whole disk (Spotlight). Heavy, slow to keep fresh, and a privacy surface. Rejected.
+
+**Choice and reasons.** D2. Matching per segment with a beam of five folders per level covers abbreviations (`ai-proj`), initials (`tv`), case, and one or two typos (`tiny-veiwer`), and keeps both candidates when a fragment is ambiguous (`tiny` → tiny-viewer, tiny-old). When live matches run short, files Galley already knows are also matched with skipped folders allowed (`~/tiny/READ`). ⇥ accepts the armed row; ↵ goes into a folder or opens a file; ⇧↵ opens a folder in the sidebar; ⌘↵ reveals in Finder. Arrow keys do not rewrite the field: WAN-119's advice is for a search box, and in a completer it would re-filter the list under the cursor; ⇥ is the copy-to-field action. Folder reads are lazy, cached for one palette session, names only (DR-06). ⇧⌘G (Finder's key) is taken by Find Previous. Spec: UXF-10.
+
+## E. How far is left to read (UXF-11)
+
+**Evidence.**
+- E25. The document scrollbar is hidden at rest (D-03) and shows on hover as a 5 px styled bar. Styling `::-webkit-scrollbar` turns off WebKit's overlay bar (WAN-124), so those 5 px come out of the text column on every hover: the JANK-03 reflow already fixed in the sidebar.
+- E26. Apple: the indicator "typically appears after people begin scrolling", and "it can be helpful to make it obvious when content extends beyond the view" (WAN-120). NN/g: "Offer a scrollbar if an area has scrolling content … Hide scrollbars if all content is visible" (WAN-122).
+- E27. Windows and GTK show a 2 px line that becomes a full scrollbar under the pointer (WAN-127, WAN-128). Kindle offers "time left in chapter" (WAN-130).
+
+**Heuristic findings.** H-23 (H1 visibility of status, sev 3): a long agent report gives no cue of length or position until the pointer crosses the right edge. H-24 (H8, sev 1): any fix must stay quiet beside the text.
+
+**Think-aloud.** WR1 reviewing a 4,000-word report: "Am I half way? Is it worth finishing now?" Moves the pointer right to find the bar, which takes width and nudges the text. WR3 on a short note: "If it fits, I don't want a bar."
+
+**Ideas.**
+- **E1. Always show the native scrollbar.** Takes 5 to 15 px of layout, looks heavy, and overrides the user's system setting (WAN-121).
+- **E2. A reading-progress line under the tab bar** (blog style). Shows position but not how much is on screen, and adds a new strip of chrome.
+- **E3. A thin overlay rail (chosen).** A 3 px thumb at the right edge, present whenever the document overflows, absent when it fits. Its length is the share on screen; its position is how far you are. It darkens while you scroll, widens to 7 px under the pointer, drags and jumps like a scrollbar, and its tip reads `42% · 6 min left`.
+- E4. Marks for headings or find hits on the track (VS Code, WAN-129). Useful later, not asked for.
+
+**Choice and reasons.** E3. It answers "how far" at a glance with no layout cost (an overlay, WAN-126) and no hover reflow, follows the thin-line convention (WAN-127, 128), and gives the remaining time on hover, like Kindle (WAN-130). The native hover bar on the document goes away, so there is one bar, not two. DR-07 (chrome invisible at rest) is amended: a faint position cue is content state, not chrome; it uses `--tv-scrollthumb`, the token of the bar it replaces. It is aria-hidden: `.tv-scroll` stays the keyboard and screen-reader scroller. Spec: UXF-11.
+
+## Iteration 3: cross-references and plan
+
+| URD / DR | Change |
+|---|---|
+| URD-04, URD-05 | UXF-10: reach any file by the path an agent printed |
+| URD-03, URD-06 | UXF-11: length and position always visible on long AI output |
+| DR-06 | UXF-10 reads folder names only, never writes |
+| DR-07 | amended by UXF-11 (a position cue is content state) |
+| DR-17 | shortcut overlay at 22 rows, exactly at the cap (⌘L added) |
+
+**Summative additions.** T10: open a `plan.md` from a path printed in a terminal, typed with two abbreviations and one typo (target: 5/5 under 10 s, no Open panel). T11: on a 4,000-word document, say how far you are and how long is left without scrolling (target: within 3 s; "distracting" at most 2 of 7).
+
+| Rank | Item | Sev | Build note |
+|---|---|---|---|
+| 1 | UXF-11 reading-progress rail | 3 | one module (`tv-progress.js`) and CSS; no Rust |
+| 2 | UXF-10 Open Path | 3 | `tv-pathfind.js`, palette path mode, Rust `list_dir`, File ▸ Open Path… ⌘L |
+
+## Iteration 3: open questions
+
+1. **Time left** is computed at 230 words a minute and shown on hover only. Show it at rest beside the thumb instead? *Superseded 2026-10-16: the owner asked for the rail itself to hide at rest and fade in while scrolling (macOS overlay-scroller behaviour, WAN-120). Hover on the edge still brings it and the tip back. UXF-11 updated.*
+2. **Non-markdown files in path mode.** Only folders and viewable files are listed; a typed path to `config.json` finds nothing until the read-only code view (iteration 2, question 1) exists.

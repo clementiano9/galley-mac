@@ -323,6 +323,8 @@
       mru: _mru,
       used: _used,
       native: _isNative(),
+      home: _home,
+      lookup: _lookupDir,
       mermaid: (typeof TV.isMermaidEnabled === 'function') ? TV.isMermaidEnabled() : true,
       swipe: (typeof TV.isSwipeEnabled === 'function') ? TV.isSwipeEnabled() : true,
       hasDiscarded: (typeof TV.hasDiscardedEdits === 'function') ? !!TV.hasDiscardedEdits() : false,
@@ -409,6 +411,9 @@
   var CMDS = [
     { id: 'open-file',   label: 'Open File…',   ic: 'doc',     kbd: '⌘O',  action: 'openFile',   kw: ['browse', 'picker'] },
     { id: 'open-folder', label: 'Open Folder…', ic: 'folder',  kbd: '⌘⇧O', action: 'openFolder', kw: ['browse', 'directory'] },
+    // UXF-10
+    { id: 'open-path',   label: 'Open Path…',   ic: 'doc',     kbd: '⌘L',  action: 'openPath',   native: true,
+      kw: ['go to', 'type path', 'location', 'go to folder', 'tilde'] },
     { id: 'new-file',    label: 'New File',     ic: 'plus',    kbd: '⌘N',  action: 'newFile',    verb: 'Create', kw: ['create', 'untitled', 'blank'] },
     { id: 'appearance',  label: 'Appearance',   ic: 'half',    kind: 'drill', page: 'appearance', chev: true,
       kw: ['theme', 'dark mode', 'light mode', 'accent', 'colour', 'color', 'text size', 'font', 'zoom', 'bigger', 'smaller', 'look'] },
@@ -618,7 +623,7 @@
   }
 
   /* ── the model: what the list shows for (query, page, context) ─ */
-  var PLACEHOLDER = 'Go to a file, heading or command';
+  var PLACEHOLDER = 'Go to a file, heading or command · ~/ for a path';
 
   function _finish(model) {
     var flat = [];
@@ -804,11 +809,82 @@
     });
   }
 
+  /* ── UXF-10: path mode ────────────────────────────────────
+     A query that starts with "/", "~", "./" or "../" lists the folders and
+     markdown files of the typed path, each segment matched fuzzily
+     (TVPathFind). Folders are read lazily through ctx.lookup; a read that
+     lands later refreshes the list. */
+  var PATH_PLACEHOLDER = 'Type a path: ~/ or /';
+
+  function _cwd(ctx) {
+    var cur = _activeDoc(ctx);
+    if (cur && cur.nativePath) return _parent(cur.nativePath);
+    for (var i = 0; i < ctx.openFolders.length; i++) if (ctx.openFolders[i] && ctx.openFolders[i].path) return ctx.openFolders[i].path;
+    return ctx.home || '';
+  }
+
+  function _knownPaths(ctx) {
+    var out = [];
+    ctx.tabs.forEach(function (t) { if (t && t.nativePath) out.push(t.nativePath); });
+    ctx.recents.forEach(function (e) { if (e && e.path && e.type !== 'folder') out.push(e.path); });
+    _folderFiles(ctx).forEach(function (f) { out.push(f.path); });
+    return out;
+  }
+
+  function _pathRow(r, ctx, known) {
+    return {
+      kind: 'path', ic: r.dir ? 'folder' : 'doc', label: r.name + (r.dir ? '/' : ''), hl: r.idx || [],
+      sub: window.TVPathFind.abbreviate(r.parent, ctx.home), path: r.path, isDir: r.dir,
+      revealPath: r.path, known: !!known, score: r.score
+    };
+  }
+
+  function _pathModel(query, ctx) {
+    var PF = window.TVPathFind, q = query.trim(), sections = [], hint = '';
+    var base = { kind: 'path', placeholder: PATH_PLACEHOLDER, parsed: null };
+    if (!ctx.native || !PF) {
+      base.sections = [];
+      base.hint = 'Opening a file by its path needs the desktop app.';
+      base.status = base.hint;
+      return _finish(base);
+    }
+    var lookup = ctx.lookup || function () { return null; };
+    if (q.charAt(0) === '~' && !ctx.home) lookup('~');
+    var parsed = PF.parse(q, { home: ctx.home, cwd: _cwd(ctx) });
+    base.parsed = parsed;
+    var res = parsed ? PF.resolve(parsed, lookup) : { rows: [], pending: (q.charAt(0) === '~' && !ctx.home) ? ['~'] : [], unreadable: [] };
+    var rows = res.rows.map(function (r) { return _pathRow(r, ctx, false); });
+    if (rows.length) {
+      var one = rows.every(function (r) { return r.sub === rows[0].sub; });
+      sections.push({ title: one ? 'In ' + rows[0].sub : 'Closest matches', rows: rows });
+    }
+    // Fewer than three live matches: also offer files Galley already knows
+    // (tabs, recents, open folders), where skipped folders are allowed.
+    if (parsed && rows.length < 3 && !res.pending.length) {
+      var have = {};
+      rows.forEach(function (r) { have[r.path] = 1; });
+      var kn = PF.matchKnown(parsed, _knownPaths(ctx)).filter(function (r) { return !have[r.path]; })
+        .map(function (r) { return _pathRow(r, ctx, true); });
+      if (kn.length) sections.push({ title: 'Known files', rows: kn.slice(0, 5) });
+    }
+    var n = sections.reduce(function (a, s2) { return a + s2.rows.length; }, 0);
+    if (!n) {
+      if (res.pending.length) hint = 'Reading ' + (res.pending[0] === '~' ? '~' : PF.abbreviate(res.pending[0], ctx.home)) + '…';
+      else if (res.unreadable.length) hint = 'Galley cannot read ' + PF.abbreviate(res.unreadable[0], ctx.home) + '.';
+      else hint = 'No folder or markdown file matches “' + q + '”.';
+    }
+    base.sections = sections;
+    base.hint = hint;
+    base.status = n ? n + (n === 1 ? ' path' : ' paths') : hint;
+    return _finish(base);
+  }
+
   function _buildModel(query, ctx, page) {
     ctx = ctx || _ctx();
     query = query == null ? '' : String(query);
     if (page) return _pageModel(page, query.trim(), ctx);
     if (query.charAt(0) === '#') return _outline(query, ctx);
+    if (window.TVPathFind && window.TVPathFind.isPathQuery(query)) return _pathModel(query, ctx);
     if (!query.trim()) return _zeroQuery(ctx);
     return _typed(query, ctx);
   }
@@ -823,6 +899,7 @@
       case 'file': case 'folder': case 'drill': return 'Open';
       case 'create': return 'Create';
       case 'xtab': return 'Search';
+      case 'path': return r.isDir ? 'Go into' : 'Open';
       case 'leaf': case 'value': return 'Apply';
     }
     return 'Run';
@@ -830,6 +907,15 @@
 
   function _footerKeys(model, row, query, page) {
     var f = [];
+    if (model && model.kind === 'path') {
+      if (row) {
+        f.push(['⇥', 'Complete'], ['↵', _verb(row)]);
+        if (row.isDir) f.push(['⇧↵', 'Open in Sidebar']);
+        f.push(['⌘↵', 'Reveal']);
+      }
+      f.push(['esc', 'Clear']);
+      return f;
+    }
     if (page) f.push(['↑↓', 'Preview']);
     if (row) f.push(['↵', _verb(row)]);
     if (row && row.revealPath) f.push(['⌘↵', 'Reveal']);
@@ -919,6 +1005,57 @@
   var _pageId = null;      // null | 'appearance' | 'theme' | 'accent' | 'size'
   var _pageStack = [];     // pages above the current one (for Back)
   var _prevFocusEl = null;
+
+  // UXF-10: folder listings for path mode, per palette session (fresh on
+  // every open, so a file created since is found). _home outlives it.
+  var _dirCache = {};
+  var _home = '';
+  function _lookupDir(dir) {
+    if (dir === '~' && _home) dir = _home;
+    var hit = _dirCache[dir];
+    if (hit) return hit.pending ? null : hit;
+    if (!(window.TVNative && typeof TVNative.listDir === 'function')) return { error: true };
+    _dirCache[dir] = { pending: true };
+    TVNative.listDir(dir).then(function (res) {
+      if (dir === '~' && res && res.path) { _home = res.path; _tildePrefill(); }
+      var entry = { entries: (res && res.entries) || [], truncated: !!(res && res.truncated) };
+      _dirCache[dir] = entry;
+      if (res && res.path) _dirCache[res.path] = entry;
+      if (_open) _refresh(true);
+    }, function () {
+      _dirCache[dir] = { error: true };
+      if (_open) _refresh(true);
+    });
+    return null;
+  }
+
+  // ⌘L before the home folder is known pre-fills an absolute path; once it is
+  // known, show it as ~/… if the user has not touched the field.
+  var _prefillAbs = '';
+  function _tildePrefill() {
+    var inp = _inputEl();
+    if (!_open || !_prefillAbs || !inp || inp.value !== _prefillAbs || !window.TVPathFind) return;
+    var all = inp.selectionStart === 0 && inp.selectionEnd === inp.value.length;
+    var text = window.TVPathFind.abbreviate(_prefillAbs.replace(/\/$/, ''), _home) + '/';
+    _prefillAbs = '';
+    inp.value = text;
+    _query = text;
+    try { if (all) inp.setSelectionRange(0, text.length); else inp.setSelectionRange(text.length, text.length); } catch (e) { /* not selectable */ }
+    _refresh(true);
+  }
+
+  // ⇥ / ↵ on a folder: write the row's path back into the field, the way the
+  // user typed it (~ or absolute), and list what is inside.
+  function _completePath(row) {
+    var inp = _inputEl();
+    if (!row || !inp || !window.TVPathFind) return;
+    var style = (_model && _model.parsed && _model.parsed.style) || 'home';
+    var text = window.TVPathFind.typed(row.path, _home, style) + (row.isDir ? '/' : '');
+    inp.value = text;
+    _query = text;
+    try { inp.setSelectionRange(text.length, text.length); } catch (e) { /* not selectable */ }
+    _refresh(false);
+  }
 
   // On a value page the current value is armed, so opening a page changes nothing.
   function _initialSel(model) {
@@ -1054,6 +1191,10 @@
       case 'openFile':
         if (window.TVFiles && typeof TVFiles.openPicker === 'function') TVFiles.openPicker();
         return;
+      case 'openPath':
+        // The palette is closing; reopen it in path mode on the next tick.
+        setTimeout(function () { TVPalette.openPath(); }, 0);
+        return;
       case 'openFolder':
         if (window.TVNative && typeof TVNative.openFolder === 'function') TVNative.openFolder();
         else if (typeof TV.openFolder === 'function') TV.openFolder();
@@ -1176,6 +1317,7 @@
 
     // Moving down a level keeps the palette open.
     if (row.kind === 'drill') { _enterPage(row.page); return; }
+    if (row.kind === 'path' && row.isDir && !mods.shift) { _completePath(row); return; }
 
     // Everything else closes the palette first. close() also ends an appearance
     // preview, so the commit below starts from the real state.
@@ -1203,6 +1345,15 @@
       case 'xtab':
         _openSearchWith(row.query);
         return;
+      case 'path':
+        if (row.isDir) {
+          if (window.TVNative && typeof TVNative.reopenFolder === 'function') {
+            TVNative.reopenFolder(row.path).catch(function () { /* the helper already toasted */ });
+          }
+        } else if (typeof TV.openPath === 'function') {
+          TV.openPath(row.path);
+        }
+        return;
       case 'value':
       case 'leaf':
         if (row.page === 'theme' && typeof TV.setTheme === 'function') TV.setTheme(row.value);
@@ -1229,6 +1380,7 @@
   function _createFromQuery() {
     var q = (_query || '').trim();
     if (!q || q.charAt(0) === '#' || _pageId) return false;
+    if (window.TVPathFind && window.TVPathFind.isPathQuery(q)) return false;
     var name = _mdName(q);
     TVPalette.close();
     if (window.TV && typeof window.TV.newFile === 'function') window.TV.newFile(name);
@@ -1284,6 +1436,12 @@
     if (k === 'Tab') {
       // C-32: modal dialog — focus must not leak to the page behind.
       e.stopPropagation();
+      // UXF-10: in path mode ⇥ accepts the armed row (Finder's Go to Folder).
+      if (!e.shiftKey && _model && _model.kind === 'path' && _model.flat[_sel]) {
+        e.preventDefault();
+        _completePath(_model.flat[_sel]);
+        return;
+      }
       _trapTab(e);
       return;
     }
@@ -1337,6 +1495,7 @@
 
       // UI-03: capture focus before opening so close() can restore it
       _prevFocusEl = document.activeElement;
+      if (!_home && _isNative()) _lookupDir('~');   // UXF-10: learn ~ before it is typed
 
       _wireMruListener();
 
@@ -1426,6 +1585,7 @@
       _model = null;
       _sel = 0;
       _query = '';
+      _dirCache = {};
       // UI-03 / C-32: restore focus to the element that was active before the
       // dialog opened (ARIA APG requirement, not just a nicety).
       if (_prevFocusEl && typeof _prevFocusEl.focus === 'function') {
@@ -1442,6 +1602,20 @@
     // the current document. Same list, one character of scope.
     openOutline: function () {
       TVPalette.open({ query: '#' });
+    },
+
+    // UXF-10 / ⌘L: path mode, pre-filled with the current file's folder and
+    // selected, as Finder's Go to Folder does: typing "~" or "/" starts over,
+    // → keeps the folder and continues from it.
+    openPath: function () {
+      var ctx = _ctx(), dir = _cwd(ctx);
+      if (!_home) _lookupDir('~');
+      var pre = dir ? (window.TVPathFind ? window.TVPathFind.abbreviate(dir, _home) : dir) : '~';
+      if (pre !== '/') pre += '/';
+      _prefillAbs = (!_home && pre.charAt(0) === '/') ? pre : '';
+      TVPalette.open({ query: pre });
+      var inp = _inputEl();
+      if (inp) { try { inp.setSelectionRange(0, inp.value.length); } catch (e) { /* not selectable */ } }
     }
   };
 
@@ -1458,6 +1632,7 @@
     parseHeadings: _parseHeadings,
     headingsFor: _headingsFor,
     buildModel: _buildModel,
+    completePath: function (row) { _completePath(row); },
     mdName: _mdName,
     verb: _verb,
     footerKeys: _footerKeys,

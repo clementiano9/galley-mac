@@ -29,6 +29,8 @@ ONLY through the documented `window.TV` controller API and the agreed DOM classe
 | `js/tv-tree.js` | **shell** | Pure folder-tree logic (order, counts, default expansion, reveal lookup) |
 | `js/tv-swipe.js` | **shell** | UXF-05/09: two-finger swipe state machine + one `wheel` listener (`TVSwipe.install`); `TVSwipe.touch(m)` takes the native `swipe-touch` finger phases |
 | `js/tv-docmenu.js` | **shell** | DOC-MENU: `TVDocMenu` — `toMarkdown(node)` / `selectionMarkdown(sel)` (Copy as Markdown), `resolveLink(href, docPath)` |
+| `js/tv-pathfind.js` | **features** | UXF-10: `TVPathFind` — pure fuzzy path completion (`parse`, `resolve`, `matchKnown`, `segScore`) for the palette's path mode |
+| `js/tv-progress.js` | **features** | UXF-11: `TVProgress` — reading-progress rail on the viewer's right edge, re-attached on every `render` (`sync()`, `state()`) |
 | `js/tv-motion.js` | **shell** | UXF-08: `TVMotion` — reads the motion tokens, `play()` / `enter()` (null under Reduce Motion), `cancelAll()` |
 | `css/tv-tokens.css`, `css/tv-app.css` | **style** | Tokens + chrome (copied — adapt to full-viewport single window, add new component styles, a11y) |
 
@@ -108,7 +110,7 @@ TV.el()                          // -> the live .tv root element (current theme/
 ```
 Overlays/panels register themselves and are invoked by shell's keyboard router:
 ```js
-window.TVPalette = { open({query?}), close(), isOpen(), openOutline() }   // builds its own overlay into TV.el(); ⌘⌥O = open({query:'#'})   (F-24)
+window.TVPalette = { open({query?}), close(), isOpen(), openOutline(), openPath() }   // builds its own overlay into TV.el(); ⌘⌥O = open({query:'#'})   (F-24); ⌘L = openPath() (UXF-10)
 window.TVSearch  = { open(), close(), isOpen() }
 window.TVFiles   = { init(), openPicker() }        // init() wires drag-drop + exposes ⌘O
 window.TVEdit    = { renderSource(tab) -> htmlString, wire(rootEl, tab), wordCount(src) -> n }
